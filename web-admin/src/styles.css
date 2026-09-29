@@ -1,0 +1,58 @@
+/* Дизайн-система админки. Токены и базовые стили — 1:1 из макета. */
+@import "./fonts.css";
+
+
+  :root{--bg:#F6F7F9;--surface:#FFFFFF;--surface-2:#FAFBFC;--hover:#F2F4F7;--border:#E5E8EC;--border-2:#EEF0F3;--border-strong:#D3D8DF;--muted-bg:#F0F1F3;--muted-bg2:#F3EDED;--text:#171A1F;--text-2:#5B6472;--text-3:#8A93A0;--text-4:#9AA3B0;--text-5:#B9C0CA;--muted-fg:#8A6A6A;--muted-dot:#B79A9A;--accent:#3E63DD;--accent-hover:#3355C7;--accent-strong:#2A44B8;--accent-tint:#EEF1FB;--accent-tint2:#F5F7FE;--accent-border:#E4EAFC;--danger:#B4342A;--danger-solid:#B4342A;--danger-solid-hover:#9A2B22;--danger-tint:#FCECEC;--danger-tint2:#FDF6F5;--danger-border:#F3C7C3;--danger-dot:#E5484D;--danger-muted:#9A5B57;--amber-tint:#FDF3E7;--amber:#9A5B12;--amber-dot:#E08C2F;--green-tint:#E9F6EE;--green:#1F7A44;--green-dot:#35A46A;--violet:#6A3FC0;--violet-solid:#6A3FC0;--violet-solid-hover:#5A34A8;--violet-tint:#F1ECFC;--violet-dot:#8B5CF0;--toast-bg:#1B1F27;--toast-danger:#FF8B8B;--toast-ok:#5BD08A}
+  :root[data-theme="dark"]{--bg:#0F1116;--surface:#181B22;--surface-2:#1E222B;--hover:#242A34;--border:#2A303A;--border-2:#23282F;--border-strong:#353C47;--muted-bg:#262C35;--muted-bg2:#2C2422;--text:#E7E9ED;--text-2:#A9B1BC;--text-3:#868F9C;--text-4:#6E7783;--text-5:#525A66;--muted-fg:#BFA3A3;--muted-dot:#7C6A6A;--accent:#4E71F0;--accent-hover:#6A8AFF;--accent-strong:#A9BEFF;--accent-tint:#1B2440;--accent-tint2:#161E30;--accent-border:#2B3A63;--danger:#FF7E70;--danger-solid:#C6392C;--danger-solid-hover:#A82E23;--danger-tint:#2C1512;--danger-tint2:#241413;--danger-border:#4C2521;--danger-dot:#FF6B6B;--danger-muted:#CE938E;--amber-tint:#2A1F10;--amber:#E6A961;--amber-dot:#F0A94E;--green-tint:#12241A;--green:#5FCB8A;--green-dot:#47C07E;--violet:#BBA0FF;--violet-solid:#6D45C8;--violet-solid-hover:#5B37AB;--violet-tint:#201A33;--violet-dot:#A78BFA;--toast-bg:#2C313C;--toast-danger:#FF8B8B;--toast-ok:#5BD08A}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  /* Именно #root, а не body>*: сторонние библиотеки (Recharts) вешают в body
+     служебные узлы для замера текста, и растянутая на 100% высота их ломает —
+     подписи осей считаются высотой в экран и выбрасываются как перекрывающиеся. */
+  #root{height:100%}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{color:var(--accent-hover);text-decoration:underline}
+  input,button,select,textarea{font-family:inherit;color:inherit}
+  input::placeholder,textarea::placeholder{color:var(--text-4)}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(62,99,221,.12)}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px;border:3px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--text-5);background-clip:padding-box;border:3px solid transparent}
+  ::-webkit-scrollbar-track{background:transparent}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  @keyframes slideUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  @keyframes pop{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+  @keyframes shimmer{0%{background-position:-320px 0}100%{background-position:320px 0}}
+  @keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+  @keyframes slideRight{from{opacity:0;transform:translateX(-14px)}to{opacity:1;transform:none}}
+  @keyframes slideInRight{from{transform:translateX(100%)}to{transform:none}}
+
+/* Подсветка строки, найденной сканером: заметная вспышка, которая плавно гаснет. */
+@keyframes scanFlash{0%{background:var(--accent-tint);box-shadow:inset 3px 0 0 var(--accent)}70%{background:var(--accent-tint);box-shadow:inset 3px 0 0 var(--accent)}100%{background:transparent;box-shadow:inset 3px 0 0 transparent}}
+.scan-flash{animation:scanFlash 4s ease forwards}
+/* Панель массовых действий: мягко выезжает снизу вверх. */
+@keyframes barIn{from{opacity:0;transform:translateY(24px) scale(.98)}to{opacity:1;transform:none}}
+/* Поле телефона с префиксом +996: подсвечивается вся рамка, а не внутреннее поле. */
+.phone-field:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(62,99,221,.12)}
+.phone-field input:focus{box-shadow:none!important}
+/* Строки таблиц, по которым можно кликнуть. */
+.row-click{cursor:pointer;transition:background .12s}
+.row-click:hover{background:var(--hover)}
+/* Кастомный выпадающий список (components/Select.tsx). */
+.sel-trigger:hover{background:var(--surface-2)!important}
+.sel-trigger:focus-visible{outline:none;border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(62,99,221,.12)!important}
+/* Поля расчёта партии: рамка подсвечивается целиком. */
+.batch-field:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(62,99,221,.12)}
+.batch-field input:focus{box-shadow:none!important}
+.batch-name:hover{border-color:var(--border)!important}
+.batch-name:focus{border-color:var(--accent)!important;background:var(--surface)!important}
+/* Поле сканера на «Приёме»: мягкое свечение в цвет режима. */
+.scan-field:focus-within{box-shadow:0 0 0 4px var(--scan-ring)}
+@media (max-width:560px){
+  .hide-sm{display:none!important}
+  .scan-modes{flex:1;min-width:0}
+  .scan-modes>button{flex:1;justify-content:center;padding:0 6px!important}
+  .scan-btn{max-width:none!important;flex-basis:100%!important}
+}
