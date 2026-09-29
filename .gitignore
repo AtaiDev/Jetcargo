@@ -1,0 +1,15 @@
+# Node / React
+node_modules/
+dist/
+*.local
+
+# Локальные переменные окружения (шаблон — web-admin/.env.example)
+.env
+.env.*
+!.env.example
+
+# Прочее
+.DS_Store
+
+# Локальный backend: база и загруженные файлы
+server/data/
