@@ -1,10 +1,13 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Админка отдаётся под суб-путём /admin (base влияет и на dev-сервер, поэтому
-// в main.tsx у BrowserRouter стоит basename="/admin"). Меняете путь — меняйте в обоих местах.
+// Суб-путь, под которым отдаётся админка. Локально — /admin/; для GitHub Pages
+// workflow задаёт VITE_BASE=/Jetcargo/. Роутер (main.tsx) берёт путь отсюда же
+// через import.meta.env.BASE_URL, так что меняется он в одном месте.
+const base = process.env.VITE_BASE?.trim() || "/admin/";
+
 export default defineConfig({
-  base: "/admin/",
+  base: base.endsWith("/") ? base : base + "/",
   plugins: [react()],
   server: {
     port: 5173,

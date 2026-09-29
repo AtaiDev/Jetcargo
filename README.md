@@ -83,6 +83,17 @@ npm run dev
 Первый администратор создаётся при первом запуске из `ADMIN_LOGIN` / `ADMIN_PASSWORD`; дальше пароль хранится
 в базе только в виде хэша.
 
+## Публикация (GitHub Pages)
+
+Frontend автоматически публикуется на **<https://ataidev.github.io/Jetcargo/>** при каждом push в `main`
+(`.github/workflows/pages.yml`: `npm ci` → `npm run build` с `VITE_BASE=/Jetcargo/` → содержимое `web-admin/dist`).
+
+GitHub Pages отдаёт только статический frontend. Данные он берёт у backend по адресу из переменной репозитория
+`VITE_API_URL` (Settings → Secrets and variables → Actions → Variables); без неё — `http://127.0.0.1:8787/api/v1`,
+то есть работает только на компьютере, где запущен backend. Чтобы опубликованная админка работала откуда угодно,
+backend нужно развернуть по публичному HTTPS-адресу, указать его в `VITE_API_URL` и добавить
+`https://ataidev.github.io` в `CORS_ORIGINS` backend.
+
 ## Технологии
 
 - **Админка** (`web-admin/`) — React 18, Vite, TypeScript, React Router, Recharts; собственная дизайн-система
