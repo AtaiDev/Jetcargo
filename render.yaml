@@ -1,0 +1,29 @@
+# Render Blueprint: backend Jetcargo на бесплатном тарифе.
+# Render → New → Blueprint → выбрать этот репозиторий. Значения с sync:false
+# Render спросит при создании (ключи Backblaze B2).
+services:
+  - type: web
+    name: jetcargo-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    rootDir: server
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      # Откуда разрешены запросы: опубликованная админка.
+      - key: CORS_ORIGINS
+        value: https://ataidev.github.io
+      # Хранилище копий базы (Backblaze B2, бесплатные 10 ГБ).
+      - key: B2_BUCKET
+        sync: false
+      - key: B2_ENDPOINT
+        sync: false
+      - key: B2_KEY_ID
+        sync: false
+      - key: B2_APP_KEY
+        sync: false

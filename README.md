@@ -90,9 +90,30 @@ Frontend автоматически публикуется на **<https://ataid
 
 GitHub Pages отдаёт только статический frontend. Данные он берёт у backend по адресу из переменной репозитория
 `VITE_API_URL` (Settings → Secrets and variables → Actions → Variables); без неё — `http://127.0.0.1:8787/api/v1`,
-то есть работает только на компьютере, где запущен backend. Чтобы опубликованная админка работала откуда угодно,
-backend нужно развернуть по публичному HTTPS-адресу, указать его в `VITE_API_URL` и добавить
-`https://ataidev.github.io` в `CORS_ORIGINS` backend.
+то есть работает только на компьютере, где запущен backend.
+
+### Backend в облаке (бесплатно)
+
+```
+GitHub Pages (админка) ──HTTPS──> Render, free (server/, Docker) ──Litestream──> Backblaze B2 (копия базы)
+```
+
+- **Render** запускает `server/` из `server/Dockerfile` (`render.yaml` — Blueprint). Облачный режим включается сам:
+  сервер пускает только свой домен (`RENDER_EXTERNAL_HOSTNAME`) и только запросы из `CORS_ORIGINS`.
+- **Litestream** ежесекундно копирует базу в **Backblaze B2** и восстанавливает её при каждом старте — диск
+  бесплатного Render не сохраняется, а данные не теряются.
+- **«Будильник»** (`.github/workflows/keepalive.yml`) раз в 10 минут обращается к `API_HEALTH_URL`, чтобы бесплатный
+  сервер не засыпал.
+
+Первый запуск:
+
+1. Backblaze B2: создать приватный bucket и Application Key с доступом к нему.
+2. Загрузить текущую локальную базу как первоначальную:
+   `cd server && B2_KEY_ID=… B2_APP_KEY=… B2_BUCKET=… node scripts/seed-b2.mjs` (выведет `B2_ENDPOINT`).
+3. Render → New → Blueprint → этот репозиторий; ввести `B2_BUCKET`, `B2_ENDPOINT`, `B2_KEY_ID`, `B2_APP_KEY`.
+4. В GitHub (Settings → Secrets and variables → Actions → Variables) задать
+   `VITE_API_URL = https://<сервис>.onrender.com/api/v1` и `API_HEALTH_URL = https://<сервис>.onrender.com/health`,
+   затем перезапустить «Deploy to GitHub Pages».
 
 ## Технологии
 

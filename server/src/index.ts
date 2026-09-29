@@ -1,15 +1,17 @@
 /**
- * Локальный backend Cargo-админки.
+ * Backend Cargo-админки.
  *
- * Работает только на этом компьютере:
+ * Локально (по умолчанию) работает только на этом компьютере:
  *  - слушает 127.0.0.1 (из сети недоступен);
  *  - отклоняет запросы с чужим заголовком Host (защита от DNS-rebinding);
  *  - CORS разрешён только для адресов админки из CORS_ORIGINS.
+ * В облачном режиме (PUBLIC_HOSTS) вместо localhost разрешены только эти домены,
+ * соединение идёт через HTTPS-прокси хостинга.
  */
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 
-import { CORS_ORIGINS, DB_FILE, HOST, PORT } from "./config";
+import { CORS_ORIGINS, DB_FILE, HOST, IS_PUBLIC, PORT, PUBLIC_HOSTS } from "./config";
 import { setup } from "./db";
 import { requireAuth } from "./domain";
 import { authRouter } from "./routes/auth";
@@ -28,12 +30,21 @@ setup();
 const app = express();
 app.disable("x-powered-by");
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+// Проверка живости для хостинга и «будильника» — до проверки Host (хостинг стучится по внутреннему адресу).
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+// За прокси хостинга: адрес клиента и протокол берём из X-Forwarded-*.
+if (IS_PUBLIC) app.set("trust proxy", 1);
+
+const ALLOWED_HOSTS = new Set(IS_PUBLIC ? PUBLIC_HOSTS : ["localhost", "127.0.0.1", "[::1]", "::1"]);
 app.use((req, res, next) => {
-  if (!LOCAL_HOSTS.has(req.hostname)) {
-    res.status(403).json({ detail: "Доступ только с этого компьютера" });
+  if (!ALLOWED_HOSTS.has(req.hostname.toLowerCase())) {
+    res.status(403).json({ detail: IS_PUBLIC ? "Неизвестный адрес сервера" : "Доступ только с этого компьютера" });
     return;
   }
+  if (IS_PUBLIC) res.setHeader("Strict-Transport-Security", "max-age=31536000");
   const origin = req.headers.origin;
   if (origin) {
     if (!CORS_ORIGINS.includes(origin)) {
@@ -56,10 +67,6 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
-
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
-});
 
 const api = express.Router();
 api.use(authRouter); // вход/refresh — без токена, остальное внутри защищено само

@@ -1,9 +1,12 @@
 /**
  * Настройки сервера из переменных окружения (файл server/.env, в git не попадает).
  *
- * Сервер намеренно локальный: слушает только loopback-интерфейс, пускает запросы
- * только с localhost и только от админки на localhost. Со старым проектом
- * Rentalbish ничего не связывает — своя база SQLite, свой порт, свой секрет.
+ * По умолчанию сервер локальный: слушает только loopback-интерфейс, пускает запросы
+ * только с localhost и только от админки на localhost.
+ *
+ * Облачный режим (например, Render) включается переменной PUBLIC_HOSTS — списком
+ * публичных доменов сервера. Тогда сервер слушает все интерфейсы за HTTPS-прокси
+ * хостинга и пускает только запросы на эти домены и только из CORS_ORIGINS.
  */
 import path from "node:path";
 
@@ -15,9 +18,18 @@ function required(name: string): string {
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
 
-export const HOST = process.env.HOST?.trim() || "127.0.0.1";
-if (!LOOPBACK.has(HOST)) {
-  throw new Error(`HOST=${HOST}: сервер разрешено запускать только на localhost (127.0.0.1)`);
+/** Публичные домены сервера (облачный режим). Пусто — сервер доступен только с этого компьютера. */
+// На Render домен сервиса приходит сам (RENDER_EXTERNAL_HOSTNAME).
+export const PUBLIC_HOSTS = [process.env.PUBLIC_HOSTS || "", process.env.RENDER_EXTERNAL_HOSTNAME || ""]
+  .join(",")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+export const IS_PUBLIC = PUBLIC_HOSTS.length > 0;
+
+export const HOST = process.env.HOST?.trim() || (IS_PUBLIC ? "0.0.0.0" : "127.0.0.1");
+if (!IS_PUBLIC && !LOOPBACK.has(HOST)) {
+  throw new Error(`HOST=${HOST}: без PUBLIC_HOSTS сервер разрешено запускать только на localhost (127.0.0.1)`);
 }
 
 export const PORT = Number(process.env.PORT || 8787);
