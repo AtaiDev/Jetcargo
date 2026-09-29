@@ -1,0 +1,70 @@
+# Публикация админки (web-admin) в GitHub Pages: https://ataidev.github.io/Jetcargo/
+#
+# Собирается только frontend. Backend (server/) сюда не входит и не меняется.
+# Адрес API берётся из переменной репозитория VITE_API_URL
+# (Settings → Secrets and variables → Actions → Variables). Если она не задана,
+# frontend обращается к http://127.0.0.1:8787/api/v1 — как при локальной работе.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Одновременно идёт только один деплой; уже начатый не прерываем.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-admin/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          # Сайт открывается не из корня домена, а по адресу /Jetcargo/.
+          VITE_BASE: /Jetcargo/
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+
+      - name: SPA fallback
+        # Pages не знает маршрутов приложения: прямой заход на /Jetcargo/orders
+        # отдаст 404.html — это та же страница приложения, дальше работает роутер.
+        run: |
+          cp dist/index.html dist/404.html
+          touch dist/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web-admin/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
