@@ -31,6 +31,7 @@ import {
 } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
 import { Confirm, Empty } from "../components/cargo";
+import DatePicker from "../components/DatePicker";
 import ItemModal from "../components/ItemModal";
 import ItemTable from "../components/ItemTable";
 import { MONO, css, mix } from "../design/css";
@@ -636,13 +637,7 @@ function AddItems({ batchId, onClose, onAdded }: { batchId: number; onClose: () 
       <div style={css("padding:16px 18px;display:flex;flex-direction:column;gap:12px")}>
         <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px")}>
           <span style={css("color:var(--text-3)")}>Принятые без партии за</span>
-          <input
-            type="date"
-            value={day}
-            disabled={allDays}
-            onChange={(e) => e.target.value && setDay(e.target.value)}
-            style={css("height:32px;padding:0 8px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);" + MONO)}
-          />
+          <DatePicker value={day} disabled={allDays} onChange={setDay} height={32} fontSize={12.5} ariaLabel="День приёма" />
           <label style={css("display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-2)")}>
             <input type="checkbox" checked={allDays} onChange={(e) => setAllDays(e.target.checked)} /> за все дни
           </label>

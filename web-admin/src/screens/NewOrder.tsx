@@ -17,6 +17,7 @@ import { HButton, ModalError, ST, btnGhost, btnPrimary, inputStyle } from "../de
 import { cased, capFirst, parseMoney, som, todayIso, upper } from "../lib/cargo";
 import { emit, useDebounced } from "../lib/events";
 import PhoneInput from "../components/PhoneInput";
+import DatePicker from "../components/DatePicker";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 
@@ -396,12 +397,7 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
               <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "minmax(150px,0.8fr) minmax(0,1.2fr) minmax(0,1.6fr)" : "1fr", gap: 14 }}>
                 <label>
                   <Label>Дата заказа</Label>
-                  <input
-                    type="date"
-                    value={orderDate}
-                    onChange={(e) => e.target.value && setOrderDate(e.target.value)}
-                    style={css(inputStyle + ";height:40px;" + MONO)}
-                  />
+                  <DatePicker value={orderDate} onChange={setOrderDate} width="100%" height={40} ariaLabel="Дата заказа" />
                 </label>
                 <div>
                   <Label>Статус</Label>

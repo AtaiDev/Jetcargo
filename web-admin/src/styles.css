@@ -58,3 +58,15 @@
 /* Журнал действий: подсветка строки при наведении. */
 .audit-row{transition:background .12s}
 .audit-row:hover{background:var(--hover)}
+/* Поле даты и календарь (components/DatePicker.tsx). */
+.dp-trigger:not(:disabled):hover{background:var(--surface-2)!important}
+.dp-trigger:not(:disabled):hover .dp-ico{background:var(--accent)!important;color:#fff!important}
+.dp-trigger:focus-visible{outline:none;border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(62,99,221,.12)!important}
+.dp-btn{transition:background .12s,color .12s,box-shadow .12s}
+.dp-btn:not(:disabled):not([aria-selected="true"]):hover{background:var(--hover)!important}
+.dp-chip:not(:disabled):hover{border-color:var(--accent)!important;color:var(--accent-strong)!important;background:var(--accent-tint)!important}
+@keyframes dpNext{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
+@keyframes dpPrev{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:none}}
+@keyframes dpZoom{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:none}}
+/* Тёмная тема и для оставшихся браузерных контролов (чекбоксы, иконки полей). */
+:root[data-theme="dark"]{color-scheme:dark}

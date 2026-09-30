@@ -8,6 +8,7 @@ import type { Item } from "../api/domain";
 import { MONO, css, mix } from "../design/css";
 import { I_ALERT, Icon, Svg } from "../design/icons";
 import { EMPTY_ICON } from "../design/table";
+import DatePicker from "./DatePicker";
 import { HButton, ModalError, ModalShell, StatusBadge, btnDanger, btnGhost, btnPrimary, inputStyle } from "../design/ui";
 import { monthStartIso, profitOf, som, todayIso } from "../lib/cargo";
 
@@ -169,7 +170,7 @@ const PERIODS: { key: PeriodKey; label: string }[] = [
 ];
 
 export function PeriodPicker({ value, onChange }: { value: Period; onChange: (p: Period) => void }) {
-  const dateInput = "height:30px;padding:0 8px;border:1px solid var(--border-strong);border-radius:7px;background:var(--surface);font-size:12px;" + MONO;
+  const range: [string, string] = [value.date_from, value.date_to];
   return (
     <div style={css("display:flex;flex-wrap:wrap;gap:6px;align-items:center")}>
       {PERIODS.map((p) => {
@@ -187,9 +188,9 @@ export function PeriodPicker({ value, onChange }: { value: Period; onChange: (p:
       })}
       {value.key === "custom" && (
         <span style={css("display:flex;gap:6px;align-items:center")}>
-          <input type="date" value={value.date_from} max={value.date_to} onChange={(e) => e.target.value && onChange({ ...value, date_from: e.target.value })} style={css(dateInput)} />
+          <DatePicker value={value.date_from} max={value.date_to} range={range} onChange={(d) => onChange({ ...value, date_from: d })} height={30} fontSize={12} ariaLabel="Начало периода" />
           <span style={css("color:var(--text-4)")}>—</span>
-          <input type="date" value={value.date_to} min={value.date_from} onChange={(e) => e.target.value && onChange({ ...value, date_to: e.target.value })} style={css(dateInput)} />
+          <DatePicker value={value.date_to} min={value.date_from} range={range} onChange={(d) => onChange({ ...value, date_to: d })} height={30} fontSize={12} ariaLabel="Конец периода" />
         </span>
       )}
     </div>
