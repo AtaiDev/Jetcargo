@@ -11,7 +11,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiError } from "../api/client";
 import { createOrder, getCustomer, getSettings, listCustomers, type CustomerCard, type CustomerRow } from "../api/domain";
 import { MONO, css, mix } from "../design/css";
-import { I_CLOSE, I_PLUS, Icon, Svg } from "../design/icons";
+import { I_ARROW_RIGHT, I_CLOSE, I_PLUS, Icon, Svg } from "../design/icons";
 import { PANEL, Page } from "../design/table";
 import { HButton, ModalError, ST, btnGhost, btnPrimary, inputStyle } from "../design/ui";
 import { cased, capFirst, parseMoney, som, todayIso, upper } from "../lib/cargo";
@@ -20,6 +20,17 @@ import PhoneInput from "../components/PhoneInput";
 import DatePicker from "../components/DatePicker";
 
 type Toast = (kind: "success" | "error", text: string) => void;
+
+/** Последний сохранённый заказ — для карточки под итогом. */
+interface Saved {
+  name: string;
+  id: number;
+  count: number;
+  sum: number;
+  paid: number;
+  isNew: boolean;
+  at: string;
+}
 
 interface Row {
   key: number;
@@ -96,7 +107,7 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   const [rate, setRate] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState<{ name: string; id: number; count: number; sum: number } | null>(null);
+  const [saved, setSaved] = useState<Saved | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -179,7 +190,15 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
         }),
       });
       const name = customer?.customer.name ?? r.items[0]?.customer_name ?? newName;
-      setSaved({ name, id: r.customer_id, count: r.items.length, sum: totals.sale });
+      setSaved({
+        name,
+        id: r.customer_id,
+        count: r.items.length,
+        sum: totals.sale,
+        paid: totals.paid,
+        isNew: !!r.customer_created,
+        at: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+      });
       toast("success", `Заказ сохранён: ${r.items.length} тов. — ${name}${r.customer_created ? " (новый клиент)" : ""}`);
       emit("cargo:changed");
       pickCustomer(r.customer_id); // обновить цифры клиента
@@ -201,30 +220,6 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
     <Page size="wide">
       <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "minmax(0,1fr) 320px" : "1fr", gap: 16, alignItems: "start" }}>
         <div style={css("display:flex;flex-direction:column;gap:14px;min-width:0")}>
-          {saved && (
-            <div style={css("display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 16px;border-radius:12px;background:var(--green-tint);border:1px solid var(--green-dot)")}>
-              <span style={css("font-size:13px;font-weight:600;color:var(--green)")}>
-                ✓ Заказ сохранён: {saved.count} тов. на {som(saved.sum)} — {saved.name}
-              </span>
-              <span style={css("flex:1")} />
-              <HButton onClick={() => nav(`/customers/${saved.id}`)} s={btnGhost + ";height:32px;font-size:12.5px"} hover="border-color:var(--accent)">
-                Открыть клиента
-              </HButton>
-              <HButton
-                onClick={() => {
-                  setSaved(null);
-                  setCustomer(null);
-                  setNewName("");
-                  setNewPhone("");
-                }}
-                s={btnGhost + ";height:32px;font-size:12.5px"}
-                hover="border-color:var(--accent)"
-              >
-                Другой клиент
-              </HButton>
-            </div>
-          )}
-
           {/* 1. Клиент */}
           <Card n="1" title="Клиент">
             {customer ? (
@@ -446,42 +441,149 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
           </Card>
         </div>
 
-        {/* Итог */}
-        <div style={css(PANEL + ";padding:16px 18px;display:flex;flex-direction:column;gap:12px;position:sticky;top:0")}>
-          <div style={css("display:flex;align-items:center;gap:8px")}>
-            <span style={css("display:flex;color:var(--accent)")}>
-              <Icon name="orders" size={17} />
+        {/* Итог и результат сохранения — рядом с кнопкой, куда пользователь и смотрит */}
+        <div style={css("display:flex;flex-direction:column;gap:12px;min-width:0;position:sticky;top:0")}>
+          <div style={css(PANEL + ";padding:16px 18px;display:flex;flex-direction:column;gap:12px")}>
+            <div style={css("display:flex;align-items:center;gap:8px")}>
+              <span style={css("display:flex;color:var(--accent)")}>
+                <Icon name="orders" size={17} />
+              </span>
+              <span style={css("font-size:14px;font-weight:700")}>Итог заказа</span>
+            </div>
+            <div style={css("display:flex;flex-direction:column;gap:2px")}>
+              <Line label="Товаров" value={`${filled.length} · ${totals.qty} шт`} />
+              <Line label="Сумма (клиенту)" value={som(totals.sale)} bold />
+              <Line label="Выкуп" value={totals.withCost ? som(totals.cost) : "—"} />
+              <Line
+                label="Прибыль"
+                value={totals.withCost ? som(totals.profit) : "—"}
+                color={totals.profit < 0 ? "var(--danger)" : "var(--green)"}
+                bold
+              />
+              {totals.withCost > 0 && totals.withCost < filled.length && (
+                <span style={css("font-size:11px;color:var(--text-4)")}>прибыль по {totals.withCost} из {filled.length} — у остальных нет реальной цены</span>
+              )}
+            </div>
+            <div style={css("border-top:1px solid var(--border-2);padding-top:10px;display:flex;flex-direction:column;gap:2px")}>
+              <Line label="Оплачено" value={som(totals.paid)} color="var(--green)" />
+              <Line label="Долг после заказа" value={som(Math.max(0, totals.sale - totals.paid))} color={totals.sale - totals.paid > 0 ? "var(--danger)" : "var(--text-3)"} />
+            </div>
+            <ModalError text={error} />
+            <HButton disabled={busy} onClick={save} s={btnPrimary + ";height:46px;font-size:14.5px;width:100%"} hover="background:var(--accent-hover)">
+              {busy ? "Сохраняю…" : `Сохранить заказ${filled.length ? ` (${filled.length})` : ""}`}
+            </HButton>
+            <span style={css("font-size:11px;color:var(--text-4);text-align:center")}>
+              {customer ? `Клиент: ${customer.customer.name}` : newName || newPhone ? `Новый клиент: ${newName || newPhone}` : "Клиент не выбран"}
             </span>
-            <span style={css("font-size:14px;font-weight:700")}>Итог заказа</span>
           </div>
-          <div style={css("display:flex;flex-direction:column;gap:2px")}>
-            <Line label="Товаров" value={`${filled.length} · ${totals.qty} шт`} />
-            <Line label="Сумма (клиенту)" value={som(totals.sale)} bold />
-            <Line label="Выкуп" value={totals.withCost ? som(totals.cost) : "—"} />
-            <Line
-              label="Прибыль"
-              value={totals.withCost ? som(totals.profit) : "—"}
-              color={totals.profit < 0 ? "var(--danger)" : "var(--green)"}
-              bold
+          {saved && (
+            <SavedCard
+              saved={saved}
+              onOpen={() => nav(`/customers/${saved.id}`)}
+              onNext={() => {
+                setSaved(null);
+                setCustomer(null);
+                setNewName("");
+                setNewPhone("");
+              }}
+              onClose={() => setSaved(null)}
             />
-            {totals.withCost > 0 && totals.withCost < filled.length && (
-              <span style={css("font-size:11px;color:var(--text-4)")}>прибыль по {totals.withCost} из {filled.length} — у остальных нет реальной цены</span>
-            )}
-          </div>
-          <div style={css("border-top:1px solid var(--border-2);padding-top:10px;display:flex;flex-direction:column;gap:2px")}>
-            <Line label="Оплачено" value={som(totals.paid)} color="var(--green)" />
-            <Line label="Долг после заказа" value={som(Math.max(0, totals.sale - totals.paid))} color={totals.sale - totals.paid > 0 ? "var(--danger)" : "var(--text-3)"} />
-          </div>
-          <ModalError text={error} />
-          <HButton disabled={busy} onClick={save} s={btnPrimary + ";height:46px;font-size:14.5px;width:100%"} hover="background:var(--accent-hover)">
-            {busy ? "Сохраняю…" : `Сохранить заказ${filled.length ? ` (${filled.length})` : ""}`}
-          </HButton>
-          <span style={css("font-size:11px;color:var(--text-4);text-align:center")}>
-            {customer ? `Клиент: ${customer.customer.name}` : newName || newPhone ? `Новый клиент: ${newName || newPhone}` : "Клиент не выбран"}
-          </span>
+          )}
         </div>
       </div>
     </Page>
+  );
+}
+
+/** Карточка «Заказ сохранён»: кому, сколько, долг — и что делать дальше. */
+function SavedCard({ saved, onOpen, onNext, onClose }: { saved: Saved; onOpen: () => void; onNext: () => void; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // На телефоне колонка итога внизу страницы — докручиваем, чтобы карточку было видно.
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [saved]);
+  const debt = Math.max(0, saved.sum - saved.paid);
+  const btn = btnGhost + ";height:36px;padding:0 10px;font-size:12.5px;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0;white-space:nowrap";
+  return (
+    <div
+      ref={ref}
+      role="status"
+      style={mix(PANEL + ";padding:16px 18px;display:flex;flex-direction:column;gap:14px;animation:slideUp .22s ease", {
+        borderColor: "color-mix(in srgb, var(--green-dot) 45%, var(--border))",
+        background: "linear-gradient(180deg, var(--green-tint) 0%, var(--surface) 72%)",
+      })}
+    >
+      <div style={css("display:flex;align-items:center;gap:12px")}>
+        <span
+          style={mix("width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;background:var(--green-dot);color:#fff", {
+            boxShadow: "0 0 0 5px color-mix(in srgb, var(--green-dot) 18%, transparent)",
+          })}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20 6 9 17l-5-5" style={css("stroke-dasharray:24;stroke-dashoffset:24;animation:checkDraw .35s .12s ease forwards")} />
+          </svg>
+        </span>
+        <div style={css("flex:1;min-width:0")}>
+          <div style={css("display:flex;align-items:center;gap:7px;flex-wrap:wrap")}>
+            <span style={css("font-size:14.5px;font-weight:700;color:var(--text)")}>Заказ сохранён</span>
+            {saved.isNew && (
+              <span style={css("font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:10px;background:var(--green-tint);color:var(--green);border:1px solid color-mix(in srgb, var(--green-dot) 35%, transparent)")}>
+                новый клиент
+              </span>
+            )}
+          </div>
+          {/* Длинное имя обрезается, а число товаров и время видны всегда */}
+          <div style={css("display:flex;font-size:12px;color:var(--text-3);margin-top:3px;min-width:0;white-space:nowrap")}>
+            <b title={saved.name} style={css("font-weight:600;color:var(--text-2);min-width:0;overflow:hidden;text-overflow:ellipsis")}>
+              {saved.name}
+            </b>
+            <span style={css("flex:none")}>
+              &nbsp;· {saved.count} тов. · {saved.at}
+            </span>
+          </div>
+        </div>
+        <HButton
+          onClick={onClose}
+          aria-label="Скрыть"
+          title="Скрыть"
+          s="width:28px;height:28px;flex:none;align-self:flex-start;display:grid;place-items:center;padding:0;border:none;border-radius:7px;background:transparent;color:var(--text-4);cursor:pointer"
+          hover="background:var(--hover);color:var(--text)"
+        >
+          <Svg paths={I_CLOSE} size={14} sw={2} />
+        </HButton>
+      </div>
+
+      <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
+        <Stat label="Сумма" value={som(saved.sum)} />
+        {debt > 0 ? <Stat label="Долг" value={som(debt)} color="var(--danger)" /> : <Stat label="Оплачено" value={som(saved.paid)} color="var(--green)" />}
+      </div>
+
+      <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
+        <HButton onClick={onNext} s={btn} hover="border-color:var(--accent);color:var(--accent-strong)">
+          <span style={css("display:flex;flex:none")}>
+            <Svg paths={I_PLUS} size={14} sw={2.2} />
+          </span>
+          Другой клиент
+        </HButton>
+        <HButton onClick={onOpen} s={btn} hover="border-color:var(--accent);color:var(--accent-strong)">
+          Открыть клиента
+          <span style={css("display:flex;flex:none")}>
+            <Svg paths={I_ARROW_RIGHT} size={14} sw={2.2} />
+          </span>
+        </HButton>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={css("min-width:0;padding:8px 10px;border-radius:10px;background:var(--surface);border:1px solid var(--border-2)")}>
+      <div style={css("font-size:11px;color:var(--text-3)")}>{label}</div>
+      <div style={mix(MONO + ";font-size:14px;font-weight:700;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: color ?? "var(--text)" })}>
+        {value}
+      </div>
+    </div>
   );
 }
 

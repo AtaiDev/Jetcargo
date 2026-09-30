@@ -197,6 +197,7 @@ export const I_ALERT: PathDef[] = [
 // иначе одна и та же галочка жила в трёх файлах и расходилась по толщине линий.
 export const I_PLUS: PathDef[] = [["path", { d: "M5 12h14" }], ["path", { d: "M12 5v14" }]];
 export const I_MINUS: PathDef[] = [["path", { d: "M5 12h14" }]];
+export const I_ARROW_RIGHT: PathDef[] = [["path", { d: "M5 12h14" }], ["path", { d: "m13 6 6 6-6 6" }]];
 export const I_CLOSE: PathDef[] = [["path", { d: "M18 6 6 18" }], ["path", { d: "m6 6 12 12" }]];
 export const I_SEARCH: PathDef[] = [
   ["circle", { cx: 11, cy: 11, r: 8 }],
