@@ -583,6 +583,12 @@ export interface User {
   full_name: string;
   role: "admin" | "staff";
   is_active: boolean;
+  /** Только в списке сотрудников. */
+  created_at?: string;
+  last_active_at?: string | null;
+  actions?: number;
+  scans?: number;
+  issues?: number;
 }
 export const listUsers = () => api.get<User[]>("/users").then((r) => r.data);
 export const createUser = (body: { login: string; full_name?: string; role: string; password: string; is_active?: boolean }) =>
@@ -590,16 +596,35 @@ export const createUser = (body: { login: string; full_name?: string; role: stri
 export const updateUser = (id: number, body: { full_name?: string; role?: string; is_active?: boolean; password?: string }) =>
   api.patch<User>(`/users/${id}`, body).then((r) => r.data);
 
+/** Раздел журнала (считает сервер). */
+export type AuditCat = "item" | "receive" | "issue" | "payment" | "customer" | "batch" | "import" | "user" | "delete";
 export interface AuditEntry {
   id: number;
   user_id: number | null;
   user_login: string | null;
+  user_name: string | null;
   action: string;
   entity: string;
   entity_id: number | null;
   old_value: string | null;
   new_value: string | null;
   created_at: string;
+  cat: AuditCat;
+  /** Подставленные названия — чтобы запись читалась без номеров. */
+  item_name: string | null;
+  item_code: string | null;
+  item_customer_id: number | null;
+  item_customer: string | null;
+  customer_name: string | null;
+  batch_name: string | null;
+  target_login: string | null;
+  order_customer_id: number | null;
+  order_customer: string | null;
 }
-export const listAudit = (params?: { action?: string; limit?: number }) =>
-  api.get<AuditEntry[]>("/audit", { params }).then((r) => r.data);
+export interface AuditPage {
+  rows: AuditEntry[];
+  total: number;
+  counts: Partial<Record<AuditCat, number>>;
+}
+export const listAudit = (params: { cat?: AuditCat | ""; user_id?: number; since?: string; until?: string; q?: string; limit?: number; offset?: number }) =>
+  api.get<AuditPage>("/audit", { params }).then((r) => r.data);

@@ -6,6 +6,9 @@
 set -e
 mkdir -p /data
 
+# Регион B2 из адреса: https://s3.us-east-005.backblazeb2.com → us-east-005
+export B2_REGION="${B2_REGION:-$(echo "$B2_ENDPOINT" | sed -E 's#^https?://s3\.([^.]+)\..*#\1#')}"
+
 litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists /data/app.db
 
 if [ ! -f /data/app.db ]; then

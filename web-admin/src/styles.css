@@ -54,5 +54,7 @@
   .hide-sm{display:none!important}
   .scan-modes{flex:1;min-width:0}
   .scan-modes>button{flex:1;justify-content:center;padding:0 6px!important}
-  .scan-btn{max-width:none!important;flex-basis:100%!important}
 }
+/* Журнал действий: подсветка строки при наведении. */
+.audit-row{transition:background .12s}
+.audit-row:hover{background:var(--hover)}
