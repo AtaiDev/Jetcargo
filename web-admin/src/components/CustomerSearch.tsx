@@ -48,7 +48,7 @@ function markName(name: string, q: string): ReactNode {
   );
 }
 
-/** Подсветить в «+996 505 586 217» цифры запроса, даже если он набран без пробелов. */
+/** Подсветить в «+996 700 123 456» цифры запроса, даже если он набран без пробелов. */
 function markPhone(phone: string, q: string): ReactNode {
   const d = queryDigits(q);
   if (d.length < 3) return phone;
