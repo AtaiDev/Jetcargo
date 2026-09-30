@@ -406,7 +406,7 @@ function Shell() {
               path="/staff"
               element={isAdmin ? <Staff isDesktop={isDesktop} toast={showToast} /> : <Navigate to="/" replace />}
             />
-            <Route path="/audit" element={isAdmin ? <Audit /> : <Navigate to="/" replace />} />
+            <Route path="/audit" element={isAdmin ? <Audit isDesktop={isDesktop} /> : <Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           {openItemId !== null && <ItemModal id={openItemId} toast={showToast} onClose={() => setOpenItemId(null)} />}

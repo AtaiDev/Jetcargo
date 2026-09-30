@@ -263,11 +263,11 @@ export default function Receive({ toast }: { toast: Toast }) {
 
         {/* Поле ввода */}
         <div style={css("padding:16px;display:flex;flex-direction:column;gap:12px")}>
-          <div style={css("display:flex;gap:10px;flex-wrap:wrap")}>
-            <div
+          {/* Поле на всю ширину: код принимается по Enter (сканер отправляет его сам). */}
+          <div
               className="scan-field"
               onClick={() => inputRef.current?.focus()}
-              style={mix("flex:1 1 320px;min-width:0;display:flex;align-items:center;gap:12px;height:58px;padding:0 10px 0 16px;border-radius:12px;background:var(--surface);cursor:text;transition:border-color .15s", {
+              style={mix("width:100%;min-width:0;display:flex;align-items:center;gap:12px;height:58px;padding:0 10px 0 16px;border-radius:12px;background:var(--surface);cursor:text;transition:border-color .15s", {
                 border: `2px solid ${tone.border}`,
                 ["--scan-ring" as string]: tone.ring,
               })}
@@ -281,12 +281,17 @@ export default function Receive({ toast }: { toast: Toast }) {
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
                 onBlur={() => !open && setTimeout(() => document.activeElement === document.body && inputRef.current?.focus(), 200)}
-                placeholder={mode === "search" ? "Код товара для поиска…" : "Сканируйте код…"}
+                placeholder={mode === "search" ? "Найти по коду…" : "Сканируйте код…"}
                 autoComplete="off"
                 spellCheck={false}
                 style={css("flex:1;min-width:0;height:100%;border:none;outline:none;background:transparent;font-size:20px;letter-spacing:.04em;box-shadow:none;" + MONO)}
               />
-              {code ? (
+              {busy ? (
+                <span
+                  title="Обработка…"
+                  style={mix("width:18px;height:18px;border-radius:50%;border:2px solid var(--border);animation:spin .7s linear infinite;flex:none;margin-right:6px", { borderTopColor: tone.solid })}
+                />
+              ) : code ? (
                 <HButton
                   onClick={() => {
                     setCode("");
@@ -302,19 +307,6 @@ export default function Receive({ toast }: { toast: Toast }) {
                 <span style={css("flex:none;font-size:11px;color:var(--text-4);border:1px solid var(--border);border-bottom-width:2px;border-radius:6px;padding:2px 7px;" + MONO)}>Enter</span>
               )}
             </div>
-            <HButton
-              className="scan-btn"
-              disabled={busy}
-              onClick={submit}
-              s={mix("height:58px;min-width:150px;padding:0 26px;border:none;border-radius:12px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;flex:1 0 auto;max-width:220px", {
-                background: tone.solid,
-                opacity: busy ? 0.7 : 1,
-              })}
-              hover="filter:brightness(.94)"
-            >
-              {busy ? "…" : mode === "search" ? "Найти" : "Принять"}
-            </HButton>
-          </div>
 
           {/* Что происходит в этом режиме */}
           {mode === "batch" ? (

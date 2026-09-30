@@ -63,7 +63,16 @@ function password(v: unknown): string {
 
 authRouter.get("/users", requireAuth, (req, res) => {
   requireAdmin(req);
-  res.json(all(`SELECT ${USER_COLS} FROM users ORDER BY id`).map(toUser));
+  // Для страницы «Сотрудники»: когда создан, когда последний раз что-то делал и сколько.
+  const rows = all(
+    `SELECT u.id, u.login, u.full_name, u.role, u.is_active, u.created_at,
+            (SELECT MAX(a.created_at) FROM audit_log a WHERE a.user_id = u.id AND a.deleted_at IS NULL) AS last_active_at,
+            (SELECT COUNT(*) FROM audit_log a WHERE a.user_id = u.id AND a.deleted_at IS NULL) AS actions,
+            (SELECT COUNT(*) FROM scans s WHERE s.user_id = u.id AND s.deleted_at IS NULL) AS scans,
+            (SELECT COUNT(*) FROM issues i WHERE i.user_id = u.id AND i.deleted_at IS NULL) AS issues
+       FROM users u ORDER BY u.is_active DESC, u.role, u.id`
+  );
+  res.json(rows.map(toUser));
 });
 
 authRouter.post("/users", requireAuth, (req, res) => {

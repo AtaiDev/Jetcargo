@@ -322,6 +322,10 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE issues ADD COLUMN deleted_at TEXT;
   `,
+  // 9. Записи журнала можно скрыть (мягко: deleted_at) — например, очистить после тестов.
+  `
+  ALTER TABLE audit_log ADD COLUMN deleted_at TEXT;
+  `,
 ];
 
 function migrate() {
