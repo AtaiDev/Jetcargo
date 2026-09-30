@@ -72,3 +72,7 @@
 :root[data-theme="dark"]{color-scheme:dark}
 /* Галочка «Заказ сохранён» прорисовывается штрихом. */
 @keyframes checkDraw{to{stroke-dashoffset:0}}
+/* Поиск клиента (components/CustomerSearch.tsx): подсвечивается вся рамка и лупа. */
+.cs-field:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(62,99,221,.12)}
+.cs-field:focus-within .cs-ico{color:var(--accent)!important}
+.cs-field input:focus{box-shadow:none!important}

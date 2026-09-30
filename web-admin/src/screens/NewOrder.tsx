@@ -9,14 +9,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
-import { createOrder, getCustomer, getSettings, listCustomers, type CustomerCard, type CustomerRow } from "../api/domain";
+import { createOrder, getCustomer, getSettings, type CustomerCard } from "../api/domain";
 import { MONO, css, mix } from "../design/css";
 import { I_ARROW_RIGHT, I_CLOSE, I_PLUS, Icon, Svg } from "../design/icons";
 import { PANEL, Page } from "../design/table";
 import { HButton, ModalError, ST, btnGhost, btnPrimary, inputStyle } from "../design/ui";
 import { cased, capFirst, parseMoney, som, todayIso, upper } from "../lib/cargo";
-import { emit, useDebounced } from "../lib/events";
+import { emit } from "../lib/events";
 import PhoneInput from "../components/PhoneInput";
+import CustomerSearch from "../components/CustomerSearch";
 import DatePicker from "../components/DatePicker";
 
 type Toast = (kind: "success" | "error", text: string) => void;
@@ -53,16 +54,13 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   const [customer, setCustomer] = useState<CustomerCard | null>(null);
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
-  const [search, setSearch] = useState("");
-  const q = useDebounced(search.trim(), 200);
-  const [found, setFound] = useState<CustomerRow[]>([]);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const phoneBox = useRef<HTMLDivElement>(null);
 
   const pickCustomer = useCallback((id: number) => {
     getCustomer(id)
       .then((c) => {
         setCustomer(c);
-        setSearch("");
-        setFound([]);
       })
       .catch(() => setCustomer(null));
   }, []);
@@ -72,19 +70,12 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
     if (id) pickCustomer(id);
   }, [params, pickCustomer]);
 
-  useEffect(() => {
-    if (customer || q.length < 2) {
-      setFound([]);
-      return;
-    }
-    let alive = true;
-    listCustomers({ q, limit: 8 })
-      .then((r) => alive && setFound(r.rows))
-      .catch(() => alive && setFound([]));
-    return () => {
-      alive = false;
-    };
-  }, [q, customer]);
+  /** Поиск никого не нашёл — переносим имя или номер в форму нового клиента и ставим курсор в пустое поле. */
+  const prefillNew = (p: { name?: string; phone?: string }) => {
+    if (p.name !== undefined) setNewName(p.name);
+    if (p.phone !== undefined) setNewPhone(p.phone);
+    setTimeout(() => (p.phone ? nameRef.current : phoneBox.current?.querySelector("input"))?.focus(), 20);
+  };
 
   // --- Товары ---
   const [rows, setRows] = useState<Row[]>(() => [emptyRow(params.get("code") ?? "")]);
@@ -253,47 +244,17 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
               </div>
             ) : (
               <div style={css("display:flex;flex-direction:column;gap:12px")}>
-                <div style={css("position:relative")}>
-                  <input
-                    autoFocus
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Найти клиента: имя или телефон…"
-                    style={css(inputStyle + ";height:42px;font-size:14px")}
-                  />
-                  {found.length > 0 && (
-                    <div
-                      style={css(
-                        "position:absolute;top:46px;left:0;right:0;z-index:20;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.12);overflow:hidden"
-                      )}
-                    >
-                      {found.map((c) => (
-                        <button
-                          key={c.id}
-                          onClick={() => pickCustomer(c.id)}
-                          className="row-click"
-                          style={css(
-                            "display:grid;grid-template-columns:1fr auto auto;gap:12px;width:100%;align-items:center;padding:10px 14px;border:none;border-bottom:1px solid var(--hover);background:transparent;text-align:left;font-size:13px"
-                          )}
-                        >
-                          <span style={css("font-weight:600")}>{c.name}</span>
-                          <span style={css(MONO + ";color:var(--text-3);font-size:12px")}>{c.phone}</span>
-                          <span style={mix(MONO + ";font-size:11.5px", { color: c.debt > 0 ? "var(--danger)" : "var(--text-4)" })}>
-                            {c.debt > 0 ? `долг ${som(c.debt)}` : `${c.items} тов.`}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <CustomerSearch autoFocus onPick={pickCustomer} onCreate={prefillNew} />
                 <div style={css("display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--text-4)")}>
                   <span style={css("flex:1;height:1px;background:var(--border-2)")} />
                   или новый клиент
                   <span style={css("flex:1;height:1px;background:var(--border-2)")} />
                 </div>
                 <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:10px")}>
-                  <input value={newName} onChange={(e) => setNewName(cased(e, capFirst))} placeholder="Имя" style={css(inputStyle)} />
-                  <PhoneInput value={newPhone} onChange={setNewPhone} />
+                  <input ref={nameRef} value={newName} onChange={(e) => setNewName(cased(e, capFirst))} placeholder="Имя" style={css(inputStyle)} />
+                  <div ref={phoneBox}>
+                    <PhoneInput value={newPhone} onChange={setNewPhone} />
+                  </div>
                 </div>
                 <div style={css("font-size:11.5px;color:var(--text-4)")}>
                   Если клиент с таким телефоном уже есть — заказ добавится к нему, дубля не будет.
