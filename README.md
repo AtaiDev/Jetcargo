@@ -61,7 +61,7 @@
 
 ```bash
 cp server/.env.example server/.env   # JWT_SECRET, ADMIN_LOGIN, ADMIN_PASSWORD
-npm run dev                          # backend и админка одной командой
+npm run dev                          # backend и админка на тестовых данных
 ```
 
 <p align="center">Панель откроется на <code>localhost:5173/admin</code> · нужен Node.js 24<br>

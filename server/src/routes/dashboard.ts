@@ -6,13 +6,18 @@
  *  - оплачено = сумма неотменённых оплат (не больше продажи), долг = продажа − оплачено;
  *  - выкуп (себестоимость) = «Реальная цена» — за сколько товар куплен на маркетплейсе;
  *    прибыль = Сумма − Реальная цена, только по товарам, где реальная цена указана —
- *    поэтому рядом всегда отдаём with_cost (сколько товаров учтено).
+ *    поэтому рядом всегда отдаём with_cost (сколько товаров учтено);
+ *  - партия: вес клиентам − выкуп веса − доставка относятся к дню, когда пришёл её последний товар
+ *    (идущая партия — к сегодняшним приходам; партия без товаров — к дню создания);
+ *    общая прибыль = наценка на товары + (вес клиентам − выкуп веса − доставка).
+ *    Наценку партии отдельно не прибавляем — это та же наценка её товаров.
  */
 import { Router } from "express";
 
 import { all, get, run } from "../db";
 import { items, openDebt, openDebtSql, requireAdmin, totals, type ItemView } from "../domain";
 import { addDays, conflict, dayList, localDay, notFound, parseDate, today } from "../util";
+import { batchesWithCalc } from "./batches";
 
 export const dashboardRouter = Router();
 
@@ -57,7 +62,46 @@ const s = (measure: string, color: string | null, extra: Record<string, unknown>
 
 const STATUS_LABEL: Record<string, string> = { ordered: "Заказан", in_stock: "На складе", issued: "Выдан" };
 
-function widget(key: string, list: ItemView[], from: string, to: string) {
+type BatchCalc = ReturnType<typeof batchesWithCalc>[number];
+
+/** День партии: приход последнего товара, а пока товаров нет — день создания. */
+const batchDay = (b: BatchCalc) => localDay(b.last_arrival ?? b.batch.created_at);
+
+/** Деньги партий периода (сом): вес клиентам, выкуп веса, доставка. */
+function batchMoney(bs: BatchCalc[], from: string, to: string) {
+  const inPeriod = bs.filter((b) => {
+    const d = batchDay(b);
+    return d >= from && d <= to;
+  });
+  const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => inPeriod.reduce((a, b) => a + b.calc[k], 0);
+  return { count: inPeriod.length, client: sumOf("client_som"), buy: sumOf("buy_som"), delivery: sumOf("delivery_som") };
+}
+
+/** Общая прибыль за период: наценка на товары (по дате заказа) + вес − выкуп веса − доставка (по партиям периода). */
+function profitFor(list: ItemView[], bs: BatchCalc[], from: string, to: string) {
+  const t = totals(inRange(list, from, to));
+  const b = batchMoney(bs, from, to);
+  return {
+    goods: Math.round(t.profit),
+    goods_items: t.with_cost,
+    items: t.items,
+    batches: b.count,
+    client: b.client,
+    buy: b.buy,
+    delivery: b.delivery,
+    total: Math.round(t.profit + b.client - b.buy - b.delivery),
+  };
+}
+
+/** Поступило денег за период — по дате оплаты, без отменённых. */
+function cashIn(from: string, to: string) {
+  return all<{ amount: number; paid_at: string }>(
+    `SELECT p.amount, p.paid_at FROM payments p
+       JOIN v_items v ON v.id = p.order_item_id WHERE p.deleted_at IS NULL`
+  ).filter((p) => localDay(p.paid_at) >= from && localDay(p.paid_at) <= to);
+}
+
+function widget(key: string, list: ItemView[], from: string, to: string, bs: BatchCalc[]) {
   const inPeriod = inRange(list, from, to);
   const days = dayList(from, to);
   switch (key) {
@@ -94,14 +138,20 @@ function widget(key: string, list: ItemView[], from: string, to: string) {
       };
     }
     case "revenue_by_month": {
-      const rows = byMonth(list, lastMonths(12, to)).filter((r, i, a) => r.items > 0 || a.slice(0, i).some((x) => x.items > 0));
+      // Прибыль месяца — общая, как в блоке «Прибыль»: наценка на товары + партии месяца.
+      const rows = byMonth(list, lastMonths(12, to))
+        .map((r) => {
+          const b = batchMoney(bs, `${r.month}-01`, `${r.month}-31`);
+          return { ...r, profit: Math.round(r.profit + b.client - b.buy - b.delivery) };
+        })
+        .filter((r, i, a) => r.items > 0 || a.slice(0, i).some((x) => x.items > 0));
       return {
         data: {
           dataset: "items",
           dimensions: [{ key: "month", label: "Месяц", kind: "category" }],
           measures: [
             { key: "sale", label: "Сумма заказов", format: "money" },
-            { key: "profit", label: "Прибыль (где указана реальная цена)", format: "money" },
+            { key: "profit", label: "Прибыль (наценка + партии)", format: "money" },
           ],
           rows,
         },
@@ -194,9 +244,16 @@ dashboardRouter.get("/dashboard", (req, res) => {
   )!;
   const withDebt = new Set(list.filter((i) => openDebt(i) > 0).map((i) => i.customer_id)).size;
 
+  // Прибыль: за период и за такой же период перед ним (для сравнения).
+  const bs = batchesWithCalc(list);
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+  const prevFrom = addDays(from, -days);
+  const prevTo = addDays(from, -1);
+  const prev = profitFor(list, bs, prevFrom, prevTo);
+
   const widgets = all<WidgetRow>("SELECT * FROM cargo_widgets WHERE is_visible = 1 ORDER BY position, id").map((w) => {
     try {
-      return { id: w.id, key: w.key, title: w.title, chart: w.chart, span: w.span, is_builtin: !!w.is_builtin, error: null, ...widget(w.key, list, from, to) };
+      return { id: w.id, key: w.key, title: w.title, chart: w.chart, span: w.span, is_builtin: !!w.is_builtin, error: null, ...widget(w.key, list, from, to, bs) };
     } catch (e) {
       return { id: w.id, key: w.key, title: w.title, chart: w.chart, span: w.span, is_builtin: !!w.is_builtin, series: [], data: null, error: String(e) };
     }
@@ -204,6 +261,55 @@ dashboardRouter.get("/dashboard", (req, res) => {
 
   res.json({
     period: { date_from: from, date_to: to },
+    profit: {
+      ...profitFor(list, bs, from, to),
+      // Сравнивать не с чем, если в прошлом периоде не было ни товаров, ни партий.
+      previous: prev.items || prev.batches ? prev.total : null,
+    },
+    // Общая прибыль за всё время — все товары и все партии, без фильтра периода.
+    profit_all: (() => {
+      const t = totals(list);
+      const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => bs.reduce((a, b) => a + b.calc[k], 0);
+      const client = sumOf("client_som");
+      const buy = sumOf("buy_som");
+      const delivery = sumOf("delivery_som");
+      return {
+        goods: Math.round(t.profit),
+        goods_items: t.with_cost,
+        items: t.items,
+        batches: bs.length,
+        client,
+        buy,
+        delivery,
+        total: Math.round(t.profit + client - buy - delivery),
+        since: list.reduce<string | null>((a, i) => (a === null || i.order_date < a ? i.order_date : a), null),
+      };
+    })(),
+    cash_in: cashIn(from, to).reduce((a, p) => a + p.amount, 0),
+    // Партии за всё время: прибыль каждой и всех вместе.
+    batches: {
+      count: bs.length,
+      open: bs.filter((b) => b.batch.status === "open").length,
+      profit: bs.reduce((a, b) => a + b.calc.profit_som, 0),
+      income: bs.reduce((a, b) => a + b.calc.income_som, 0),
+      expenses: bs.reduce((a, b) => a + b.calc.expenses_som, 0),
+      rows: bs.slice(0, 8).map(({ batch: b, calc: c, last_arrival }) => ({
+        id: b.id,
+        name: b.name,
+        status: b.status,
+        created_at: b.created_at,
+        last_arrival,
+        items: c.items,
+        customers: c.customers,
+        client: c.client_som,
+        markup: c.markup_som,
+        buy: c.buy_som,
+        delivery: c.delivery_som,
+        income: c.income_som,
+        expenses: c.expenses_som,
+        profit: c.profit_som,
+      })),
+    },
     finance: {
       today: sum(inRange(list, t, t)),
       week: sum(inRange(list, addDays(t, -6), t)),
@@ -254,10 +360,7 @@ dashboardRouter.get("/finance", (req, res) => {
   const { from, to } = period(req.query);
   const list = items();
   const pt = totals(inRange(list, from, to));
-  const cash = all<{ amount: number; paid_at: string }>(
-    `SELECT p.amount, p.paid_at FROM payments p
-       JOIN v_items v ON v.id = p.order_item_id WHERE p.deleted_at IS NULL`
-  ).filter((p) => localDay(p.paid_at) >= from && localDay(p.paid_at) <= to);
+  const cash = cashIn(from, to);
 
   const debtors = all(
     `SELECT customer_id AS id, customer_name AS name, customer_phone AS phone,

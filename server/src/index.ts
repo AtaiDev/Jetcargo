@@ -12,7 +12,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import multer from "multer";
 
 import { CORS_ORIGINS, DB_FILE, HOST, IS_PUBLIC, PORT, PUBLIC_HOSTS } from "./config";
-import { setup } from "./db";
+import { isTestDb, setup } from "./db";
 import { requireAuth } from "./domain";
 import { authRouter } from "./routes/auth";
 import { batchesRouter } from "./routes/batches";
@@ -70,6 +70,10 @@ app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 
 const api = express.Router();
 api.use(authRouter); // вход/refresh — без токена, остальное внутри защищено само
+// Какая это база — панель показывает полосу «Тестовая среда» ещё до входа.
+api.get("/env", (_req, res) => {
+  res.json({ env: isTestDb() ? "test" : "prod" });
+});
 api.use(requireAuth);
 api.use(dashboardRouter, customersRouter, itemsRouter, warehouseRouter, importsRouter, batchesRouter, ordersRouter, miscRouter);
 app.use("/api/v1", api);
@@ -98,4 +102,5 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`API: http://${HOST}:${PORT}/api/v1  (база: ${DB_FILE})`);
+  console.log(isTestDb() ? "Среда: ТЕСТОВАЯ — вымышленные данные, рабочая база не затрагивается" : "Среда: рабочая база");
 });

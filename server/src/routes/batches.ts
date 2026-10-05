@@ -72,6 +72,22 @@ function batchOr404(id: number): BatchRow {
 
 const batchItems = (id: number) => items("batch_id = ?", [id], "ORDER BY arrived_at DESC, id DESC");
 
+/**
+ * Все партии с расчётом, новые сверху. Товары — из уже загруженного списка (для обзора).
+ * last_arrival — когда пришёл последний товар партии (null — товаров ещё нет).
+ */
+export function batchesWithCalc(list: ItemView[]) {
+  return all<BatchRow>(`SELECT ${COLS} FROM batches WHERE deleted_at IS NULL ORDER BY id DESC`).map((b) => {
+    const mine = list.filter((i) => i.batch_id === b.id);
+    const arrivals = mine.map((i) => i.arrived_at).filter((d): d is string => !!d);
+    return {
+      batch: b,
+      calc: calc(b, mine),
+      last_arrival: arrivals.length ? arrivals.reduce((a, d) => (d > a ? d : a)) : null,
+    };
+  });
+}
+
 batchesRouter.get("/batches", (_req, res) => {
   const rows = all<BatchRow>(`SELECT ${COLS} FROM batches WHERE deleted_at IS NULL ORDER BY id DESC`);
   res.json(rows.map((b) => ({ ...b, calc: calc(b, batchItems(b.id)) })));

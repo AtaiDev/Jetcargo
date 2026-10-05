@@ -10,10 +10,40 @@
 import fs from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-import { ADMIN_FULL_NAME, ADMIN_LOGIN, ADMIN_PASSWORD, DATA_DIR, DB_FILE } from "./config";
+import { ADMIN_FULL_NAME, ADMIN_LOGIN, ADMIN_PASSWORD, DATA_DIR, DB_FILE, IS_PROD } from "./config";
 import { hashPassword } from "./security";
 import { normText } from "./util";
 
+/**
+ * Локальный запуск — только тестовая база. Проверяем до того, как открыть файл на запись:
+ * базу с клиентами без метки «тест» (например, копию рабочей) не трогаем вовсе — ни миграций, ни WAL.
+ * Пустую базу setup() пометит тестовой сам.
+ */
+function guardLocal() {
+  if (IS_PROD || !fs.existsSync(DB_FILE)) return;
+  const ro = new DatabaseSync(DB_FILE, { readOnly: true });
+  let test = false;
+  let rows = 0;
+  try {
+    test = (ro.prepare("SELECT value FROM app_settings WHERE key = 'environment'").get()?.value ?? "") === "test";
+  } catch {
+    // таблицы ещё нет — пустая база
+  }
+  try {
+    rows = Number(ro.prepare("SELECT COUNT(*) AS n FROM customers").get()?.n ?? 0);
+  } catch {
+    // таблицы ещё нет — пустая база
+  }
+  ro.close();
+  if (!test && rows > 0) {
+    throw new Error(
+      `${DB_FILE} — не тестовая база (клиентов: ${rows}). Локально сервер работает только с тестовыми данными.\n` +
+        "Запускайте из корня проекта: npm run dev (тестовая база создастся сама), пересоздать её — npm run test-data."
+    );
+  }
+}
+
+guardLocal();
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export const db = new DatabaseSync(DB_FILE);
@@ -360,6 +390,9 @@ export function setup(): void {
     );
   }
   run("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('cny_rate', '13')");
+  // Локальная база — всегда тестовая (guardLocal уже не пустил сюда базу с чужими данными).
+  // Метку видит панель (полоса «Тестовая среда»), а seed-b2.mjs не пустит такую базу в облако.
+  if (!IS_PROD) run("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('environment', 'test')");
 
   const users = get<{ n: number }>("SELECT COUNT(*) AS n FROM users")!.n;
   if (users === 0) {
@@ -372,4 +405,9 @@ export function setup(): void {
     );
     console.log(`Создан администратор «${ADMIN_LOGIN}»`);
   }
+}
+
+/** Тестовая ли база (метку ставит setup() при локальном запуске; через API её не поменять). */
+export function isTestDb(): boolean {
+  return get<{ value: string }>("SELECT value FROM app_settings WHERE key = 'environment'")?.value === "test";
 }

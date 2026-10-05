@@ -1,126 +1,67 @@
 /**
  * Сводка «Обзора» по полочкам:
- *  1. Деньги за период — сумма заказов (с полосой «оплачено / долг»), выкуп, прибыль, долги.
- *  2. Товары по этапам сейчас — Заказано → На складе → Выдано: сколько, сумма, выкуп, прибыль, оплата.
- *  3. Клиенты.
- * Карточки кликабельны — ведут в нужный отфильтрованный список.
+ *  0. Общая прибыль за всё время — все товары и все партии, старые и новые, без фильтра периода.
+ *  1. Прибыль за период — итог и из чего он сложился (водопад): наценка на товары + вес клиентам
+ *     − выкуп веса − доставка; рядом — деньги за период (заказы, оплаты, поступления, долги).
+ *  2. Прибыль по партиям — каждая партия и все вместе (за всё время).
+ *  3. Товары по этапам сейчас — Заказано → На складе → Выдано.
+ *  4. Клиенты.
+ * Карточки кликабельны — ведут в нужный раздел.
  */
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
-import type { Dashboard, Totals } from "../../api/domain";
+import type { BatchProfitRow, Dashboard, ProfitSummary, Totals } from "../../api/domain";
+import { shortNum } from "../../design/charts";
+import CountUp from "../../design/CountUp";
 import { MONO, css, mix } from "../../design/css";
+import { Svg } from "../../design/icons";
 import { HButton, ST } from "../../design/ui";
 import { som } from "../../lib/cargo";
 
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
+/** «+22 700 с» / «−9 410 с»: знак всегда виден — так читается вклад в прибыль. */
+const signed = (n: number) => (n < 0 ? `−${som(Math.abs(n))}` : `+${som(n)}`);
+
+const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:14px";
+const CAPTION = "font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)";
+
 function Heading({ children, hint }: { children: ReactNode; hint?: string }) {
   return (
     <div style={css("display:flex;align-items:baseline;gap:10px;margin:0 2px 10px")}>
-      <span style={css("font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)")}>{children}</span>
+      <span style={css(CAPTION)}>{children}</span>
       {hint && <span style={css("font-size:11.5px;color:var(--text-4)")}>{hint}</span>}
     </div>
   );
 }
 
-/** Строка «подпись …… значение» внутри карточки. */
-function Line({ label, value, color, bold }: { label: string; value: string; color?: string; bold?: boolean }) {
-  return (
-    <div style={css("display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12.5px;padding:3px 0")}>
-      <span style={css("color:var(--text-3)")}>{label}</span>
-      <span style={mix(MONO + ";white-space:nowrap", { color: color ?? "var(--text)", fontWeight: bold ? 600 : 500 })}>{value}</span>
-    </div>
-  );
-}
-
-const card =
-  "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease";
-
 export default function Summary({ board, isDesktop, periodLabel }: { board: Dashboard; isDesktop: boolean; periodLabel: string }) {
   const nav = useNavigate();
-  const f = board.finance;
-  const o = board.orders;
   const c = board.customers;
   const st = board.stages;
-  const markup = f.with_cost && f.cost > 0 ? pct(f.profit, f.cost) : null;
-  const costNote = f.items_period ? (f.with_cost < f.items_period ? `по ${f.with_cost} из ${f.items_period} товаров` : null) : null;
 
   return (
     <div style={css("display:flex;flex-direction:column;gap:22px")}>
-      {/* 1. Деньги */}
-      <section>
-        <Heading hint={periodLabel}>Деньги за период</Heading>
-        <MoneyPanel
-          isDesktop={isDesktop}
-          columns={[
-            {
-              label: "Сумма заказов",
-              dot: "var(--accent)",
-              value: som(f.period),
-              note: `${o.items_period} ${plural(o.items_period, "товар", "товара", "товаров")} · ${o.orders_period} ${plural(o.orders_period, "заказ", "заказа", "заказов")}`,
-              bar: { share: pct(f.paid, f.period), color: "var(--green-dot)", track: "var(--danger-tint)" },
-              legend: (
-                <>
-                  <span style={css("color:var(--green)")}>
-                    оплачено <b style={css(MONO)}>{som(f.paid)}</b>
-                  </span>
-                  <span style={css("color:var(--danger)")}>
-                    долг <b style={css(MONO)}>{som(f.unpaid)}</b>
-                  </span>
-                </>
-              ),
-            },
-            {
-              label: "Выкуп",
-              dot: "var(--text-4)",
-              value: f.with_cost ? som(f.cost) : "—",
-              note: costNote ?? "потрачено на маркетплейсе",
-              bar: { share: pct(f.cost, f.period), color: "var(--text-4)" },
-              legend: <span style={css("color:var(--text-3)")}>{pct(f.cost, f.period)}% от суммы заказов</span>,
-            },
-            {
-              label: "Прибыль",
-              dot: "var(--green-dot)",
-              value: f.with_cost ? som(f.profit) : "—",
-              valueColor: f.profit < 0 ? "var(--danger)" : "var(--green)",
-              badge: markup !== null ? `+${markup}% наценка` : undefined,
-              note: costNote ?? "сумма заказов − выкуп",
-              bar: { share: pct(Math.max(0, f.profit), f.period), color: "var(--green-dot)" },
-              legend: <span style={css("color:var(--text-3)")}>{pct(Math.max(0, f.profit), f.period)}% от суммы заказов</span>,
-            },
-            {
-              label: "Долги клиентов",
-              dot: "var(--danger-dot)",
-              value: som(f.debts_total),
-              valueColor: f.debts_total > 0 ? "var(--danger)" : "var(--text)",
-              note: f.debts_total > 0 ? `${c.with_debt} ${plural(c.with_debt, "клиент", "клиента", "клиентов")} · невыданные товары` : "долгов нет",
-              bar: { share: pct(f.debts_total, f.debts_total + f.paid), color: "var(--danger-dot)" },
-              legend: (
-                <HButton
-                  onClick={() => nav("/finance")}
-                  s="border:none;background:transparent;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer"
-                  hover="color:var(--accent-hover)"
-                >
-                  к должникам →
-                </HButton>
-              ),
-            },
-          ]}
-        />
-      </section>
+      {/* Блоки прибыли и партий — только если сервер их уже отдаёт (во время обновления
+          прода фронтенд может оказаться новее сервера на пару минут). */}
+      {/* 0. Общая прибыль за всё время */}
+      {board.profit_all && <AllTimeCard a={board.profit_all} isDesktop={isDesktop} />}
 
-      {/* 2. Товары по этапам */}
+      {/* 1. Прибыль и деньги за период */}
+      <div style={{ display: "grid", gridTemplateColumns: isDesktop && board.profit ? "minmax(0,1.65fr) minmax(0,1fr)" : "minmax(0,1fr)", gap: 14 }}>
+        {board.profit && <ProfitCard p={board.profit} periodLabel={periodLabel} isDesktop={isDesktop} />}
+        <MoneyCard board={board} />
+      </div>
+
+      {/* 2. Партии */}
+      {board.batches && <BatchesCard b={board.batches} isDesktop={isDesktop} />}
+
+      {/* 3. Товары по этапам */}
       <section>
         <Heading hint="сейчас, за всё время">Товары по этапам</Heading>
         <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 28px 1fr 28px 1fr" : "1fr", gap: isDesktop ? 0 : 12, alignItems: "stretch" }}>
-          <Stage
-            title="Заказано"
-            subtitle="ждём на склад"
-            color={ST.ordered.dot}
-            t={st.ordered}
-            onClick={() => nav("/orders?status=ordered")}
-          />
+          <Stage title="Заказано" subtitle="ждём на склад" color={ST.ordered.dot} t={st.ordered} onClick={() => nav("/orders?status=ordered")} />
           {isDesktop && <Arrow />}
           <Stage
             title="На складе"
@@ -149,19 +90,40 @@ export default function Summary({ board, isDesktop, periodLabel }: { board: Dash
         </div>
       </section>
 
-      {/* 3. Клиенты */}
+      {/* 4. Клиенты */}
       <section>
         <Heading>Клиенты</Heading>
-        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "repeat(3, 1fr)" : "1fr", gap: 12 }}>
-          <BigFigure label="Всего клиентов" value={String(c.total)} note="в базе" onClick={() => nav("/customers")} />
-          <BigFigure
-            label="С долгом"
-            value={String(c.with_debt)}
-            color={c.with_debt ? "var(--danger)" : undefined}
-            note={`долг ${som(c.debt)}`}
+        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "repeat(3, minmax(0,1fr))" : "minmax(0,1fr)", gap: 12 }}>
+          <ClientTile
+            icon={I_USERS}
+            tone="accent"
+            label="Всего клиентов"
+            value={c.total}
+            badge={c.new_period ? `+${c.new_period} за период` : undefined}
+            bar={pct(c.total - c.with_debt, c.total)}
+            note={`без долга ${c.total - c.with_debt} · с долгом ${c.with_debt}`}
             onClick={() => nav("/customers")}
           />
-          <BigFigure label="Добавлено за период" value={String(c.new_period)} note="новые карточки клиентов в системе" />
+          <ClientTile
+            icon={I_WALLET}
+            tone="danger"
+            label="С долгом"
+            value={c.with_debt}
+            badge={c.total ? `${pct(c.with_debt, c.total)}% клиентов` : undefined}
+            bar={pct(c.with_debt, c.total)}
+            note={c.with_debt ? `долг ${som(c.debt)} · в среднем ${som(Math.round(c.debt / c.with_debt))}` : "долгов нет"}
+            onClick={() => nav("/finance")}
+          />
+          <ClientTile
+            icon={I_USER_PLUS}
+            tone="green"
+            label="Новых за период"
+            value={c.new_period}
+            badge={c.total ? `${pct(c.new_period, c.total)}% базы` : undefined}
+            bar={pct(c.new_period, c.total)}
+            note="новые карточки клиентов за выбранные даты"
+            onClick={() => nav("/customers")}
+          />
         </div>
       </section>
     </div>
@@ -176,57 +138,209 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-interface MoneyColumn {
-  label: string;
-  dot: string;
-  value: string;
-  valueColor?: string;
-  badge?: string;
-  note: string;
-  bar: { share: number; color: string; track?: string };
-  legend: ReactNode;
+// --- 0. Общая прибыль за всё время ---------------------------------------------------------
+
+function AllTimeCard({ a, isDesktop }: { a: Dashboard["profit_all"]; isDesktop: boolean }) {
+  const neg = a.total < 0;
+  const since = a.since ? `${a.since.slice(8, 10)}.${a.since.slice(5, 7)}.${a.since.slice(0, 4)}` : null;
+  const parts = [
+    { label: "Наценка на товары", value: a.goods },
+    { label: "Вес клиентам", value: a.client },
+    { label: "Выкуп веса", value: -a.buy },
+    { label: "Доставка", value: -a.delivery },
+  ];
+
+  return (
+    <section
+      style={{
+        ...css("border:1px solid var(--accent-border);border-radius:16px;padding:20px 22px;display:grid;gap:18px;align-items:center"),
+        background: "linear-gradient(115deg,var(--accent-tint) 0%,var(--surface) 52%,var(--violet-tint) 100%)",
+        gridTemplateColumns: isDesktop ? "minmax(0,1fr) minmax(0,1.55fr)" : "minmax(0,1fr)",
+      }}
+    >
+      <div style={css("min-width:0")}>
+        <div style={css(CAPTION + ";color:var(--accent-strong)")}>Общая прибыль за всё время</div>
+        <div
+          style={mix(MONO + ";font-size:40px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin-top:6px;white-space:nowrap", {
+            color: neg ? "var(--danger)" : "var(--green)",
+          })}
+        >
+          <CountUp text={som(a.total)} duration={1200} />
+        </div>
+        <div style={css("font-size:12px;color:var(--text-3);margin-top:4px;line-height:1.45")}>
+          {since ? `с первого заказа ${since} по сегодня · ` : ""}
+          {a.items} {plural(a.items, "товар", "товара", "товаров")} · {a.batches} {plural(a.batches, "партия", "партии", "партий")}
+          <br />
+          новые заказы и партии добавляются сюда сразу
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "repeat(4,minmax(0,1fr))" : "repeat(2,minmax(0,1fr))", gap: 8 }}>
+        {parts.map((p) => (
+          <div key={p.label} style={css("background:color-mix(in srgb,var(--surface) 82%,transparent);border:1px solid var(--border-2);border-radius:12px;padding:11px 13px;min-width:0")}>
+            <div style={css("font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{p.label}</div>
+            <div
+              style={mix(MONO + ";font-size:16px;font-weight:700;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", {
+                color: p.value === 0 ? "var(--text-4)" : p.value > 0 ? "var(--green)" : "var(--danger)",
+              })}
+            >
+              {p.value < 0 ? "−" : p.value > 0 ? "+" : ""}
+              <CountUp text={som(Math.abs(p.value))} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// --- 1. Прибыль за период ---------------------------------------------------------------
+
+function ProfitCard({ p, periodLabel, isDesktop }: { p: ProfitSummary; periodLabel: string; isDesktop: boolean }) {
+  const neg = p.total < 0;
+  const notes = [
+    p.goods_items < p.items ? `наценка — по ${p.goods_items} из ${p.items} товаров с реальной ценой` : null,
+    p.batches
+      ? `партий в периоде: ${p.batches} (партия считается по дню прихода её последнего товара)`
+      : "в периоде не приходили товары ни одной партии — вес, выкуп и доставка не учтены",
+  ].filter(Boolean);
+
+  return (
+    <section style={css(CARD + ";padding:18px 20px 16px;display:flex;flex-direction:column;min-width:0")}>
+      <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
+        <span style={css(CAPTION)}>Прибыль за период</span>
+        <span style={css("font-size:11.5px;color:var(--text-4)")}>{periodLabel}</span>
+        <span style={css("margin-left:auto")}>
+          <Delta now={p.total} before={p.previous} />
+        </span>
+      </div>
+      <div
+        style={mix(MONO + ";font-size:36px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin-top:8px;white-space:nowrap", {
+          color: neg ? "var(--danger)" : "var(--green)",
+        })}
+      >
+        <CountUp text={som(p.total)} />
+      </div>
+      <div style={css("font-size:12px;color:var(--text-3);margin-top:2px")}>наценка на товары + вес клиентам − выкуп веса − доставка</div>
+
+      <Waterfall
+        compact={!isDesktop}
+        steps={[
+          { label: "Наценка", hint: "на товары", value: p.goods },
+          { label: "Вес", hint: "клиентам", value: p.client },
+          { label: "Выкуп", hint: "веса", value: -p.buy },
+          { label: "Доставка", hint: "водителю", value: -p.delivery },
+        ]}
+        total={p.total}
+      />
+
+      <div style={css("font-size:11.5px;color:var(--text-4);margin-top:10px;line-height:1.45")}>{notes.join(" · ")}</div>
+    </section>
+  );
+}
+
+/** Сравнение с таким же периодом перед выбранным: процент — если там была прибыль, иначе разница в сомах. */
+function Delta({ now, before }: { now: number; before: number | null }) {
+  if (before === null) return null;
+  const diff = now - before;
+  const up = diff >= 0;
+  const text = before > 0 ? `${Math.abs(Math.round((diff / before) * 100))}%` : som(Math.abs(diff));
+  return (
+    <span
+      title={`Прошлый период: ${som(before)}`}
+      style={mix("display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:999px;white-space:nowrap", {
+        background: up ? "var(--green-tint)" : "var(--danger-tint)",
+        color: up ? "var(--green)" : "var(--danger)",
+      })}
+    >
+      {up ? "↑" : "↓"} {text}
+      <span style={css("font-weight:500;opacity:.8")}>к прошлому периоду</span>
+    </span>
+  );
 }
 
 /**
- * Деньги одной панелью: колонки одинаковой структуры (подпись → число → пояснение → полоска),
- * разделены тонкими линиями — одинаковая высота, без пустых мест.
+ * Водопад: каждый столбик начинается там, где закончился предыдущий, — видно, что прибавило
+ * прибыль, а что съело. Последний столбик — итог от нуля.
  */
-function MoneyPanel({ columns, isDesktop }: { columns: MoneyColumn[]; isDesktop: boolean }) {
+function Waterfall({ steps, total, compact }: { steps: { label: string; hint: string; value: number }[]; total: number; compact: boolean }) {
+  const H = compact ? 130 : 156;
+  let cum = 0;
+  const bars = steps.map((s) => {
+    const from = cum;
+    cum += s.value;
+    return { ...s, from, to: cum, kind: s.value >= 0 ? ("plus" as const) : ("minus" as const) };
+  });
+  const all = [...bars, { label: "Прибыль", hint: "итого", value: total, from: 0, to: total, kind: "total" as const }];
+  const lo = Math.min(0, ...all.flatMap((b) => [b.from, b.to]));
+  let hi = Math.max(0, ...all.flatMap((b) => [b.from, b.to]));
+  if (hi === lo) hi = lo + 1;
+  const y = (v: number) => ((hi - v) / (hi - lo)) * H;
+  const fmt = (n: number) => (compact ? `${n < 0 ? "−" : "+"}${shortNum(Math.abs(n))}` : signed(n));
+
+  const FILL = {
+    plus: "linear-gradient(180deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 62%,transparent))",
+    minus: "linear-gradient(180deg,color-mix(in srgb,var(--danger-dot) 62%,transparent),var(--danger-dot))",
+    total: total < 0 ? "linear-gradient(180deg,var(--danger-dot),var(--danger))" : "linear-gradient(180deg,var(--accent),var(--violet-dot))",
+  };
+
   return (
-    <div style={css("background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden")}>
-      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1.25fr 1fr 1fr 1fr" : "1fr" }}>
-        {columns.map((col, i) => (
-          <div
-            key={col.label}
-            style={mix(
-              "padding:16px 20px;display:flex;flex-direction:column;gap:6px;min-width:0",
-              i > 0 ? (isDesktop ? "border-left:1px solid var(--border-2)" : "border-top:1px solid var(--border-2)") : ""
-            )}
-          >
-            <div style={css("display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text-3);height:20px")}>
-              <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: col.dot })} />
-              {col.label}
-              {col.badge && (
-                <span style={css("margin-left:auto;font-size:10.5px;font-weight:600;color:var(--green);background:var(--green-tint);padding:2px 7px;border-radius:10px;white-space:nowrap")}>
-                  {col.badge}
-                </span>
+    <div style={css("margin-top:16px")}>
+      <div style={{ position: "relative", display: "grid", gridTemplateColumns: `repeat(${all.length}, minmax(0,1fr))`, paddingTop: 22 }}>
+        {/* нулевая линия */}
+        <div style={{ position: "absolute", left: 0, right: 0, top: 22 + y(0), borderTop: "1px solid var(--border)" }} />
+        {all.map((b, i) => {
+          const top = y(Math.max(b.from, b.to));
+          const h = Math.max(2, Math.abs(b.to - b.from) * (H / (hi - lo)));
+          const zero = b.value === 0;
+          return (
+            <div key={b.label} style={{ position: "relative", height: H }}>
+              <div
+                style={mix(MONO + ";position:absolute;left:0;right:0;text-align:center;font-weight:700;white-space:nowrap", {
+                  top: top - 19,
+                  fontSize: compact ? 10.5 : 12,
+                  color: zero ? "var(--text-5)" : b.kind === "minus" ? "var(--danger)" : b.kind === "plus" ? "var(--green)" : total < 0 ? "var(--danger)" : "var(--accent-strong)",
+                })}
+              >
+                {b.kind === "total" ? compact ? fmt(b.value).replace("+", "") : <CountUp text={som(b.value)} /> : zero ? "0" : fmt(b.value)}
+              </div>
+              <div
+                className="wf-bar"
+                style={{
+                  position: "absolute",
+                  left: compact ? "16%" : "22%",
+                  right: compact ? "16%" : "22%",
+                  top,
+                  height: h,
+                  borderRadius: 7,
+                  background: zero ? "var(--border-2)" : FILL[b.kind],
+                  boxShadow: b.kind === "total" && !zero ? "0 6px 18px color-mix(in srgb,var(--accent) 28%,transparent)" : undefined,
+                  transformOrigin: b.kind === "minus" ? "top" : "bottom",
+                  animationDelay: `${i * 90}ms`,
+                }}
+              />
+              {/* связка до следующего столбика */}
+              {i < all.length - 1 && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: compact ? "84%" : "78%",
+                    width: compact ? "32%" : "44%",
+                    top: y(b.to),
+                    borderTop: "1px dashed var(--border-strong)",
+                  }}
+                />
               )}
             </div>
-            <div style={mix(MONO + ";font-size:24px;font-weight:700;letter-spacing:-.01em;white-space:nowrap", { color: col.valueColor ?? "var(--text)" })}>
-              {col.value}
+          );
+        })}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${all.length}, minmax(0,1fr))`, marginTop: 8 }}>
+        {all.map((b) => (
+          <div key={b.label} style={css("text-align:center;min-width:0")}>
+            <div style={mix("font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: b.kind === "total" ? "var(--text)" : "var(--text-2)" })}>
+              {b.label}
             </div>
-            <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{col.note}</div>
-            <div style={css("margin-top:auto;padding-top:8px")}>
-              <div style={mix("height:6px;border-radius:4px;overflow:hidden", { background: col.bar.track ?? "var(--border-2)" })}>
-                <div
-                  style={mix("height:100%;border-radius:4px;transition:width .5s ease", {
-                    width: `${Math.min(100, Math.max(0, col.bar.share))}%`,
-                    background: col.bar.color,
-                  })}
-                />
-              </div>
-              <div style={css("display:flex;justify-content:space-between;gap:8px;font-size:11.5px;margin-top:6px;white-space:nowrap")}>{col.legend}</div>
-            </div>
+            <div style={css("font-size:11px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{b.hint}</div>
           </div>
         ))}
       </div>
@@ -234,47 +348,348 @@ function MoneyPanel({ columns, isDesktop }: { columns: MoneyColumn[]; isDesktop:
   );
 }
 
-function BigFigure({
-  label,
-  value,
-  note,
-  color,
-  onClick,
-}: {
-  label: string;
-  value: string;
-  note?: string;
-  color?: string;
-  onClick?: () => void;
-}) {
+// --- 1б. Деньги за период ----------------------------------------------------------------
+
+function MoneyCard({ board }: { board: Dashboard }) {
+  const nav = useNavigate();
+  const f = board.finance;
+  const o = board.orders;
+  const paidShare = pct(f.paid, f.period);
+  const avg = o.orders_period ? Math.round(f.period / o.orders_period) : null;
+
+  return (
+    <section style={css(CARD + ";padding:18px 20px 16px;display:flex;flex-direction:column;justify-content:space-between;gap:14px;min-width:0")}>
+      <span style={css(CAPTION)}>Деньги за период</span>
+      <div>
+        <div style={css("font-size:12px;color:var(--text-3)")}>Сумма заказов</div>
+        <div style={css(MONO + ";font-size:28px;font-weight:700;letter-spacing:-.01em;white-space:nowrap")}>
+          <CountUp text={som(f.period)} />
+        </div>
+        <div style={css("font-size:11.5px;color:var(--text-4)")}>
+          {o.items_period} {plural(o.items_period, "товар", "товара", "товаров")} · {o.orders_period} {plural(o.orders_period, "заказ", "заказа", "заказов")}
+        </div>
+      </div>
+      <div>
+        <div style={css("height:8px;border-radius:5px;overflow:hidden;background:var(--danger-tint)")}>
+          <div
+            className="bar-grow"
+            style={mix("height:100%;border-radius:5px;background:linear-gradient(90deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 70%,var(--accent)))", { width: `${paidShare}%` })}
+          />
+        </div>
+        <div style={css("display:flex;justify-content:space-between;gap:8px;font-size:11.5px;margin-top:6px;white-space:nowrap")}>
+          <span style={css("color:var(--green)")}>
+            оплачено{" "}
+            <b style={css(MONO)}>
+              <CountUp text={som(f.paid)} />
+            </b>
+          </span>
+          <span style={css("color:var(--danger)")}>
+            долг{" "}
+            <b style={css(MONO)}>
+              <CountUp text={som(f.unpaid)} />
+            </b>
+          </span>
+        </div>
+      </div>
+      <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
+        <Mini label="Поступило денег" value={board.cash_in === undefined ? "—" : som(board.cash_in)} color="var(--green)" />
+        <Mini label="Выкуп товаров" value={f.with_cost ? som(f.cost) : "—"} />
+        <Mini label="Средний заказ" value={avg === null ? "—" : som(avg)} />
+        <Mini label="Долги клиентов" value={som(f.debts_total)} color={f.debts_total > 0 ? "var(--danger)" : undefined} onClick={() => nav("/finance")} />
+      </div>
+    </section>
+  );
+}
+
+function Mini({ label, value, color, onClick }: { label: string; value: string; color?: string; onClick?: () => void }) {
   return (
     <HButton
       onClick={onClick}
-      s={mix(card + ";text-align:left;display:flex;flex-direction:column;gap:4px;justify-content:flex-start", { cursor: onClick ? "pointer" : "default" })}
+      s={mix("text-align:left;background:var(--surface-2);border:1px solid var(--border-2);border-radius:10px;padding:9px 11px;min-width:0", { cursor: onClick ? "pointer" : "default" })}
       hover={onClick ? "border-color:var(--accent)" : ""}
     >
-      <span style={css("font-size:12px;color:var(--text-3)")}>{label}</span>
-      <span style={mix(MONO + ";font-size:22px;font-weight:700", { color: color ?? "var(--text)" })}>{value}</span>
-      {note && <span style={css("font-size:11.5px;color:var(--text-4);line-height:1.4")}>{note}</span>}
+      <div style={css("font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
+        {label}
+        {onClick && " →"}
+      </div>
+      <div style={mix(MONO + ";font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: color ?? "var(--text)" })}>
+        <CountUp text={value} />
+      </div>
     </HButton>
   );
 }
 
-function Stage({
-  title,
-  subtitle,
-  color,
-  t,
-  extra,
+// --- 2. Прибыль по партиям ----------------------------------------------------------------
+
+function BatchesCard({ b, isDesktop }: { b: Dashboard["batches"]; isDesktop: boolean }) {
+  const nav = useNavigate();
+  const max = Math.max(1, ...b.rows.map((r) => Math.abs(r.profit)));
+  const neg = b.profit < 0;
+  const cols = "minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.35fr)";
+  const link = "border:none;background:transparent;padding:0;color:var(--accent);font-size:12px;cursor:pointer";
+
+  return (
+    <section style={css(CARD + ";overflow:hidden")}>
+      <div style={css("display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;padding:18px 20px 14px")}>
+        <div style={css("min-width:0")}>
+          <div style={css("display:flex;align-items:baseline;gap:10px")}>
+            <span style={css(CAPTION)}>Прибыль по партиям</span>
+            <span style={css("font-size:11.5px;color:var(--text-4)")}>за всё время</span>
+          </div>
+          <div style={css("font-size:12px;color:var(--text-3);margin-top:6px")}>
+            {b.count
+              ? `${b.count} ${plural(b.count, "партия", "партии", "партий")} · ${b.open} ${b.open === 1 ? "принимает" : "принимают"} товары`
+              : "Партий пока нет"}
+          </div>
+          <div style={css("font-size:11.5px;color:var(--text-4);margin-top:2px")}>прибыль партии = вес клиентам + наценка − выкуп веса − доставка</div>
+        </div>
+        {b.count > 0 && (
+          <div style={css("margin-left:auto;text-align:right")}>
+            <div style={css("font-size:11.5px;color:var(--text-3)")}>Все партии вместе</div>
+            <div style={mix(MONO + ";font-size:26px;font-weight:700;letter-spacing:-.01em;white-space:nowrap", { color: neg ? "var(--danger)" : "var(--green)" })}>
+              <CountUp text={som(b.profit)} />
+            </div>
+            <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap")}>
+              доходы <span style={css(MONO + ";color:var(--text-2)")}>{som(b.income)}</span> · расходы{" "}
+              <span style={css(MONO + ";color:var(--text-2)")}>{som(b.expenses)}</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {b.count === 0 ? (
+        <div style={css("padding:0 20px 18px;font-size:12.5px;color:var(--text-3)")}>
+          Создайте партию в разделе{" "}
+          <HButton onClick={() => nav("/batches")} s={link} hover="color:var(--accent-hover)">
+            «Партии»
+          </HButton>{" "}
+          — здесь появится её прибыль.
+        </div>
+      ) : (
+        <>
+          {isDesktop && (
+            <div
+              style={{
+                ...css(
+                  "padding:8px 20px;border-top:1px solid var(--border-2);border-bottom:1px solid var(--border-2);background:var(--surface-2);font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-4);display:grid;gap:16px"
+                ),
+                gridTemplateColumns: cols,
+              }}
+            >
+              <span>Партия</span>
+              <span style={css("text-align:right")}>Доходы</span>
+              <span style={css("text-align:right")}>Расходы</span>
+              <span style={css("text-align:right")}>Прибыль</span>
+            </div>
+          )}
+          {b.rows.map((r, i) => (
+            <BatchRow key={r.id} r={r} max={max} cols={cols} isDesktop={isDesktop} divider={i > 0 || !isDesktop} onClick={() => nav(`/batches/${r.id}`)} delay={i * 70} />
+          ))}
+          {b.count > b.rows.length && (
+            <div style={css("padding:10px 20px;border-top:1px solid var(--border-2);font-size:12px;color:var(--text-3)")}>
+              Показаны последние {b.rows.length} из {b.count} —{" "}
+              <HButton onClick={() => nav("/batches")} s={link} hover="color:var(--accent-hover)">
+                все партии →
+              </HButton>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** «создана 27.09 · товары до 04.10»: последний приход — день, по которому партия попадает в период. */
+function arrivals(r: BatchProfitRow): string {
+  // Местный день, а не день по UTC: приход в 2 часа ночи по Бишкеку — это уже новый день.
+  const short = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}`;
+  };
+  return r.last_arrival ? `${short(r.created_at)} — ${short(r.last_arrival)}` : `создана ${short(r.created_at)}, товаров ещё нет`;
+}
+
+function BatchRow({ r, max, cols, isDesktop, divider, onClick, delay }: { r: BatchProfitRow; max: number; cols: string; isDesktop: boolean; divider: boolean; onClick: () => void; delay: number }) {
+  const neg = r.profit < 0;
+  const open = r.status === "open";
+  const share = Math.max(3, (Math.abs(r.profit) / max) * 100);
+  const money = (value: number, hint: string) => (
+    <div style={css("text-align:right;min-width:0")}>
+      <div style={css(MONO + ";font-size:13px;font-weight:600;color:var(--text);white-space:nowrap")}>{som(value)}</div>
+      <div style={css("font-size:11px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{hint}</div>
+    </div>
+  );
+
+  return (
+    <HButton
+      onClick={onClick}
+      s={mix(
+        "display:grid;align-items:center;width:100%;text-align:left;border:none;background:transparent;padding:12px 20px;cursor:pointer;font:inherit;color:inherit",
+        { gridTemplateColumns: isDesktop ? cols : "minmax(0,1fr)", gap: isDesktop ? 16 : 8 },
+        // Только строкой: borderTop: undefined стёр бы «border:none», и у кнопки проступила бы рамка браузера.
+        divider && "border-top:1px solid var(--border-2)"
+      )}
+      hover="background:var(--hover)"
+    >
+      <div style={css("min-width:0")}>
+        <div style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
+          <span style={css("font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.name}</span>
+          <span
+            style={mix("flex:none;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap", {
+              background: open ? "var(--green-tint)" : "var(--muted-bg)",
+              color: open ? "var(--green)" : "var(--text-3)",
+            })}
+          >
+            {open ? "принимает" : "закрыта"}
+          </span>
+        </div>
+        <div style={css("font-size:11.5px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
+          {r.items} тов. · {r.customers} {plural(r.customers, "клиент", "клиента", "клиентов")} · {arrivals(r)}
+        </div>
+      </div>
+      {isDesktop ? (
+        <>
+          {money(r.income, `вес ${som(r.client)} + наценка ${som(r.markup)}`)}
+          {money(r.expenses, `выкуп ${som(r.buy)} + доставка ${som(r.delivery)}`)}
+        </>
+      ) : (
+        <div style={css("display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--text-3)")}>
+          <span>
+            доходы <b style={css(MONO + ";color:var(--text-2)")}>{som(r.income)}</b>
+          </span>
+          <span>
+            расходы <b style={css(MONO + ";color:var(--text-2)")}>{som(r.expenses)}</b>
+          </span>
+        </div>
+      )}
+      <div style={css("display:flex;align-items:center;gap:10px;min-width:0")}>
+        <div style={css("flex:1;height:8px;border-radius:5px;background:var(--border-2);overflow:hidden;min-width:40px")}>
+          <div
+            className="bar-grow"
+            style={mix("height:100%;border-radius:5px", {
+              width: `${share}%`,
+              background: neg
+                ? "linear-gradient(90deg,var(--danger-dot),color-mix(in srgb,var(--danger-dot) 55%,transparent))"
+                : "linear-gradient(90deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 60%,var(--accent)))",
+              animationDelay: `${delay}ms`,
+            })}
+          />
+        </div>
+        <span style={mix(MONO + ";font-size:14px;font-weight:700;white-space:nowrap;min-width:96px;text-align:right", { color: neg ? "var(--danger)" : "var(--green)" })}>
+          <CountUp text={som(r.profit)} />
+        </span>
+      </div>
+    </HButton>
+  );
+}
+
+// --- 3. Этапы и 4. Клиенты -----------------------------------------------------------------
+
+const card =
+  "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease";
+
+/** Строка «подпись …… значение» внутри карточки. */
+function Line({ label, value, color, bold }: { label: string; value: string; color?: string; bold?: boolean }) {
+  return (
+    <div style={css("display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12.5px;padding:3px 0")}>
+      <span style={css("color:var(--text-3)")}>{label}</span>
+      <span style={mix(MONO + ";white-space:nowrap", { color: color ?? "var(--text)", fontWeight: bold ? 600 : 500 })}>
+        <CountUp text={value} />
+      </span>
+    </div>
+  );
+}
+
+// Иконки клиентов (контур 24×24, как остальные в design/icons).
+type PathDef = [string, Record<string, unknown>];
+const I_USERS: PathDef[] = [
+  ["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }],
+  ["circle", { cx: 9, cy: 7, r: 4 }],
+  ["path", { d: "M22 21v-2a4 4 0 0 0-3-3.87" }],
+  ["path", { d: "M16 3.13a4 4 0 0 1 0 7.75" }],
+];
+const I_WALLET: PathDef[] = [
+  ["path", { d: "M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" }],
+  ["path", { d: "M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" }],
+];
+const I_USER_PLUS: PathDef[] = [
+  ["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }],
+  ["circle", { cx: 9, cy: 7, r: 4 }],
+  ["path", { d: "M19 8v6" }],
+  ["path", { d: "M22 11h-6" }],
+];
+
+const TONE = {
+  accent: { tint: "var(--accent-tint)", fg: "var(--accent)", value: "var(--text)", bar: "linear-gradient(90deg,var(--accent),var(--violet-dot))" },
+  danger: { tint: "var(--danger-tint)", fg: "var(--danger)", value: "var(--danger)", bar: "linear-gradient(90deg,var(--danger-dot),color-mix(in srgb,var(--danger-dot) 60%,var(--amber-dot)))" },
+  green: { tint: "var(--green-tint)", fg: "var(--green)", value: "var(--green)", bar: "linear-gradient(90deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 60%,var(--accent)))" },
+};
+
+/**
+ * Плитка клиентов: иконка в цветной подложке, крупное число, бейдж с долей,
+ * полоса этой доли и короткое пояснение. Большая бледная иконка — фоном в углу.
+ */
+function ClientTile({
+  icon,
+  tone,
+  label,
+  value,
+  badge,
+  bar,
+  note,
   onClick,
 }: {
-  title: string;
-  subtitle: string;
-  color: string;
-  t: Totals;
-  extra?: ReactNode;
+  icon: PathDef[];
+  tone: keyof typeof TONE;
+  label: string;
+  value: number;
+  badge?: string;
+  bar: number;
+  note: string;
   onClick: () => void;
 }) {
+  const t = TONE[tone];
+  return (
+    <HButton
+      onClick={onClick}
+      s={mix(
+        "position:relative;overflow:hidden;text-align:left;cursor:pointer;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:12px;font:inherit;color:inherit;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease"
+      )}
+      hover={`border-color:${t.fg};box-shadow:0 10px 26px rgba(15,18,25,.08);transform:translateY(-2px)`}
+    >
+      {/* фоновая иконка */}
+      <span style={mix("position:absolute;right:-14px;bottom:-18px;opacity:.07;pointer-events:none;display:flex", { color: t.fg })} aria-hidden>
+        <Svg paths={icon} size={104} sw={1.5} />
+      </span>
+
+      <div style={css("display:flex;align-items:center;gap:12px;width:100%")}>
+        <span style={mix("width:42px;height:42px;border-radius:12px;flex:none;display:flex;align-items:center;justify-content:center", { background: t.tint, color: t.fg })}>
+          <Svg paths={icon} size={21} sw={1.8} />
+        </span>
+        <div style={css("flex:1;min-width:0")}>
+          <div style={css("font-size:12.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</div>
+          <div style={mix(MONO + ";font-size:26px;font-weight:700;line-height:1.15", { color: value ? t.value : "var(--text)" })}>
+            <CountUp text={String(value)} />
+          </div>
+        </div>
+        {badge && (
+          <span style={mix("align-self:flex-start;flex:none;font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;white-space:nowrap", { background: t.tint, color: t.fg })}>
+            {badge}
+          </span>
+        )}
+      </div>
+
+      <div style={css("width:100%;position:relative")}>
+        <div style={css("height:6px;border-radius:4px;background:var(--border-2);overflow:hidden")}>
+          <div className="bar-grow" style={mix("height:100%;border-radius:4px", { width: `${Math.min(100, Math.max(bar ? 3 : 0, bar))}%`, background: t.bar })} />
+        </div>
+        <div style={css("font-size:11.5px;color:var(--text-4);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{note}</div>
+      </div>
+    </HButton>
+  );
+}
+
+function Stage({ title, subtitle, color, t, extra, onClick }: { title: string; subtitle: string; color: string; t: Totals; extra?: ReactNode; onClick: () => void }) {
   return (
     <HButton
       onClick={onClick}
@@ -287,14 +702,16 @@ function Stage({
           <div style={css("font-size:11.5px;color:var(--text-4)")}>{subtitle}</div>
         </div>
         <div style={css("text-align:right")}>
-          <div style={css(MONO + ";font-size:26px;font-weight:700;line-height:1")}>{t.items}</div>
+          <div style={css(MONO + ";font-size:26px;font-weight:700;line-height:1")}>
+            <CountUp text={String(t.items)} />
+          </div>
           <div style={css("font-size:11px;color:var(--text-4);margin-top:3px")}>товаров · {t.qty} шт</div>
         </div>
       </div>
       <div style={css("border-top:1px solid var(--border-2);padding-top:8px;width:100%")}>
         <Line label="Сумма" value={som(t.sale)} bold />
         <Line label="Выкуп" value={t.with_cost ? som(t.cost) : "—"} />
-        <Line label="Прибыль" value={t.with_cost ? som(t.profit) : "—"} color={t.profit < 0 ? "var(--danger)" : "var(--green)"} bold />
+        <Line label="Наценка" value={t.with_cost ? som(t.profit) : "—"} color={t.profit < 0 ? "var(--danger)" : "var(--green)"} bold />
       </div>
       <div style={css("border-top:1px solid var(--border-2);padding-top:8px;width:100%")}>
         <Line label="Оплачено" value={som(t.paid)} color="var(--green)" />

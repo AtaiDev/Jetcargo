@@ -6,6 +6,7 @@
  * карточки жил копиями в 14 файлах и потихоньку расходился.
  */
 import type { ReactNode } from "react";
+import CountUp from "./CountUp";
 import { MONO, css, mix } from "./css";
 import { I_PLUS, I_SEARCH, Svg } from "./icons";
 import { HButton } from "./ui";
@@ -139,7 +140,7 @@ export function StatTile({
       <div style={mix(MONO + ";font-size:24px;font-weight:600;margin-top:4px", {
         color: color ?? "var(--text)",
       })}>
-        {value}
+        <CountUp text={value} />
       </div>
     </div>
   );

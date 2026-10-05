@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { clearTokens, ensureAccessToken } from "../api/client";
 import { fetchMe, type CurrentUser } from "../api/auth";
+import { hideBoot } from "../lib/boot";
 
 interface AuthState {
   user: CurrentUser | null;
@@ -41,6 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh();
   }, []);
+
+  // Узнали, вошёл ли пользователь, — убираем заставку из index.html.
+  useEffect(() => {
+    if (!loading) hideBoot();
+  }, [loading]);
 
   return (
     <AuthCtx.Provider value={{ user, loading, refresh, logout }}>{children}</AuthCtx.Provider>

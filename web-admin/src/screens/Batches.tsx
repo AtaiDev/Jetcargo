@@ -34,6 +34,7 @@ import { Confirm, Empty } from "../components/cargo";
 import DatePicker from "../components/DatePicker";
 import ItemModal from "../components/ItemModal";
 import ItemTable from "../components/ItemTable";
+import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { Icon } from "../design/icons";
 import { PANEL, Page, PrimaryAction } from "../design/table";
@@ -108,7 +109,9 @@ export default function Batches({ isDesktop, toast }: { isDesktop: boolean; toas
                     <span>
                       {b.calc.items} тов. · {b.calc.customers} клиент.
                     </span>
-                    <b style={mix(MONO + ";font-size:14px", { color: b.calc.profit_som < 0 ? "var(--danger)" : "var(--green)" })}>{som(b.calc.profit_som)}</b>
+                    <b style={mix(MONO + ";font-size:14px", { color: b.calc.profit_som < 0 ? "var(--danger)" : "var(--green)" })}>
+                      <CountUp text={som(b.calc.profit_som)} />
+                    </b>
                   </div>
                   <div style={css("font-size:11px;color:var(--text-4)")}>создана {date(b.created_at.slice(0, 10))}</div>
                 </HButton>
@@ -418,7 +421,7 @@ function BatchDetail({
           >
             <div style={mix("font-size:12px;font-weight:600", { color: neg ? "var(--danger)" : "var(--green)" })}>{neg ? "Убыток партии" : "Прибыль партии"}</div>
             <div style={mix(MONO + ";font-size:28px;font-weight:700;line-height:1.2;margin-top:2px", { color: neg ? "var(--danger)" : "var(--green)" })}>
-              {som(Math.round(live.profit))}
+              <CountUp text={som(Math.round(live.profit))} />
             </div>
             <div style={css("font-size:11px;color:var(--text-3);margin-top:3px")}>доходы − расходы</div>
           </div>
@@ -576,7 +579,13 @@ function Line({ n, label, value, sign }: { n: string; label: string; value: numb
       </span>
       <span style={css("flex:1;color:var(--text-2)")}>{label}</span>
       <span style={mix(MONO + ";font-weight:600;white-space:nowrap", { color: value ? t.fg : "var(--text-4)" })}>
-        {value ? `${sign} ${som(Math.round(Math.abs(value)))}` : "—"}
+        {value ? (
+          <>
+            {sign} <CountUp text={som(Math.round(Math.abs(value)))} />
+          </>
+        ) : (
+          "—"
+        )}
       </span>
     </div>
   );

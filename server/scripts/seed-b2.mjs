@@ -18,6 +18,18 @@ const src = path.resolve(import.meta.dirname, "..", process.env.DATA_DIR || "dat
 const snap = path.join(tmpdir(), `jetcargo-seed-${Date.now()}.db`);
 
 const db = new DatabaseSync(src, { readOnly: true });
+// Тестовая база (локальная, вымышленные данные) в облако не попадает никогда: она заменила бы рабочие данные.
+let isTest = false;
+try {
+  isTest = db.prepare("SELECT value FROM app_settings WHERE key = 'environment'").get()?.value === "test";
+} catch {
+  // нет таблицы настроек — не тестовая метка
+}
+if (isTest) {
+  db.close();
+  console.error(`✗ ${src} — ТЕСТОВАЯ база, в облако её загружать нельзя.`);
+  process.exit(1);
+}
 db.exec(`VACUUM INTO '${snap.replace(/'/g, "''")}'`);
 db.close();
 

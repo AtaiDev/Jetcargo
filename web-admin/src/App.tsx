@@ -21,6 +21,7 @@ import { PrefsProvider } from "./design/prefs";
 import { HButton, Toast } from "./design/ui";
 import GlobalSearch from "./components/GlobalSearch";
 import ItemModal from "./components/ItemModal";
+import TestBanner from "./components/TestBanner";
 import { on, onOpenItem } from "./lib/events";
 import LoginPage from "./pages/LoginPage";
 import Audit from "./screens/Audit";
@@ -121,6 +122,7 @@ function screenKey(loc: RouterLocation): string {
 export default function App() {
   return (
     <PrefsProvider>
+      <TestBanner />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/*" element={<Shell />} />
@@ -164,7 +166,8 @@ function Shell() {
     window.setTimeout(() => setToast(null), 2800);
   }
 
-  if (loading) return <div style={css("padding:24px;color:var(--text-3)")}>Загрузка…</div>;
+  // Пока проверяем вход, поверх страницы стоит заставка из index.html (src/lib/boot.ts).
+  if (loading) return null;
   // Прямую ссылку (например /customers/12), открытую без входа, запоминаем —
   // после логина вернём на неё, а не на дашборд.
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;

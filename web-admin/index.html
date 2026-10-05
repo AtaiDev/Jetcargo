@@ -5,8 +5,99 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Jetcargo</title>
+    <!-- Тема и масштаб — до первой отрисовки: без белой вспышки у тех, кто выбрал тёмную тему. -->
+    <script>
+      try {
+        var t = localStorage.getItem("rb_theme");
+        document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+        // Не вошёл — дальше будет тёмная страница входа: заставка сразу в её цветах, без серой вспышки.
+        if (!localStorage.getItem("rb_refresh")) document.documentElement.setAttribute("data-boot", "night");
+        var s = parseFloat(localStorage.getItem("rb_scale") || "");
+        if (s) document.documentElement.style.zoom = String(s);
+      } catch (e) {}
+    </script>
+    <!--
+      Заставка при открытии сайта: знак Jetcargo прорисовывается, заливается и стирается по кругу,
+      вокруг бежит кольцо. Стили здесь, а не в styles.css: заставка видна раньше, чем загрузится JS.
+      Убирает её src/lib/boot.ts, когда приложение узнало, вошёл ли пользователь.
+    -->
+    <style>
+      html { background: #F6F7F9; }
+      html[data-theme="dark"] { background: #0F1116; color-scheme: dark; }
+      .boot {
+        --b-bg: #F6F7F9; --b-fg: #171A1F; --b-mut: #8A93A0; --b-acc: #3E63DD; --b-track: #E5E8EC; --b-glow: rgba(62, 99, 221, .16);
+        position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        background: var(--b-bg); font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+        transition: opacity .45s ease, visibility 0s linear .45s;
+      }
+      html[data-theme="dark"] .boot { --b-bg: #0F1116; --b-fg: #E7E9ED; --b-mut: #868F9C; --b-acc: #4E71F0; --b-track: #23282F; --b-glow: rgba(78, 113, 240, .26); }
+      html[data-boot="night"] { background: #060913; }
+      html[data-boot="night"] .boot { --b-bg: #060913; --b-fg: #EEF1F8; --b-mut: #8B93B5; --b-acc: #8B9CFF; --b-track: rgba(139, 156, 255, .14); --b-glow: rgba(124, 108, 255, .3); }
+      .boot[data-state="done"] { opacity: 0; visibility: hidden; }
+      .boot-core { position: relative; width: 132px; height: 132px; transition: transform .45s cubic-bezier(.4, 0, .2, 1); }
+      .boot-in { position: absolute; inset: 0; display: grid; place-items: center; animation: bootIn .55s cubic-bezier(.2, .8, .2, 1) both; }
+      .boot[data-state="done"] .boot-core { transform: scale(1.18); }
+      .boot-in::before { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--b-track); }
+      .boot-glow { position: absolute; inset: 14px; border-radius: 50%; background: radial-gradient(circle, var(--b-glow), transparent 70%); animation: bootPulse 2.2s ease-in-out infinite; }
+      .boot-ring {
+        position: absolute; inset: 0; border-radius: 50%;
+        background: conic-gradient(from 0deg, transparent 0 58%, var(--b-acc) 100%);
+        -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+        mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+        animation: bootSpin 1.1s linear infinite;
+      }
+      .boot-dot { position: absolute; inset: 0; animation: bootSpin 1.1s linear infinite; }
+      .boot-dot::after { content: ""; position: absolute; top: -1.5px; left: 50%; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: var(--b-acc); box-shadow: 0 0 12px 2px var(--b-acc); }
+      .boot-mark { position: relative; width: 58px; height: 57px; overflow: visible; }
+      .boot-mark path {
+        fill: var(--b-fg); fill-opacity: 0; stroke: var(--b-fg); stroke-width: 2.6; stroke-linejoin: round;
+        stroke-dasharray: 1 1; stroke-dashoffset: 1; animation: bootDraw 2.2s cubic-bezier(.65, 0, .35, 1) infinite;
+      }
+      .boot-mark .boot-b { animation-delay: .16s; }
+      .boot-word {
+        margin-top: 26px; font-size: 24px; font-weight: 700; letter-spacing: -.3px;
+        background: linear-gradient(90deg, var(--b-fg) 0 38%, var(--b-acc) 50%, var(--b-fg) 62% 100%) 100% 0 / 260% 100%;
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+        animation: bootIn .55s .08s cubic-bezier(.2, .8, .2, 1) both, bootShine 2.2s ease-in-out infinite;
+      }
+      .boot-sub { margin-top: 6px; font-size: 11.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--b-mut); animation: bootIn .55s .16s cubic-bezier(.2, .8, .2, 1) both; }
+      .boot-hint { position: absolute; bottom: 44px; left: 16px; right: 16px; text-align: center; font-size: 12.5px; color: var(--b-mut); opacity: 0; animation: bootIn .5s 5s ease forwards; }
+      @keyframes bootIn { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: none; } }
+      @keyframes bootSpin { to { transform: rotate(360deg); } }
+      @keyframes bootPulse { 0%, 100% { transform: scale(.85); opacity: .7; } 50% { transform: scale(1.05); opacity: 1; } }
+      @keyframes bootShine { 0% { background-position: 100% 0; } 60%, 100% { background-position: 0 0; } }
+      @keyframes bootDraw {
+        0% { stroke-dashoffset: 1; fill-opacity: 0; }
+        38% { stroke-dashoffset: 0; fill-opacity: 0; }
+        52% { fill-opacity: 1; }
+        80% { stroke-dashoffset: 0; fill-opacity: 1; }
+        100% { stroke-dashoffset: -1; fill-opacity: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-mark path { animation: none; fill-opacity: 1; stroke-dashoffset: 0; }
+        .boot-ring, .boot-dot { animation-duration: 3s; }
+        .boot-glow { animation: none; }
+        .boot-word { animation: none; background: none; color: var(--b-fg); }
+      }
+    </style>
   </head>
   <body>
+    <div id="boot" class="boot" role="status" aria-live="polite" aria-label="Загрузка Jetcargo">
+      <div class="boot-core">
+        <div class="boot-in">
+          <div class="boot-glow"></div>
+          <div class="boot-ring"></div>
+          <div class="boot-dot"></div>
+          <svg class="boot-mark" viewBox="0 0 94 92" aria-hidden="true">
+            <path class="boot-a" pathLength="1" d="M26 0H94L75 22H8Z" />
+            <path class="boot-b" pathLength="1" d="M61 31H74V81Q74 91 64 91H0L8 79H50Q56 79 56 73V36Z" />
+          </svg>
+        </div>
+      </div>
+      <div class="boot-word">Jetcargo</div>
+      <div class="boot-sub">Управление карго</div>
+      <div class="boot-hint">Сервер просыпается — первый запуск может занять до минуты</div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

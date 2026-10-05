@@ -22,6 +22,7 @@ import {
 } from "../api/domain";
 import { Confirm, Empty, MoneyInput, Pager, PeriodPicker, periodOf, type Period } from "../components/cargo";
 import ItemModal from "../components/ItemModal";
+import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_SEARCH, Svg } from "../design/icons";
 import { PANEL, Page, SearchInput, THEAD } from "../design/table";
@@ -613,7 +614,9 @@ function Stat({ label, value, hint, strong }: { label: string; value: string; hi
     <div style={css("background:var(--surface-2);border:1px solid var(--border-2);border-radius:10px;padding:9px 12px")}>
       <div style={css("font-size:11.5px;color:var(--text-3)")}>{label}</div>
       <div style={css("display:flex;align-items:baseline;gap:6px")}>
-        <span style={mix(MONO + ";font-size:18px;font-weight:700", { color: strong ? "var(--green)" : "var(--text)" })}>{value}</span>
+        <span style={mix(MONO + ";font-size:18px;font-weight:700", { color: strong ? "var(--green)" : "var(--text)" })}>
+          <CountUp text={value} />
+        </span>
         {hint && <span style={css("font-size:11px;color:var(--text-4)")}>{hint}</span>}
       </div>
     </div>

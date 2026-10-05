@@ -11,5 +11,6 @@ dist/
 # Прочее
 .DS_Store
 
-# Локальный backend: база и загруженные файлы
+# Локальный backend: база и загруженные файлы (data-test — тестовая база)
 server/data/
+server/data-test/

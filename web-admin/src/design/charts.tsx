@@ -14,6 +14,7 @@
  */
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
+import { afterBoot } from "../lib/boot";
 import { MONO, css, money } from "./css";
 import { usePrefs } from "./prefs";
 import { ST, type StatusKey } from "./ui";
@@ -32,6 +33,8 @@ const FALLBACK = ["accent", "violet", "green", "amber", "danger"];
 
 export const AXIS = "var(--text-4)";
 export const GRID = "var(--border-2)";
+/** Появление графиков: столбики и линии вырастают за это время. */
+export const ANIMATION = { isAnimationActive: true, animationDuration: 800, animationEasing: "ease-out" } as const;
 
 export function colorOf(name: string | null | undefined, index = 0): string {
   if (name && PALETTE[name]) return PALETTE[name];
@@ -52,7 +55,8 @@ export function valueColor(mode: string | null | undefined, value: string, index
 }
 
 export function formatValue(v: number, format: string): string {
-  return format === "money" ? `${money(v)} сом` : String(Math.round(v));
+  // «с» — как во всей панели (som() в lib/cargo).
+  return format === "money" ? `${money(v)} с` : String(Math.round(v));
 }
 
 interface FrameProps {
@@ -64,6 +68,9 @@ export function ChartFrame({ height = 240, children }: FrameProps) {
   const { scale } = usePrefs();
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  // При открытии сайта рисуем после заставки — иначе анимация появления отыграет под ней.
+  const [ready, setReady] = useState(false);
+  useEffect(() => afterBoot(() => setReady(true)), []);
 
   useEffect(() => {
     const el = ref.current;
@@ -84,7 +91,7 @@ export function ChartFrame({ height = 240, children }: FrameProps) {
 
   return (
     <div ref={ref} style={{ width: "100%", height }}>
-      {width > 0 && (
+      {width > 0 && ready && (
         <div style={inner}>
           {children({
             width: Math.round(width * scale),
@@ -123,14 +130,14 @@ export function RbTooltip({
     <div
       style={{
         ...css(
-          "background:var(--surface);border:1px solid var(--border);border-radius:8px;" +
-            "box-shadow:0 8px 24px rgba(0,0,0,.14);padding:8px 10px;min-width:120px"
+          "background:var(--surface);border:1px solid var(--border);border-radius:10px;" +
+            "box-shadow:0 12px 32px rgba(15,18,25,.16);padding:9px 12px;min-width:140px"
         ),
         fontSize: fs,
       }}
     >
       {label !== undefined && (
-        <div style={{ ...css("color:var(--text-3);margin-bottom:5px"), fontSize: fs - 1 }}>
+        <div style={{ ...css("color:var(--text);font-weight:600;margin-bottom:6px;padding-bottom:5px;border-bottom:1px solid var(--border-2)"), fontSize: fs - 0.5 }}>
           {label}
         </div>
       )}
@@ -144,7 +151,7 @@ export function RbTooltip({
           <span style={css("display:flex;align-items:center;gap:6px;color:var(--text-2)")}>
             <span
               style={{
-                ...css("width:8px;height:8px;border-radius:2px;flex:none"),
+                ...css("width:8px;height:8px;border-radius:50%;flex:none"),
                 background: e.color,
               }}
             />
@@ -177,15 +184,17 @@ export function Legend({
   items: { label: string; color: string }[];
 }) {
   return (
-    <div style={css("display:flex;flex-wrap:wrap;gap:12px;padding:6px 2px 0")}>
+    <div style={css("display:flex;flex-wrap:wrap;gap:6px;padding:10px 0 0")}>
       {items.map((it) => (
         <span
           key={it.label}
-          style={css("display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-3)")}
+          style={css(
+            "display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-2);background:var(--surface-2);border:1px solid var(--border-2);border-radius:999px;padding:3px 10px 3px 8px"
+          )}
         >
           <span
             style={{
-              ...css("width:9px;height:9px;border-radius:2px;flex:none"),
+              ...css("width:8px;height:8px;border-radius:50%;flex:none"),
               background: it.color,
             }}
           />

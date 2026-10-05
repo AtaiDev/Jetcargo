@@ -19,9 +19,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { useNavigate } from "react-router-dom";
 
 import type { DashboardWidget, WidgetData, WidgetSeries } from "../../api/domain";
 import {
+  ANIMATION,
   AXIS,
   ChartFrame,
   GRID,
@@ -32,6 +34,7 @@ import {
   shortNum,
   valueColor,
 } from "../../design/charts";
+import CountUp from "../../design/CountUp";
 import { MONO, css, money } from "../../design/css";
 
 type Row = Record<string, string | number>;
@@ -131,9 +134,9 @@ function Kpi({ widget }: { widget: DashboardWidget }) {
                 MONO + ";font-size:22px;font-weight:600;color:var(--text)"
               )}
             >
-              {m.format === "money" ? money(value) : Math.round(value)}
+              <CountUp text={m.format === "money" ? money(value) : String(Math.round(value))} />
               {m.format === "money" && (
-                <span style={css("font-size:12px;color:var(--text-4);margin-left:4px")}>сом</span>
+                <span style={css("font-size:12px;color:var(--text-4);margin-left:4px")}>с</span>
               )}
             </div>
             {before !== null && <Delta value={value} before={before} />}
@@ -187,42 +190,59 @@ function Donut({ widget }: { widget: DashboardWidget }) {
 
   return (
     <div>
-      <ChartFrame height={200}>
-        {({ width, height, fs }) => (
-          <PieChart width={width} height={height}>
-            <Pie
-              data={slices}
-              dataKey="value"
-              nameKey="name"
-              innerRadius="58%"
-              outerRadius="86%"
-              paddingAngle={2}
-              stroke="var(--surface)"
-              strokeWidth={2}
-              isAnimationActive={false}
-            >
-              {slices.map((s) => (
-                <Cell key={s.name} fill={s.color} />
-              ))}
-            </Pie>
-            <Tooltip
-              content={
-                <RbTooltip
-                  fs={fs(12)}
-                  formats={Object.fromEntries(slices.map((s) => [s.name, measure.format]))}
-                />
-              }
-            />
-          </PieChart>
-        )}
-      </ChartFrame>
-      <div style={css("text-align:center;margin-top:-6px;font-size:11.5px;color:var(--text-3)")}>
-        Всего:{" "}
-        <span style={css(MONO + ";color:var(--text);font-weight:600")}>
-          {formatValue(total, measure.format)}
-        </span>
+      <div style={css("position:relative")}>
+        <ChartFrame height={196}>
+          {({ width, height, fs }) => (
+            <PieChart width={width} height={height}>
+              <Pie
+                data={slices}
+                dataKey="value"
+                nameKey="name"
+                innerRadius="66%"
+                outerRadius="92%"
+                paddingAngle={slices.length > 1 ? 3 : 0}
+                cornerRadius={6}
+                stroke="none"
+                startAngle={90}
+                endAngle={-270}
+                {...ANIMATION}
+              >
+                {slices.map((s) => (
+                  <Cell key={s.name} fill={s.color} />
+                ))}
+              </Pie>
+              <Tooltip
+                content={
+                  <RbTooltip
+                    fs={fs(12)}
+                    formats={Object.fromEntries(slices.map((s) => [s.name, measure.format]))}
+                  />
+                }
+              />
+            </PieChart>
+          )}
+        </ChartFrame>
+        {/* Итог в центре кольца */}
+        <div style={css("position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none")}>
+          <span style={css("font-size:11px;color:var(--text-4)")}>всего</span>
+          <span style={css(MONO + ";font-size:17px;font-weight:700;color:var(--text);white-space:nowrap")}>
+            <CountUp text={measure.format === "money" ? `${money(total)} с` : String(total)} />
+          </span>
+        </div>
       </div>
-      <Legend items={slices.map((s) => ({ label: s.name, color: s.color }))} />
+      {/* Легенда: сумма и доля каждого сектора */}
+      <div style={css("display:flex;flex-direction:column;gap:6px;margin-top:12px")}>
+        {slices.map((s) => (
+          <div key={s.name} style={css("display:flex;align-items:center;gap:8px;font-size:12px")}>
+            <span style={{ ...css("width:9px;height:9px;border-radius:50%;flex:none"), background: s.color }} />
+            <span style={css("color:var(--text-2);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")}>{s.name}</span>
+            <span style={css(MONO + ";font-weight:600;color:var(--text);white-space:nowrap")}>{formatValue(s.value, measure.format)}</span>
+            <span style={css(MONO + ";font-size:11px;color:var(--text-4);width:38px;text-align:right")}>
+              {total ? Math.round((s.value / total) * 100) : 0}%
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -235,38 +255,50 @@ function HBar({ widget }: { widget: DashboardWidget }) {
   const measure = data.measures[0];
   const color = colorOf(widget.series[0]?.color, 0);
   const max = Math.max(...data.rows.map((r) => Number(r[measure.key] ?? 0)), 1);
+  const nav = useNavigate();
+  // Строка клиента ведёт в его карточку.
+  const linkOf = (r: Row) => (dim.key === "customer" && Number(r[dim.key]) > 0 ? `/customers/${r[dim.key]}` : null);
 
-  // Свой рендер вместо графика: имена товаров читаются лучше текстом, чем осью.
+  // Свой рендер вместо графика: имена читаются лучше текстом, чем осью.
   return (
-    <div style={css("display:flex;flex-direction:column;gap:8px")}>
-      {data.rows.map((r) => {
+    <div style={css("display:flex;flex-direction:column;gap:2px")}>
+      {data.rows.map((r, i) => {
         const value = Number(r[measure.key] ?? 0);
+        const link = linkOf(r);
         return (
-          <div key={String(r[dim.key])}>
-            <div
-              style={css(
-                "display:flex;justify-content:space-between;gap:10px;font-size:12px;margin-bottom:3px"
-              )}
+          <div
+            key={String(r[dim.key])}
+            onClick={link ? () => nav(link) : undefined}
+            className={link ? "hbar-row" : undefined}
+            style={css("display:flex;align-items:center;gap:10px;padding:5px 6px;margin:0 -6px;border-radius:8px" + (link ? ";cursor:pointer" : ""))}
+          >
+            <span
+              style={{
+                ...css("width:20px;height:20px;border-radius:6px;flex:none;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700"),
+                background: i < 3 ? `color-mix(in srgb,${color} 16%,transparent)` : "var(--muted-bg)",
+                color: i < 3 ? color : "var(--text-4)",
+              }}
             >
-              <span style={css("color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap")}>
-                {String(r[`${dim.key}_label`] ?? r[dim.key])}
-              </span>
-              <span
-                style={css(
-                  MONO + ";font-weight:600;color:var(--text);flex:none"
-                )}
-              >
-                {formatValue(value, measure.format)}
-              </span>
-            </div>
-            <div style={css("height:6px;background:var(--muted-bg);border-radius:4px;overflow:hidden")}>
-              <div
-                style={{
-                  ...css("height:100%;border-radius:4px"),
-                  width: `${Math.max(2, (value / max) * 100)}%`,
-                  background: color,
-                }}
-              />
+              {i + 1}
+            </span>
+            <div style={css("flex:1;min-width:0")}>
+              <div style={css("display:flex;justify-content:space-between;gap:10px;font-size:12px;margin-bottom:4px")}>
+                <span style={css("color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap")}>
+                  {String(r[`${dim.key}_label`] ?? r[dim.key])}
+                </span>
+                <span style={css(MONO + ";font-weight:600;color:var(--text);flex:none")}>{formatValue(value, measure.format)}</span>
+              </div>
+              <div style={css("height:7px;background:var(--muted-bg);border-radius:4px;overflow:hidden")}>
+                <div
+                  className="bar-grow"
+                  style={{
+                    ...css("height:100%;border-radius:4px"),
+                    width: `${Math.max(2, (value / max) * 100)}%`,
+                    background: `linear-gradient(90deg,${color},color-mix(in srgb,${color} 55%,transparent))`,
+                    animationDelay: `${i * 60}ms`,
+                  }}
+                />
+              </div>
             </div>
           </div>
         );
@@ -372,6 +404,7 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
 
   // Порядок отрисовки: столбцы вниз, линии и области поверх — иначе столбцы
   // «Броней» закрывают собой линию выручки, ради которой график и открывают.
+  const hasBars = series.some((s) => s.type === "bar");
   const drawOrder = [...series].sort(
     (a, b) => (a.type === "bar" ? 0 : 1) - (b.type === "bar" ? 0 : 1)
   );
@@ -387,16 +420,15 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
             margin={{ top: 6, right: useRightAxis ? 4 : 8, bottom: 0, left: 0 }}
           >
             <defs>
-              {series
-                .filter((s) => s.type === "area")
-                .map((s) => (
-                  <linearGradient key={s.key} id={`g-${widget.id}-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={s.color} stopOpacity={0.28} />
-                    <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
-                  </linearGradient>
-                ))}
+              {/* Области — растворяются книзу; столбцы — чуть светлее у основания. */}
+              {series.map((s) => (
+                <linearGradient key={s.key} id={`g-${widget.id}-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={s.color} stopOpacity={s.type === "area" ? 0.34 : 1} />
+                  <stop offset="100%" stopColor={s.color} stopOpacity={s.type === "area" ? 0 : 0.55} />
+                </linearGradient>
+              ))}
             </defs>
-            <CartesianGrid stroke={GRID} vertical={false} />
+            <CartesianGrid stroke={GRID} strokeDasharray="3 5" vertical={false} />
             <XAxis
               dataKey={`${xDim.key}_label`}
               stroke={AXIS}
@@ -429,7 +461,7 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
               />
             )}
             <Tooltip
-              cursor={{ fill: "var(--hover)", opacity: 0.5 }}
+              cursor={hasBars ? { fill: "var(--hover)", opacity: 0.7 } : { stroke: "var(--border-strong)", strokeDasharray: "4 4" }}
               content={<RbTooltip fs={fs(12)} formats={fmt} />}
             />
             {drawOrder.map((s) => {
@@ -438,8 +470,9 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
                 dataKey: s.key,
                 name: s.name,
                 yAxisId: s.axis,
-                isAnimationActive: false as const,
+                ...ANIMATION,
               };
+              const dot = { r: fs(5), strokeWidth: 2, stroke: "var(--surface)", fill: s.color };
               if (s.type === "area") {
                 return (
                   <Area
@@ -447,8 +480,9 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
                     {...common}
                     type="monotone"
                     stroke={s.color}
-                    strokeWidth={2}
+                    strokeWidth={2.5}
                     fill={`url(#g-${widget.id}-${s.key})`}
+                    activeDot={dot}
                   />
                 );
               }
@@ -459,8 +493,9 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
                     {...common}
                     type="monotone"
                     stroke={s.color}
-                    strokeWidth={2}
+                    strokeWidth={2.5}
                     dot={false}
+                    activeDot={dot}
                   />
                 );
               }
@@ -468,10 +503,10 @@ function XYChart({ widget }: { widget: DashboardWidget }) {
                 <Bar
                   key={s.key}
                   {...common}
-                  fill={s.color}
-                  radius={[3, 3, 0, 0]}
+                  fill={`url(#g-${widget.id}-${s.key})`}
+                  radius={stacked ? [3, 3, 0, 0] : [6, 6, 2, 2]}
                   stackId={stacked ? "s" : undefined}
-                  maxBarSize={fs(28)}
+                  maxBarSize={fs(26)}
                 />
               );
             })}
