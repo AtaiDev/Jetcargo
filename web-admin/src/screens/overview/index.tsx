@@ -1,8 +1,8 @@
 /**
  * Обзор — главная для руководителя: деньги, заказы, склад и клиенты за секунды.
  *
- * Все числа считает сервер из реальных данных. Прибыль = Сумма − Реальная цена (выкуп),
- * только по товарам, где реальная цена указана; рядом видно, по скольким она посчитана.
+ * Все числа считает сервер из реальных данных. Прибыль = наценка на товары (Сумма − Реальная
+ * цена, только где реальная цена указана) + по партиям: вес клиентам − выкуп веса − доставка.
  * Плитки кликабельны — ведут в нужный отфильтрованный список.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -68,9 +68,9 @@ export default function Overview({ isDesktop, isAdmin }: { isDesktop: boolean; i
             <Heading>Графики</Heading>
             <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "repeat(3, minmax(0, 1fr))" : "1fr", gap: 14 }}>
               {board.widgets.map((w) => (
-                <section key={w.id} style={{ ...css(PANEL + ";min-width:0"), gridColumn: isDesktop ? `span ${Math.min(w.span, 3)}` : undefined }}>
-                  <div style={css("padding:12px 16px;border-bottom:1px solid var(--border-2);font-size:13.5px;font-weight:600")}>{w.title}</div>
-                  <div style={css("padding:14px 16px")}>
+                <section key={w.id} style={{ ...css(PANEL + ";border-radius:14px;min-width:0"), gridColumn: isDesktop ? `span ${Math.min(w.span, 3)}` : undefined }}>
+                  <div style={css("padding:16px 18px 0;font-size:13.5px;font-weight:700;color:var(--text)")}>{w.title}</div>
+                  <div style={css("padding:12px 18px 16px")}>
                     <WidgetRenderer widget={w} />
                   </div>
                 </section>

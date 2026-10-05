@@ -48,8 +48,15 @@ export const ADMIN_LOGIN = process.env.ADMIN_LOGIN?.trim() || "";
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 export const ADMIN_FULL_NAME = process.env.ADMIN_FULL_NAME?.trim() || "Администратор";
 
+/**
+ * Рабочий сервер — Docker на Render (Dockerfile задаёт NODE_ENV=production, Render — RENDER).
+ * Любой другой запуск — локальный: он работает только с тестовой базой (db.ts → guardLocal),
+ * копию рабочей базы локальный сервер не откроет.
+ */
+export const IS_PROD = process.env.NODE_ENV === "production" || !!process.env.RENDER;
+
 const ROOT = path.resolve(import.meta.dirname, "..");
-export const DATA_DIR = path.resolve(ROOT, process.env.DATA_DIR || "data");
+export const DATA_DIR = path.resolve(ROOT, process.env.DATA_DIR || (IS_PROD ? "data" : "data-test"));
 export const DB_FILE = path.join(DATA_DIR, "app.db");
 export const MEDIA_DIR = path.join(DATA_DIR, "media");
 

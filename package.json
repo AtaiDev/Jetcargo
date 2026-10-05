@@ -2,6 +2,7 @@
   "name": "jetcargo",
   "private": true,
   "scripts": {
-    "dev": "node scripts/dev.mjs"
+    "dev": "node scripts/dev.mjs",
+    "test-data": "cd server && node --env-file=.env --disable-warning=ExperimentalWarning scripts/seed-test.mjs --reset"
   }
 }

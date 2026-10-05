@@ -386,7 +386,9 @@ function diff(it: ItemView, t: ReturnType<typeof desired>) {
 
 // --- Маршруты ------------------------------------------------------------------------
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+// defParamCharset: браузер шлёт имя файла в UTF-8; по умолчанию multer читает его как latin1,
+// и «Заказы.xlsx» в истории импортов превращалось в «ÐÐ°ÐºÐ°Ð·Ñ.xlsx».
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 }, defParamCharset: "utf8" });
 
 function optionsOf(req: Request): Options {
   const b = req.body ?? {};

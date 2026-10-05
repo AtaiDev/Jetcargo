@@ -19,6 +19,7 @@ import { createBatch, listBatches, listItems, listScans, lookupCode, scanCode, t
 import { Tabs } from "../components/cargo";
 import ItemModal from "../components/ItemModal";
 import Select from "../components/Select";
+import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_SEARCH, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
@@ -454,7 +455,9 @@ function DayStat({
         <span style={mix("width:7px;height:7px;border-radius:50%", { background: dot })} />
         {label}
       </span>
-      <span style={mix(MONO + ";font-size:20px;font-weight:700", { color })}>{value}</span>
+      <span style={mix(MONO + ";font-size:20px;font-weight:700", { color })}>
+        <CountUp text={String(value)} />
+      </span>
     </HButton>
   );
 }

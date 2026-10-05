@@ -4,6 +4,7 @@ import { apiError } from "../api/client";
 import { createUser, listUsers, updateUser, type User } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
 import { Empty } from "../components/cargo";
+import CountUp from "../design/CountUp";
 import { css, mix } from "../design/css";
 import { I_EYE, I_EYE_OFF, Icon, Svg } from "../design/icons";
 import { MONO, PANEL, Page, PrimaryAction, SearchInput } from "../design/table";
@@ -158,7 +159,9 @@ function Tile({ icon, tone, label, value, hint }: { icon: ReactNode; tone: [stri
       <div style={css("min-width:0")}>
         <div style={css("font-size:11.5px;font-weight:500;color:var(--text-3)")}>{label}</div>
         <div style={css("display:flex;align-items:baseline;gap:8px")}>
-          <span style={css(MONO + ";font-size:21px;font-weight:600")}>{value}</span>
+          <span style={css(MONO + ";font-size:21px;font-weight:600")}>
+            <CountUp text={String(value)} />
+          </span>
           {hint && <span style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{hint}</span>}
         </div>
       </div>
@@ -242,7 +245,9 @@ function Metric({ label, value, divider }: { label: string; value: number; divid
   return (
     <div style={mix("padding:9px 16px", divider ? { borderLeft: "1px solid var(--border-2)" } : {})}>
       <div style={css("font-size:11px;color:var(--text-4)")}>{label}</div>
-      <div style={mix(MONO + ";font-size:16px;font-weight:600", { color: value ? "var(--text)" : "var(--text-5)" })}>{value}</div>
+      <div style={mix(MONO + ";font-size:16px;font-weight:600", { color: value ? "var(--text)" : "var(--text-5)" })}>
+        <CountUp text={String(value)} />
+      </div>
     </div>
   );
 }

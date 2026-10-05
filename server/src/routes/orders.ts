@@ -6,7 +6,7 @@ import { Router } from "express";
 
 import { run, tx } from "../db";
 import { audit, findOrCreateCustomer, findOrCreateOrder, itemOr404, itemStatus, items, normCode, setStatus } from "../domain";
-import { badRequest, conflict, num, optInt, parseDate, str, today } from "../util";
+import { badRequest, conflict, nowIso, num, optInt, parseDate, str, today } from "../util";
 import { customerOr404 } from "./customers";
 
 export const ordersRouter = Router();
@@ -59,6 +59,16 @@ ordersRouter.post("/orders", (req, res) => {
   let partial = pay === "part" ? (money(b.paid_amount, "Оплачено") ?? 0) : 0;
   if (partial > total + 0.001) throw conflict(`Оплата больше суммы заказа (${total})`);
 
+  // Время оформления (необязательно): момент из браузера с учётом его часового пояса.
+  // По нему записываются создание товаров, история статуса и оплата при оформлении.
+  let at = nowIso();
+  if (b.ordered_at !== undefined && b.ordered_at !== null && b.ordered_at !== "") {
+    const t = Date.parse(String(b.ordered_at));
+    if (!Number.isFinite(t)) throw badRequest("Некорректное время заказа");
+    if (t > Date.now() + 5 * 60_000) throw badRequest("Время заказа ещё не наступило");
+    at = new Date(t).toISOString();
+  }
+
   const result = tx(() => {
     let customerId = optInt(b.customer_id);
     let customerCreated = false;
@@ -69,22 +79,24 @@ ordersRouter.post("/orders", (req, res) => {
       customerCreated = c.created;
     }
     const orderId = findOrCreateOrder(customerId, orderDate, req.user!.id);
+    // Заказ создан раньше, чем записан, — время заказа берём более раннее.
+    run("UPDATE orders SET created_at = ? WHERE id = ? AND created_at > ?", at, orderId, at);
     if (comment) run("UPDATE orders SET comment = CASE WHEN comment = '' THEN ? ELSE comment || ' · ' || ? END WHERE id = ?", comment, comment, orderId);
 
     const ids: number[] = [];
     for (const l of lines) {
       const id = run(
-        `INSERT INTO order_items (order_id, name, code, code_norm, qty, price, price_cny, real_price, comment, status, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        orderId, l.name, l.code, normCode(l.code), l.qty, l.price, l.price_cny, l.real_price, l.comment, status, req.user!.id
+        `INSERT INTO order_items (order_id, name, code, code_norm, qty, price, price_cny, real_price, comment, status, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        orderId, l.name, l.code, normCode(l.code), l.qty, l.price, l.price_cny, l.real_price, l.comment, status, req.user!.id, at
       );
-      setStatus(id, status, "create", req.user!.id);
+      setStatus(id, status, "create", req.user!.id, { at });
       ids.push(id);
       // Оплата: полностью — на каждую позицию; частично — по порядку строк, пока хватает суммы.
       const due = itemOr404(id).sale;
       const amount = pay === "full" ? due : pay === "part" ? Math.min(due, partial) : 0;
       if (amount > 0) {
-        run("INSERT INTO payments (order_item_id, amount, comment, user_id) VALUES (?, ?, 'при оформлении заказа', ?)", id, amount, req.user!.id);
+        run("INSERT INTO payments (order_item_id, amount, paid_at, comment, user_id) VALUES (?, ?, ?, 'при оформлении заказа', ?)", id, amount, at, req.user!.id);
         if (pay === "part") partial -= amount;
       }
     }

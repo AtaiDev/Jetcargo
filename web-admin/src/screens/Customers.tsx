@@ -28,6 +28,7 @@ import ItemModal from "../components/ItemModal";
 import ItemTable from "../components/ItemTable";
 import PhoneInput from "../components/PhoneInput";
 import Select from "../components/Select";
+import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_BACK, I_BOX, I_USER, Svg } from "../design/icons";
 import { PANEL, Page, PrimaryAction, SearchInput, THEAD } from "../design/table";
@@ -609,7 +610,9 @@ function Metric({ label, value, color, sub, bar, bl, bt }: { label: string; valu
   return (
     <div style={mix("padding:14px 18px;min-width:0", { borderLeft: bl ? "1px solid var(--border-2)" : undefined, borderTop: bt ? "1px solid var(--border-2)" : undefined })}>
       <div style={css("font-size:11.5px;font-weight:500;color:var(--text-3)")}>{label}</div>
-      <div style={mix(MONO + ";font-size:22px;font-weight:600;margin-top:3px;white-space:nowrap", { color: color ?? "var(--text)" })}>{value}</div>
+      <div style={mix(MONO + ";font-size:22px;font-weight:600;margin-top:3px;white-space:nowrap", { color: color ?? "var(--text)" })}>
+        <CountUp text={value} />
+      </div>
       {bar !== undefined && (
         <div style={css("height:4px;border-radius:2px;background:var(--border-2);margin-top:8px;overflow:hidden")}>
           <div style={mix("height:100%;border-radius:2px;background:var(--green-dot);transition:width .3s", { width: bar + "%" })} />

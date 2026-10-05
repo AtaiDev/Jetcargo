@@ -17,6 +17,18 @@ import { css, mix, MONO } from "../design/css";
 const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 const MONTHS_SHORT = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
 const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const MONTHS_OF = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+
+/** «Сегодня, 4 октября» · «Вчера, 3 октября» · «Пт, 2 октября» · «Пн, 5 мая 2025» — год, только если не текущий. */
+function inWords(d: Date): string {
+  const now = new Date();
+  const k = key(d);
+  const day = `${d.getDate()} ${MONTHS_OF[d.getMonth()]}`;
+  if (k === key(now)) return `Сегодня, ${day}`;
+  if (k === key(addDays(now, -1))) return `Вчера, ${day}`;
+  if (k === key(addDays(now, 1))) return `Завтра, ${day}`;
+  return `${WEEKDAYS[weekday(d)]}, ${day}${d.getFullYear() !== now.getFullYear() ? ` ${d.getFullYear()}` : ""}`;
+}
 
 const GAP = 6;
 const POP_W = 284;
@@ -55,6 +67,7 @@ export default function DatePicker({
   placeholder = "Выберите дату",
   ariaLabel,
   style,
+  words,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -70,6 +83,8 @@ export default function DatePicker({
   placeholder?: string;
   ariaLabel?: string;
   style?: CSSProperties;
+  /** Дата словами («Сегодня, 4 октября») обычным шрифтом — для одиночного поля в форме. */
+  words?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"days" | "months">("days");
@@ -203,7 +218,7 @@ export default function DatePicker({
   const y = cursor.getFullYear();
   const m = cursor.getMonth();
   const iconBox = Math.min(24, height - 10);
-  const label = selected ? `${pad(selected.getDate())}.${pad(selected.getMonth() + 1)}.${selected.getFullYear()}` : placeholder;
+  const label = selected ? (words ? inWords(selected) : `${pad(selected.getDate())}.${pad(selected.getMonth() + 1)}.${selected.getFullYear()}`) : placeholder;
 
   return (
     <>
@@ -245,7 +260,7 @@ export default function DatePicker({
           <CalendarIcon size={Math.round(iconBox * 0.64)} />
         </span>
         <span
-          style={mix("flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.2px", MONO, {
+          style={mix("flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", words ? "font-weight:500" : "letter-spacing:.2px;" + MONO, {
             color: selected ? undefined : "var(--text-4)",
           })}
         >

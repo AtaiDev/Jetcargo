@@ -1,6 +1,8 @@
 /**
  * Запуск всего проекта одной командой: `npm run dev` в корне.
- * Поднимает backend (server/) и админку (web-admin/); Ctrl+C останавливает оба.
+ * Поднимает backend (server/) на ТЕСТОВОЙ базе и админку (web-admin/); Ctrl+C останавливает оба.
+ * Рабочие данные (Render + B2) отсюда недоступны: база — только server/data-test,
+ * админка ходит только на локальный сервер.
  * Если зависимости ещё не установлены — сначала ставит их.
  */
 import { spawn, spawnSync } from "node:child_process";
@@ -26,8 +28,23 @@ for (const app of apps) {
   }
 }
 
+// Строго тестовая среда — независимо от того, что написано в .env-файлах:
+// переменные процесса главнее --env-file (server) и .env (Vite).
+const env = { ...process.env, NODE_ENV: "development", DATA_DIR: "data-test", VITE_API_URL: "http://127.0.0.1:8787/api/v1" };
+delete env.RENDER;
+delete env.PUBLIC_HOSTS;
+delete env.RENDER_EXTERNAL_HOSTNAME;
+
+// Тестовой базы ещё нет — создаём с вымышленными данными по всем разделам.
+const seed = spawnSync(
+  process.execPath,
+  ["--env-file=.env", "--disable-warning=ExperimentalWarning", "scripts/seed-test.mjs"],
+  { cwd: path.join(root, "server"), env, stdio: "inherit" }
+);
+if (seed.status !== 0) process.exit(seed.status ?? 1);
+
 const children = apps.map((app) => {
-  const child = spawn("npm", ["run", "dev"], { cwd: app.dir, stdio: "inherit", shell: true });
+  const child = spawn("npm", ["run", "dev"], { cwd: app.dir, env, stdio: "inherit", shell: true });
   child.on("exit", (code) => {
     console.log(`[${app.name}] остановлен (код ${code})`);
     for (const c of children) if (c !== child && c.exitCode === null) c.kill();
@@ -36,4 +53,5 @@ const children = apps.map((app) => {
   return child;
 });
 
-console.log("\nПанель: http://localhost:5173/admin/   API: http://127.0.0.1:8787/api/v1\n");
+console.log("\nПанель: http://localhost:5173/admin/   API: http://127.0.0.1:8787/api/v1   (ТЕСТОВАЯ база)");
+console.log("Пересоздать тестовые данные: остановите (Ctrl+C) и выполните npm run test-data\n");

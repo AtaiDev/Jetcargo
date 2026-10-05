@@ -142,6 +142,8 @@ export interface NewOrder {
   customer_name?: string;
   customer_phone?: string;
   order_date?: string;
+  /** Момент оформления (ISO); не задан — «сейчас». */
+  ordered_at?: string;
   status?: "ordered" | "in_stock";
   comment?: string;
   pay?: "none" | "full" | "part";
@@ -391,8 +393,47 @@ export interface DashboardWidget {
   error: string | null;
 }
 
+/** Прибыль за период: наценка на товары + вес клиентам − выкуп веса − доставка (партии периода). */
+export interface ProfitSummary {
+  goods: number;
+  goods_items: number;
+  items: number;
+  batches: number;
+  client: number;
+  buy: number;
+  delivery: number;
+  total: number;
+  /** То же за такой же период перед выбранным; null — сравнивать не с чем. */
+  previous: number | null;
+}
+
+export interface BatchProfitRow {
+  id: number;
+  name: string;
+  status: "open" | "closed";
+  created_at: string;
+  /** Когда пришёл последний товар партии; по этому дню партия попадает в период. */
+  last_arrival: string | null;
+  items: number;
+  customers: number;
+  client: number;
+  markup: number;
+  buy: number;
+  delivery: number;
+  income: number;
+  expenses: number;
+  profit: number;
+}
+
 export interface Dashboard {
   period: { date_from: string; date_to: string };
+  profit: ProfitSummary;
+  /** Общая прибыль за всё время: все товары и все партии. since — дата первого заказа. */
+  profit_all: Omit<ProfitSummary, "previous"> & { since: string | null };
+  /** Поступило денег за период (по дате оплаты). */
+  cash_in: number;
+  /** Партии за всё время: прибыль каждой (новые сверху, до 8) и всех вместе. */
+  batches: { count: number; open: number; profit: number; income: number; expenses: number; rows: BatchProfitRow[] };
   finance: {
     today: number;
     week: number;
@@ -576,6 +617,9 @@ export interface Settings {
 }
 export const getSettings = () => api.get<Settings>("/settings").then((r) => r.data);
 export const updateSettings = (body: Partial<Settings>) => api.patch<Settings>("/settings", body).then((r) => r.data);
+
+/** Какая база у сервера: тестовая (локально) или рабочая. Без входа. */
+export const getEnvironment = () => api.get<{ env: "test" | "prod" }>("/env").then((r) => r.data.env);
 
 export interface User {
   id: number;
