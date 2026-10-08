@@ -101,3 +101,141 @@ body:has(> #boot:not([data-state="done"])) :is(.wf-bar,.bar-grow,.chart-in){anim
 .tp-col::-webkit-scrollbar{width:6px}
 @keyframes tpLive{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--green-dot) 55%,transparent)}100%{box-shadow:0 0 0 6px transparent}}
 .tp-live{flex:none;width:7px;height:7px;border-radius:50%;background:var(--green-dot);animation:tpLive 1.6s ease-out infinite;margin-left:auto}
+/* Новый заказ — «касса»: строки товаров и подсветка только что добавленной. */
+.po-item{transition:background .12s ease}
+.po-item:hover{background:var(--surface-2)}
+.po-item .po-actions{opacity:.35;transition:opacity .12s ease}
+.po-item:hover .po-actions,.po-item:focus-within .po-actions{opacity:1}
+@media (hover:none){.po-item .po-actions{opacity:1}}
+@keyframes poIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes poFlash{0%,35%{background:var(--accent-tint)}100%{background:transparent}}
+.po-fresh{animation:poIn .3s ease,poFlash 1.8s ease}
+/* Обзор: кольцо «оплачено» прорисовывается; стрелка плитки «Долги клиентов» сдвигается под курсором. */
+@keyframes ringGrow{from{stroke-dasharray:0 100}}
+.ring-grow{animation:ringGrow 1s cubic-bezier(.2,.8,.2,1) both}
+@media (prefers-reduced-motion:reduce){.ring-grow{animation:none}}
+body:has(> #boot:not([data-state="done"])) .ring-grow{animation-play-state:paused}
+.money-tile:hover .money-tile-arrow{transform:translateX(3px)}
+/* Тонкая прокрутка внутри блоков (обзор: список партий). */
+.thin-scroll{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+.thin-scroll::-webkit-scrollbar{width:8px}
+/* Приём товара: пульт справа — по содержимому; левая колонка ровно его высоты (height:0 + min-height:100%),
+   таблица сканов заполняет остаток и прокручивается внутри. */
+.rcv-grid{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px}
+.rcv-pult{grid-column:2;grid-row:1;align-self:start}
+/* Колонка слева растёт вместе с таблицей до высоты экрана (56 — шапка, 36 — поля страницы), но не ниже пульта. */
+.rcv-main{grid-column:1;grid-row:1;display:flex;flex-direction:column;gap:14px;min-width:0;min-height:100%;max-height:calc(100dvh - 92px)}
+html.is-test .rcv-main{max-height:calc(100dvh - 118px)}
+.rcv-table-card{flex:1;min-height:200px}
+.rcv-facts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border-top:1px solid var(--border-2);background:color-mix(in srgb,var(--surface-2) 60%,var(--surface))}
+.rcv-facts>*+*{border-left:1px solid var(--border-2)}
+.rcv-cstats{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto}
+.rcv-daynum+.rcv-daynum{border-left:1px solid var(--border-2)!important}
+.rcv-row{display:grid;grid-template-columns:24px 44px minmax(0,1.5fr) minmax(0,1.8fr) 96px 134px;gap:12px;align-items:center;padding:9px 18px;border-bottom:1px solid var(--border-2);font-size:12.5px}
+.rcv-row:last-child{border-bottom:none}
+.rcv-row>*:last-child{padding-left:14px}
+/* Заглушки «нет данных» и пустое место под строками таблиц (приём, выдача): бледные строки и подсказка. */
+.sk{display:block;border-radius:6px;background:var(--border-2)}
+.sk-ring{background:none;border:1.5px dashed var(--border-strong)}
+.ghost-fill{flex:1 1 0px;min-height:0;position:relative;overflow:hidden;container-type:size}
+.ghost-rows{position:absolute;inset:0;pointer-events:none;border-top:1px solid var(--border-2);opacity:.75;-webkit-mask-image:linear-gradient(to bottom,#000,transparent 90%);mask-image:linear-gradient(to bottom,#000,transparent 90%)}
+.ghost-msg{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:12px;padding:12px 18px 12px 12px;max-width:calc(100% - 32px);border-radius:14px;background:var(--surface);border:1px solid var(--border-2);box-shadow:0 8px 24px rgba(15,18,25,.07);white-space:nowrap}
+@container (max-height:92px){.ghost-msg{display:none}}
+.rcv-head{position:sticky;top:0;z-index:1;background:var(--surface-2);font-size:11px;color:var(--text-4);padding-top:8px;padding-bottom:8px}
+/* Выдача (screens/Issue.tsx): очередь слева на высоту экрана, выдача справа, ниже история. */
+.iss-grid{display:grid;grid-template-columns:340px minmax(0,1fr);gap:16px;margin-bottom:16px}
+.iss-queue{display:flex;flex-direction:column;min-width:0;position:sticky;top:18px;max-height:calc(100dvh - 92px)}
+html.is-test .iss-queue{max-height:calc(100dvh - 118px)}
+.iss-panel{display:flex;flex-direction:column;min-width:0;max-height:calc(100dvh - 92px)}
+html.is-test .iss-panel{max-height:calc(100dvh - 118px)}
+.iss-search{display:flex;align-items:center;gap:9px;height:42px;padding:0 6px 0 12px;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);transition:border-color .15s,box-shadow .15s}
+.iss-search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+.iss-search input:focus{box-shadow:none!important}
+.iss-qrow{display:flex;align-items:center;gap:11px;width:100%;padding:10px 16px;border:none;border-bottom:1px solid var(--border-2);background:transparent;text-align:left;cursor:pointer;font:inherit;color:inherit;transition:background .12s}
+.iss-qrow:hover{background:var(--hover)}
+.iss-qrow.on{background:var(--accent-tint2);box-shadow:inset 3px 0 0 var(--accent)}
+.iss-qfill{flex:1 1 0px;min-height:0;container-type:size;display:grid;place-items:center;padding:0 24px}
+@container (max-height:70px){.iss-qfill-msg{display:none}}
+.iss-cstats{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.iss-row{display:grid;grid-template-columns:28px minmax(0,1fr) 56px 100px 134px 28px;gap:12px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border-2);font-size:12.5px}
+.iss-row>*:nth-child(5){padding-left:14px}
+.iss-item{cursor:pointer;transition:background .12s}
+.iss-item:hover{background:var(--hover)}
+.iss-item.on{background:var(--accent-tint2)}
+.iss-item:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.iss-head{background:var(--surface-2);font-size:11px;color:var(--text-4);padding-top:7px;padding-bottom:7px}
+.iss-way{padding-top:7px;padding-bottom:7px;border-bottom:none}
+.iss-foot{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px;padding:16px 18px;border-top:1px solid var(--border-2);background:var(--surface-2)}
+.iss-receipt{display:flex;flex-direction:column;padding:2px 14px;border:1px solid var(--border-2);border-radius:12px;background:var(--surface)}
+.iss-rrow{flex:1;min-height:34px;display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;border-bottom:1px dashed var(--border-2)}
+.iss-rrow:last-child{border-bottom:none}
+.iss-amount{display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border:1px solid var(--border-strong);border-radius:11px;background:var(--surface);transition:border-color .15s,box-shadow .15s}
+.iss-amount:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-tint)}
+.iss-amount input:focus{box-shadow:none!important}
+.iss-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--border-2);background:var(--surface-2)}
+.iss-facts>*+*{border-left:1px solid var(--border-2)}
+.iss-hist{display:grid;grid-template-columns:340px minmax(0,1fr)}
+.iss-hist-side{min-width:0;border-right:1px solid var(--border-2);background:var(--surface-2)}
+.iss-hist-stick{position:sticky;top:0;display:flex;flex-direction:column;gap:16px;padding:18px}
+.iss-bars{display:flex;align-items:flex-end;justify-content:space-between;gap:3px;height:64px}
+.iss-bar{position:relative;flex:1 1 0;min-width:0;max-width:30px;height:100%;display:flex;align-items:flex-end}
+.iss-bar-fill{display:block;width:100%;border-radius:4px 4px 2px 2px;background:color-mix(in srgb,var(--accent) 35%,transparent);transition:background .15s}
+.iss-bar.now .iss-bar-fill,.iss-bar:hover .iss-bar-fill{background:var(--accent)}
+.iss-bar.zero .iss-bar-fill{background:var(--border)}
+.iss-tip{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);padding:7px 10px;border-radius:9px;background:var(--toast-bg);color:#fff;font-size:11.5px;line-height:1.4;white-space:nowrap;text-align:center;pointer-events:none;opacity:0;transition:opacity .12s;z-index:5;box-shadow:0 8px 20px rgba(0,0,0,.18)}
+.iss-bar.first .iss-tip{left:0;transform:none;text-align:left}
+.iss-bar.last .iss-tip{left:auto;right:0;transform:none;text-align:right}
+.iss-bar:hover .iss-tip{opacity:1}
+.iss-xl{height:auto;margin-top:7px}
+.iss-xl>span{flex:1 1 0;min-width:0;max-width:30px;font-size:10.5px;color:var(--text-4);text-align:center;white-space:nowrap;overflow:visible}
+/* Лента выдач: время, точка на линии дня, клиент и товары, сумма. */
+.iss-tl-day{display:flex;align-items:baseline;gap:8px;padding:16px 18px 6px}
+.iss-tl{display:grid;grid-template-columns:42px 14px minmax(0,1fr) auto;column-gap:12px;align-items:start;padding:10px 18px}
+.iss-tl-dot{position:relative;align-self:stretch}
+.iss-tl-dot::before{content:"";position:absolute;left:50%;top:-10px;bottom:-10px;width:2px;margin-left:-1px;background:var(--border-2)}
+.iss-tl.first .iss-tl-dot::before{top:9px}
+.iss-tl.last .iss-tl-dot::before{bottom:auto;height:19px}
+.iss-tl.first.last .iss-tl-dot::before{display:none}
+.iss-tl-dot>i{position:absolute;left:50%;top:3px;width:12px;height:12px;margin-left:-6px;border-radius:50%;border:2px solid var(--surface);box-shadow:0 0 0 1px var(--border-2)}
+.iss-sm{display:none}
+@media (max-width:1100px){
+  .iss-grid{grid-template-columns:minmax(0,1fr)}
+  .iss-queue,html.is-test .iss-queue{position:static;max-height:440px}
+  .iss-panel,html.is-test .iss-panel{max-height:none}
+  .iss-grid.has-client .iss-queue{order:2}
+  .iss-idle{display:none!important}
+  .iss-hist{grid-template-columns:minmax(0,1fr)}
+  .iss-hist-side{border-right:none;border-bottom:1px solid var(--border-2)}
+  .iss-hist-stick{position:static}
+}
+@media (max-width:700px){
+  .iss-row{grid-template-columns:28px minmax(0,1fr) 96px;gap:10px;padding:10px 14px}
+  .iss-tl{grid-template-columns:38px 12px minmax(0,1fr) auto;column-gap:10px;padding:10px 14px}
+  .iss-tl-day{padding:14px 14px 6px}
+  .iss-hist-stick{padding:14px}
+  .iss-hide{display:none!important}
+  .iss-chead{padding-right:62px!important}
+  .iss-close{position:absolute;top:16px;right:14px}
+  span.iss-sm{display:inline}
+  div.iss-sm{display:block}
+  .iss-foot{grid-template-columns:minmax(0,1fr);padding:14px}
+  .iss-facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .iss-facts>*{border-left:none!important;border-top:1px solid var(--border-2)}
+  .iss-facts>*:nth-child(even){border-left:1px solid var(--border-2)!important}
+  .iss-facts>*:nth-child(-n+2){border-top:none}
+}
+@media (max-width:1100px){
+  .rcv-grid{grid-template-columns:minmax(0,1fr)}
+  .rcv-pult,.rcv-main{grid-column:auto;grid-row:auto}
+  .rcv-main,html.is-test .rcv-main{min-height:0;max-height:none}
+  .rcv-table-card{flex:none;max-height:560px}
+}
+@media (max-width:700px){
+  .rcv-facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .rcv-cstats{margin-left:0;width:100%}
+  .rcv-facts>*{border-left:none!important;border-top:1px solid var(--border-2)}
+  .rcv-facts>*:nth-child(even){border-left:1px solid var(--border-2)!important}
+  .rcv-facts>*:nth-child(-n+2){border-top:none}
+  .rcv-row{grid-template-columns:24px 40px minmax(0,1fr) 78px;gap:8px;padding:9px 14px}
+  .rcv-hide{display:none!important}
+}

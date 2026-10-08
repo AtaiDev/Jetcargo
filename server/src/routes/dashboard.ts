@@ -286,14 +286,15 @@ dashboardRouter.get("/dashboard", (req, res) => {
       };
     })(),
     cash_in: cashIn(from, to).reduce((a, p) => a + p.amount, 0),
-    // Партии за всё время: прибыль каждой и всех вместе.
+    // Партии за всё время: прибыль каждой (до 30 последних) и всех вместе.
     batches: {
       count: bs.length,
       open: bs.filter((b) => b.batch.status === "open").length,
       profit: bs.reduce((a, b) => a + b.calc.profit_som, 0),
       income: bs.reduce((a, b) => a + b.calc.income_som, 0),
       expenses: bs.reduce((a, b) => a + b.calc.expenses_som, 0),
-      rows: bs.slice(0, 8).map(({ batch: b, calc: c, last_arrival }) => ({
+      // Новые сверху; на обзоре видно 3, остальные — прокруткой внутри блока.
+      rows: bs.slice(0, 30).map(({ batch: b, calc: c, last_arrival }) => ({
         id: b.id,
         name: b.name,
         status: b.status,

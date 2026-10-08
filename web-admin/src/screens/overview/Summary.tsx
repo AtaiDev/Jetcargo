@@ -3,12 +3,12 @@
  *  0. Общая прибыль за всё время — все товары и все партии, старые и новые, без фильтра периода.
  *  1. Прибыль за период — итог и из чего он сложился (водопад): наценка на товары + вес клиентам
  *     − выкуп веса − доставка; рядом — деньги за период (заказы, оплаты, поступления, долги).
- *  2. Прибыль по партиям — каждая партия и все вместе (за всё время).
+ *  2. Прибыль по партиям — компактной таблицей (видно 3 последние, остальные прокруткой) и все вместе.
  *  3. Товары по этапам сейчас — Заказано → На складе → Выдано.
  *  4. Клиенты.
  * Карточки кликабельны — ведут в нужный раздел.
  */
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { BatchProfitRow, Dashboard, ProfitSummary, Totals } from "../../api/domain";
@@ -51,7 +51,7 @@ export default function Summary({ board, isDesktop, periodLabel }: { board: Dash
       {/* 1. Прибыль и деньги за период */}
       <div style={{ display: "grid", gridTemplateColumns: isDesktop && board.profit ? "minmax(0,1.65fr) minmax(0,1fr)" : "minmax(0,1fr)", gap: 14 }}>
         {board.profit && <ProfitCard p={board.profit} periodLabel={periodLabel} isDesktop={isDesktop} />}
-        <MoneyCard board={board} />
+        <MoneyCard board={board} periodLabel={periodLabel} />
       </div>
 
       {/* 2. Партии */}
@@ -350,70 +350,201 @@ function Waterfall({ steps, total, compact }: { steps: { label: string; hint: st
 
 // --- 1б. Деньги за период ----------------------------------------------------------------
 
-function MoneyCard({ board }: { board: Dashboard }) {
+/** Числа обычным шрифтом с цифрами одной ширины. */
+const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
+
+const I_CASH_IN: PathDef[] = [
+  ["path", { d: "M12 3v11" }],
+  ["path", { d: "m7 9 5 5 5-5" }],
+  ["path", { d: "M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" }],
+];
+const I_BAG: PathDef[] = [
+  ["path", { d: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" }],
+  ["path", { d: "M3 6h18" }],
+  ["path", { d: "M16 10a4 4 0 0 1-8 0" }],
+];
+const I_RECEIPT: PathDef[] = [
+  ["path", { d: "M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" }],
+  ["path", { d: "M8 8h8" }],
+  ["path", { d: "M8 12h8" }],
+  ["path", { d: "M8 16h5" }],
+];
+const I_ALERT: PathDef[] = [
+  ["circle", { cx: 12, cy: 12, r: 9 }],
+  ["path", { d: "M12 7.5v5" }],
+  ["path", { d: "M12 16.2h.01" }],
+];
+
+/**
+ * Деньги за период: сумма заказов крупно и кольцо «сколько из неё оплачено»,
+ * под ними — четыре плитки с иконками: поступило, выкуп, средний заказ, долги клиентов.
+ */
+function MoneyCard({ board, periodLabel }: { board: Dashboard; periodLabel: string }) {
   const nav = useNavigate();
   const f = board.finance;
   const o = board.orders;
   const paidShare = pct(f.paid, f.period);
   const avg = o.orders_period ? Math.round(f.period / o.orders_period) : null;
+  const costShare = f.with_cost && f.period ? pct(f.cost, f.period) : null;
 
   return (
-    <section style={css(CARD + ";padding:18px 20px 16px;display:flex;flex-direction:column;justify-content:space-between;gap:14px;min-width:0")}>
-      <span style={css(CAPTION)}>Деньги за период</span>
-      <div>
-        <div style={css("font-size:12px;color:var(--text-3)")}>Сумма заказов</div>
-        <div style={css(MONO + ";font-size:28px;font-weight:700;letter-spacing:-.01em;white-space:nowrap")}>
-          <CountUp text={som(f.period)} />
-        </div>
-        <div style={css("font-size:11.5px;color:var(--text-4)")}>
-          {o.items_period} {plural(o.items_period, "товар", "товара", "товаров")} · {o.orders_period} {plural(o.orders_period, "заказ", "заказа", "заказов")}
-        </div>
-      </div>
-      <div>
-        <div style={css("height:8px;border-radius:5px;overflow:hidden;background:var(--danger-tint)")}>
-          <div
-            className="bar-grow"
-            style={mix("height:100%;border-radius:5px;background:linear-gradient(90deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 70%,var(--accent)))", { width: `${paidShare}%` })}
-          />
-        </div>
-        <div style={css("display:flex;justify-content:space-between;gap:8px;font-size:11.5px;margin-top:6px;white-space:nowrap")}>
-          <span style={css("color:var(--green)")}>
-            оплачено{" "}
-            <b style={css(MONO)}>
-              <CountUp text={som(f.paid)} />
-            </b>
-          </span>
-          <span style={css("color:var(--danger)")}>
-            долг{" "}
-            <b style={css(MONO)}>
-              <CountUp text={som(f.unpaid)} />
-            </b>
-          </span>
+    <section style={css(CARD + ";padding:18px 20px;display:flex;flex-direction:column;justify-content:space-between;gap:16px;min-width:0")}>
+      {/* Шапка */}
+      <div style={css("display:flex;align-items:center;gap:10px;min-width:0")}>
+        <span style={css("width:32px;height:32px;border-radius:10px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
+          <Svg paths={I_WALLET} size={17} sw={1.9} />
+        </span>
+        <div style={css("min-width:0")}>
+          <div style={css("font-size:14px;font-weight:700;color:var(--text)")}>Деньги за период</div>
+          <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{periodLabel}</div>
         </div>
       </div>
+
+      {/* Сумма заказов и кольцо оплаты */}
+      <div style={css("display:flex;align-items:center;gap:18px;min-width:0")}>
+        <PaidRing share={paidShare} empty={f.period <= 0} />
+        <div style={css("flex:1;min-width:0")}>
+          <div style={css("font-size:12px;color:var(--text-3)")}>Сумма заказов</div>
+          <div style={css(NUM + ";font-size:30px;font-weight:500;letter-spacing:-.02em;line-height:1.15;white-space:nowrap")}>
+            <CountUp text={som(f.period)} />
+          </div>
+          <div style={css("font-size:11.5px;color:var(--text-4);margin-top:1px")}>
+            {o.items_period} {plural(o.items_period, "товар", "товара", "товаров")} · {o.orders_period} {plural(o.orders_period, "заказ", "заказа", "заказов")}
+          </div>
+          <div style={css("display:flex;flex-direction:column;gap:4px;margin-top:10px")}>
+            <Legend dot="var(--green-dot)" label="Оплачено" value={som(f.paid)} color="var(--green)" />
+            <Legend dot="var(--danger-dot)" label="Не оплачено" value={som(f.unpaid)} color={f.unpaid > 0 ? "var(--danger)" : "var(--text-3)"} />
+          </div>
+        </div>
+      </div>
+
+      {/* Плитки */}
       <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
-        <Mini label="Поступило денег" value={board.cash_in === undefined ? "—" : som(board.cash_in)} color="var(--green)" />
-        <Mini label="Выкуп товаров" value={f.with_cost ? som(f.cost) : "—"} />
-        <Mini label="Средний заказ" value={avg === null ? "—" : som(avg)} />
-        <Mini label="Долги клиентов" value={som(f.debts_total)} color={f.debts_total > 0 ? "var(--danger)" : undefined} onClick={() => nav("/finance")} />
+        <MoneyTile icon={I_CASH_IN} tone="green" label="Поступило денег" value={board.cash_in === undefined ? "—" : som(board.cash_in)} sub="оплаты за период" />
+        <MoneyTile icon={I_BAG} tone="violet" label="Выкуп товаров" value={f.with_cost ? som(f.cost) : "—"} sub={costShare === null ? "реальная цена не указана" : `${costShare}% от суммы заказов`} />
+        <MoneyTile icon={I_RECEIPT} tone="accent" label="Средний заказ" value={avg === null ? "—" : som(avg)} sub="сумма на один заказ" />
+        <MoneyTile
+          icon={I_ALERT}
+          tone="danger"
+          label="Долги клиентов"
+          value={som(f.debts_total)}
+          sub="все невыданные товары"
+          strong={f.debts_total > 0}
+          onClick={() => nav("/finance")}
+        />
       </div>
     </section>
   );
 }
 
-function Mini({ label, value, color, onClick }: { label: string; value: string; color?: string; onClick?: () => void }) {
+/** Кольцо: доля оплаченного от суммы заказов, процент — в центре. */
+function PaidRing({ share, empty }: { share: number; empty: boolean }) {
+  const r = 38;
+  return (
+    <div style={css("position:relative;width:96px;height:96px;flex:none")}>
+      <svg width="96" height="96" viewBox="0 0 96 96" style={css("transform:rotate(-90deg)")}>
+        <defs>
+          <linearGradient id="paidRing" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="var(--green-dot)" />
+            <stop offset="100%" stopColor="color-mix(in srgb, var(--green-dot) 65%, var(--accent))" />
+          </linearGradient>
+        </defs>
+        <circle cx="48" cy="48" r={r} fill="none" stroke={empty ? "var(--border-2)" : "var(--danger-tint)"} strokeWidth="10" />
+        {!empty && share > 0 && (
+          <circle
+            className="ring-grow"
+            cx="48"
+            cy="48"
+            r={r}
+            fill="none"
+            stroke="url(#paidRing)"
+            strokeWidth="10"
+            strokeLinecap="round"
+            pathLength={100}
+            strokeDasharray={`${Math.max(share, 2)} 100`}
+          />
+        )}
+      </svg>
+      <div style={css("position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center")}>
+        <span style={mix(NUM + ";font-size:19px;font-weight:600;line-height:1", { color: empty ? "var(--text-4)" : "var(--text)" })}>{empty ? "—" : `${share}%`}</span>
+        <span style={css("font-size:10.5px;color:var(--text-4);margin-top:2px")}>оплачено</span>
+      </div>
+    </div>
+  );
+}
+
+function Legend({ dot, label, value, color }: { dot: string; label: string; value: string; color: string }) {
+  return (
+    <div style={css("display:flex;align-items:center;gap:7px;font-size:12px;min-width:0")}>
+      <span style={mix("width:8px;height:8px;border-radius:50%;flex:none", { background: dot })} />
+      <span style={css("color:var(--text-3)")}>{label}</span>
+      <span style={css("flex:1;border-bottom:1px dotted var(--border);margin:0 2px;transform:translateY(-3px);min-width:12px")} />
+      <b style={mix(NUM + ";font-weight:500;white-space:nowrap", { color })}>
+        <CountUp text={value} />
+      </b>
+    </div>
+  );
+}
+
+const MONEY_TONE = {
+  green: ["var(--green-tint)", "var(--green)"],
+  violet: ["var(--violet-tint)", "var(--violet)"],
+  accent: ["var(--accent-tint)", "var(--accent)"],
+  danger: ["var(--danger-tint)", "var(--danger)"],
+} as const;
+
+/** Плитка денег: иконка в цветной подложке, подпись, число и пояснение. */
+function MoneyTile({
+  icon,
+  tone,
+  label,
+  value,
+  sub,
+  strong,
+  onClick,
+}: {
+  icon: PathDef[];
+  tone: keyof typeof MONEY_TONE;
+  label: string;
+  value: string;
+  sub: string;
+  strong?: boolean;
+  onClick?: () => void;
+}) {
+  const [tint, fg] = MONEY_TONE[tone];
   return (
     <HButton
       onClick={onClick}
-      s={mix("text-align:left;background:var(--surface-2);border:1px solid var(--border-2);border-radius:10px;padding:9px 11px;min-width:0", { cursor: onClick ? "pointer" : "default" })}
-      hover={onClick ? "border-color:var(--accent)" : ""}
+      className={onClick ? "money-tile" : undefined}
+      s={mix(
+        "position:relative;text-align:left;border-radius:12px;padding:11px 12px;min-width:0;display:flex;flex-direction:column;gap:7px;font:inherit;color:inherit;transition:border-color .15s,box-shadow .15s,transform .15s",
+        {
+          background: strong ? `color-mix(in srgb, ${tint} 70%, var(--surface))` : "var(--surface-2)",
+          border: `1px solid ${strong ? "var(--danger-border)" : "var(--border-2)"}`,
+          cursor: onClick ? "pointer" : "default",
+        }
+      )}
+      hover={onClick ? `border-color:${fg};box-shadow:0 6px 16px rgba(15,18,25,.07);transform:translateY(-1px)` : ""}
     >
-      <div style={css("font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-        {label}
-        {onClick && " →"}
+      <div style={css("display:flex;align-items:center;gap:7px;min-width:0")}>
+        <span style={mix("width:22px;height:22px;border-radius:7px;flex:none;display:grid;place-items:center", { background: tint, color: fg })}>
+          <Svg paths={icon} size={13} sw={2} />
+        </span>
+        <span style={css("font-size:11.5px;font-weight:500;color:var(--text-2);line-height:1.25;min-width:0")}>{label}</span>
+        {onClick && (
+          <span className="money-tile-arrow" style={mix("margin-left:auto;flex:none;display:flex;transition:transform .15s", { color: fg })}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 12h14" />
+              <path d="m13 6 6 6-6 6" />
+            </svg>
+          </span>
+        )}
       </div>
-      <div style={mix(MONO + ";font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: color ?? "var(--text)" })}>
-        <CountUp text={value} />
+      <div>
+        <div style={mix(NUM + ";font-size:17px;font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: value === "—" ? "var(--text-5)" : strong ? fg : "var(--text)" })}>
+          <CountUp text={value} />
+        </div>
+        <div style={css("font-size:11px;color:var(--text-4);margin-top:1px;line-height:1.35")}>{sub}</div>
       </div>
     </HButton>
   );
@@ -421,102 +552,142 @@ function Mini({ label, value, color, onClick }: { label: string; value: string; 
 
 // --- 2. Прибыль по партиям ----------------------------------------------------------------
 
+const I_LAYERS: PathDef[] = [
+  ["path", { d: "m12 2 9 5-9 5-9-5 9-5Z" }],
+  ["path", { d: "m3 12 9 5 9-5" }],
+  ["path", { d: "m3 17 9 5 9-5" }],
+];
+
+/** Минимальная высота строки партии. */
+const BATCH_ROW = 58;
+/** Сколько партий видно сразу; остальные — прокруткой внутри блока. */
+const BATCH_VISIBLE = 3;
+
+/**
+ * Прибыль по партиям за всё время — компактной таблицей: партия, доходы (вес + наценка),
+ * расходы (выкуп + доставка), прибыль и маржа. Видно последние 3 партии, остальные — прокруткой.
+ */
 function BatchesCard({ b, isDesktop }: { b: Dashboard["batches"]; isDesktop: boolean }) {
   const nav = useNavigate();
-  const max = Math.max(1, ...b.rows.map((r) => Math.abs(r.profit)));
   const neg = b.profit < 0;
-  const cols = "minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.35fr)";
-  const link = "border:none;background:transparent;padding:0;color:var(--accent);font-size:12px;cursor:pointer";
+  const link = "border:none;background:transparent;padding:0;color:var(--accent);font-size:12px;font-weight:500;cursor:pointer;white-space:nowrap";
+  const cols = isDesktop ? "minmax(0,1.7fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)" : "repeat(3,minmax(0,1fr))";
+  // Высота окна списка — ровно по низ третьей партии (строки на телефоне выше, чем на компьютере).
+  const listRef = useRef<HTMLDivElement>(null);
+  const [listH, setListH] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const measure = () => {
+      const last = el.children[BATCH_VISIBLE - 1] as HTMLElement | undefined;
+      setListH(el.children.length > BATCH_VISIBLE && last ? last.offsetTop + last.offsetHeight : undefined);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [b.rows.length, isDesktop]);
 
   return (
     <section style={css(CARD + ";overflow:hidden")}>
-      <div style={css("display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;padding:18px 20px 14px")}>
-        <div style={css("min-width:0")}>
-          <div style={css("display:flex;align-items:baseline;gap:10px")}>
-            <span style={css(CAPTION)}>Прибыль по партиям</span>
-            <span style={css("font-size:11.5px;color:var(--text-4)")}>за всё время</span>
+      {/* Шапка: название и итог всех партий одной строкой */}
+      <div style={css("display:flex;align-items:center;gap:12px 24px;flex-wrap:wrap;padding:14px 20px")}>
+        <div style={css("display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 220px")}>
+          <span style={css("width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-3)")}>
+            <Svg paths={I_LAYERS} size={15} sw={1.9} />
+          </span>
+          <div style={css("min-width:0")}>
+            <div style={css("font-size:14px;font-weight:700;color:var(--text)")}>Прибыль по партиям</div>
+            <div style={css("font-size:11.5px;color:var(--text-4)")}>
+              за всё время{b.count > 0 && ` · ${b.count} ${plural(b.count, "партия", "партии", "партий")}`}
+            </div>
           </div>
-          <div style={css("font-size:12px;color:var(--text-3);margin-top:6px")}>
-            {b.count
-              ? `${b.count} ${plural(b.count, "партия", "партии", "партий")} · ${b.open} ${b.open === 1 ? "принимает" : "принимают"} товары`
-              : "Партий пока нет"}
-          </div>
-          <div style={css("font-size:11.5px;color:var(--text-4);margin-top:2px")}>прибыль партии = вес клиентам + наценка − выкуп веса − доставка</div>
         </div>
         {b.count > 0 && (
-          <div style={css("margin-left:auto;text-align:right")}>
-            <div style={css("font-size:11.5px;color:var(--text-3)")}>Все партии вместе</div>
-            <div style={mix(MONO + ";font-size:26px;font-weight:700;letter-spacing:-.01em;white-space:nowrap", { color: neg ? "var(--danger)" : "var(--green)" })}>
-              <CountUp text={som(b.profit)} />
-            </div>
-            <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap")}>
-              доходы <span style={css(MONO + ";color:var(--text-2)")}>{som(b.income)}</span> · расходы{" "}
-              <span style={css(MONO + ";color:var(--text-2)")}>{som(b.expenses)}</span>
-            </div>
+          <div style={css("display:flex;align-items:center;gap:20px;flex-wrap:wrap")}>
+            <Total label="Доходы" value={som(b.income)} />
+            <Total label="Расходы" value={som(b.expenses)} />
+            <Total label={neg ? "Убыток" : "Прибыль"} value={som(b.profit)} color={neg ? "var(--danger)" : "var(--green)"} strong />
           </div>
         )}
       </div>
 
       {b.count === 0 ? (
-        <div style={css("padding:0 20px 18px;font-size:12.5px;color:var(--text-3)")}>
-          Создайте партию в разделе{" "}
+        <div style={css("padding:0 20px 16px;font-size:12.5px;color:var(--text-3)")}>
+          Партий пока нет — создайте партию в разделе{" "}
           <HButton onClick={() => nav("/batches")} s={link} hover="color:var(--accent-hover)">
             «Партии»
-          </HButton>{" "}
-          — здесь появится её прибыль.
+          </HButton>
+          .
         </div>
       ) : (
         <>
-          {isDesktop && (
-            <div
-              style={{
-                ...css(
-                  "padding:8px 20px;border-top:1px solid var(--border-2);border-bottom:1px solid var(--border-2);background:var(--surface-2);font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-4);display:grid;gap:16px"
-                ),
-                gridTemplateColumns: cols,
-              }}
-            >
-              <span>Партия</span>
-              <span style={css("text-align:right")}>Доходы</span>
-              <span style={css("text-align:right")}>Расходы</span>
-              <span style={css("text-align:right")}>Прибыль</span>
-            </div>
-          )}
-          {b.rows.map((r, i) => (
-            <BatchRow key={r.id} r={r} max={max} cols={cols} isDesktop={isDesktop} divider={i > 0 || !isDesktop} onClick={() => nav(`/batches/${r.id}`)} delay={i * 70} />
-          ))}
-          {b.count > b.rows.length && (
-            <div style={css("padding:10px 20px;border-top:1px solid var(--border-2);font-size:12px;color:var(--text-3)")}>
-              Показаны последние {b.rows.length} из {b.count} —{" "}
-              <HButton onClick={() => nav("/batches")} s={link} hover="color:var(--accent-hover)">
-                все партии →
-              </HButton>
-            </div>
-          )}
+          {/* Заголовки колонок */}
+          <div
+            style={mix(
+              "display:grid;gap:16px;padding:7px 20px;border-top:1px solid var(--border-2);border-bottom:1px solid var(--border-2);background:var(--surface-2);font-size:11px;color:var(--text-4);white-space:nowrap",
+              { gridTemplateColumns: cols }
+            )}
+          >
+            {isDesktop && <span>Партия</span>}
+            <span style={css("text-align:right")}>
+              Доходы{isDesktop && <span style={css("color:var(--text-5)")}> · вес + наценка</span>}
+            </span>
+            <span style={css("text-align:right")}>
+              Расходы{isDesktop && <span style={css("color:var(--text-5)")}> · выкуп + доставка</span>}
+            </span>
+            <span style={css("text-align:right")}>Прибыль</span>
+          </div>
+
+          {/* Партии: видно 3, остальные — прокруткой внутри блока */}
+          <div ref={listRef} className="thin-scroll" style={mix("position:relative;overflow-y:auto", { maxHeight: listH })}>
+            {b.rows.map((r, i) => (
+              <BatchRow key={r.id} r={r} cols={cols} isDesktop={isDesktop} first={i === 0} onClick={() => nav(`/batches/${r.id}`)} />
+            ))}
+          </div>
+
+          <div style={css("display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 20px;border-top:1px solid var(--border-2);font-size:11.5px;color:var(--text-4)")}>
+            <span>{b.rows.length > BATCH_VISIBLE ? `ещё ${b.rows.length - BATCH_VISIBLE} — прокрутите список` : "нажмите на партию — откроется её расчёт"}</span>
+            <HButton onClick={() => nav("/batches")} s={link} hover="color:var(--accent-hover)">
+              Все партии →
+            </HButton>
+          </div>
         </>
       )}
     </section>
   );
 }
 
-/** «создана 27.09 · товары до 04.10»: последний приход — день, по которому партия попадает в период. */
+function Total({ label, value, color, strong }: { label: string; value: string; color?: string; strong?: boolean }) {
+  return (
+    <div style={css("text-align:right")}>
+      <div style={css("font-size:11px;color:var(--text-4)")}>{label}</div>
+      <div style={mix(NUM + ";white-space:nowrap", { fontSize: strong ? 17 : 14.5, fontWeight: strong ? 600 : 500, color: color ?? "var(--text)" })}>
+        <CountUp text={value} />
+      </div>
+    </div>
+  );
+}
+
+/** «27.09 — 04.10»: от создания партии до последнего прихода; по нему партия попадает в период. */
 function arrivals(r: BatchProfitRow): string {
   // Местный день, а не день по UTC: приход в 2 часа ночи по Бишкеку — это уже новый день.
   const short = (iso: string) => {
     const d = new Date(iso);
     return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}`;
   };
-  return r.last_arrival ? `${short(r.created_at)} — ${short(r.last_arrival)}` : `создана ${short(r.created_at)}, товаров ещё нет`;
+  return r.last_arrival ? `${short(r.created_at)} — ${short(r.last_arrival)}` : `создана ${short(r.created_at)}`;
 }
 
-function BatchRow({ r, max, cols, isDesktop, divider, onClick, delay }: { r: BatchProfitRow; max: number; cols: string; isDesktop: boolean; divider: boolean; onClick: () => void; delay: number }) {
+function BatchRow({ r, cols, isDesktop, first, onClick }: { r: BatchProfitRow; cols: string; isDesktop: boolean; first: boolean; onClick: () => void }) {
   const neg = r.profit < 0;
   const open = r.status === "open";
-  const share = Math.max(3, (Math.abs(r.profit) / max) * 100);
-  const money = (value: number, hint: string) => (
-    <div style={css("text-align:right;min-width:0")}>
-      <div style={css(MONO + ";font-size:13px;font-weight:600;color:var(--text);white-space:nowrap")}>{som(value)}</div>
-      <div style={css("font-size:11px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{hint}</div>
+  const margin = r.income > 0 ? Math.round((r.profit / r.income) * 100) : null;
+  const plain = (n: number) => som(n).replace(/\s*с$/, "");
+  const num = (main: string, sub: string, title: string, color?: string) => (
+    <div title={title} style={css("text-align:right;min-width:0")}>
+      <div style={mix(NUM + ";font-size:13.5px;font-weight:500;white-space:nowrap", { color: color ?? "var(--text)" })}>{main}</div>
+      <div style={css(NUM + ";font-size:11px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>
     </div>
   );
 
@@ -524,60 +695,28 @@ function BatchRow({ r, max, cols, isDesktop, divider, onClick, delay }: { r: Bat
     <HButton
       onClick={onClick}
       s={mix(
-        "display:grid;align-items:center;width:100%;text-align:left;border:none;background:transparent;padding:12px 20px;cursor:pointer;font:inherit;color:inherit",
-        { gridTemplateColumns: isDesktop ? cols : "minmax(0,1fr)", gap: isDesktop ? 16 : 8 },
-        // Только строкой: borderTop: undefined стёр бы «border:none», и у кнопки проступила бы рамка браузера.
-        divider && "border-top:1px solid var(--border-2)"
+        "display:grid;align-items:center;width:100%;text-align:left;border:none;background:transparent;padding:10px 20px;cursor:pointer;font:inherit;color:inherit",
+        { gridTemplateColumns: cols, gap: isDesktop ? 16 : "8px 12px", minHeight: BATCH_ROW },
+        !first && "border-top:1px solid var(--border-2)"
       )}
-      hover="background:var(--hover)"
+      hover="background:var(--surface-2)"
     >
-      <div style={css("min-width:0")}>
-        <div style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
-          <span style={css("font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.name}</span>
-          <span
-            style={mix("flex:none;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:10px;white-space:nowrap", {
-              background: open ? "var(--green-tint)" : "var(--muted-bg)",
-              color: open ? "var(--green)" : "var(--text-3)",
-            })}
-          >
-            {open ? "принимает" : "закрыта"}
+      <div style={mix("min-width:0", !isDesktop && "grid-column:1 / -1")}>
+        <div style={css("font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.name}</div>
+        <div style={css("display:flex;align-items:center;gap:6px;margin-top:2px;font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden")}>
+          <span style={mix("width:6px;height:6px;border-radius:50%;flex:none", { background: open ? "var(--green-dot)" : "var(--text-5)" })} />
+          <span style={css("overflow:hidden;text-overflow:ellipsis;" + NUM)}>
+            {open ? "принимает" : "закрыта"} · {r.items} тов. · {arrivals(r)}
           </span>
-        </div>
-        <div style={css("font-size:11.5px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-          {r.items} тов. · {r.customers} {plural(r.customers, "клиент", "клиента", "клиентов")} · {arrivals(r)}
         </div>
       </div>
-      {isDesktop ? (
-        <>
-          {money(r.income, `вес ${som(r.client)} + наценка ${som(r.markup)}`)}
-          {money(r.expenses, `выкуп ${som(r.buy)} + доставка ${som(r.delivery)}`)}
-        </>
-      ) : (
-        <div style={css("display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--text-3)")}>
-          <span>
-            доходы <b style={css(MONO + ";color:var(--text-2)")}>{som(r.income)}</b>
-          </span>
-          <span>
-            расходы <b style={css(MONO + ";color:var(--text-2)")}>{som(r.expenses)}</b>
-          </span>
-        </div>
-      )}
-      <div style={css("display:flex;align-items:center;gap:10px;min-width:0")}>
-        <div style={css("flex:1;height:8px;border-radius:5px;background:var(--border-2);overflow:hidden;min-width:40px")}>
-          <div
-            className="bar-grow"
-            style={mix("height:100%;border-radius:5px", {
-              width: `${share}%`,
-              background: neg
-                ? "linear-gradient(90deg,var(--danger-dot),color-mix(in srgb,var(--danger-dot) 55%,transparent))"
-                : "linear-gradient(90deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 60%,var(--accent)))",
-              animationDelay: `${delay}ms`,
-            })}
-          />
-        </div>
-        <span style={mix(MONO + ";font-size:14px;font-weight:700;white-space:nowrap;min-width:96px;text-align:right", { color: neg ? "var(--danger)" : "var(--green)" })}>
+      {num(som(r.income), `${plain(r.client)} + ${plain(r.markup)}`, `Вес клиентам ${som(r.client)} + наценка ${som(r.markup)}`)}
+      {num(som(r.expenses), `${plain(r.buy)} + ${plain(r.delivery)}`, `Выкуп веса ${som(r.buy)} + доставка ${som(r.delivery)}`)}
+      <div style={css("text-align:right;min-width:0")}>
+        <div style={mix(NUM + ";font-size:14px;font-weight:600;white-space:nowrap", { color: neg ? "var(--danger)" : "var(--green)" })}>
           <CountUp text={som(r.profit)} />
-        </span>
+        </div>
+        <div style={css(NUM + ";font-size:11px;color:var(--text-4);white-space:nowrap")}>{margin === null ? "—" : `маржа ${margin}%`}</div>
       </div>
     </HButton>
   );

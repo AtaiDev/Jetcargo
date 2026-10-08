@@ -355,12 +355,17 @@ export interface IssueRow {
   customer_name: string;
   customer_phone: string;
   user_login: string | null;
+  /** Сколько оплаты принято прямо при выдаче (старый сервер не присылает). */
+  paid_now?: number;
   items: Item[];
 }
 export interface IssueList extends Page<IssueRow> {
-  summary: { items: number; qty: number; sale: number; customers: number };
+  /** debt — сколько по выданным товарам ещё не оплачено; paid_now — принято при выдаче. */
+  summary: { items: number; qty: number; sale: number; customers: number; debt?: number; paid_now?: number };
+  /** Выдачи по дням (день — в часовом поясе из tz). */
+  by_day?: { day: string; issues: number; items: number; sale: number }[];
 }
-export const listIssues = (params: { q?: string; since?: string; until?: string; limit?: number; offset?: number }) =>
+export const listIssues = (params: { q?: string; since?: string; until?: string; limit?: number; offset?: number; tz?: number }) =>
   api.get<IssueList>("/issues", { params }).then((r) => r.data);
 
 // --- Дашборд и финансы ------------------------------------------------------------
@@ -432,7 +437,7 @@ export interface Dashboard {
   profit_all: Omit<ProfitSummary, "previous"> & { since: string | null };
   /** Поступило денег за период (по дате оплаты). */
   cash_in: number;
-  /** Партии за всё время: прибыль каждой (новые сверху, до 8) и всех вместе. */
+  /** Партии за всё время: прибыль каждой (новые сверху, до 30) и всех вместе. */
   batches: { count: number; open: number; profit: number; income: number; expenses: number; rows: BatchProfitRow[] };
   finance: {
     today: number;
