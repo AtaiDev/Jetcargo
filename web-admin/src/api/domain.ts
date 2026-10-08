@@ -503,7 +503,8 @@ export interface MonthRow {
 export interface Finance {
   period: { date_from: string; date_to: string };
   totals: Totals & { debts_total: number };
-  cash_in: { amount: number; count: number };
+  /** by_method и by_day — у нового сервера (старый их не присылает). */
+  cash_in: { amount: number; count: number; by_method?: { method: string; amount: number; count: number }[]; by_day?: { day: string; amount: number }[] };
   months: MonthRow[];
   debtors: { id: number; name: string; phone: string; debt: number; items: number; oldest: string }[];
   payments: {

@@ -1,5 +1,9 @@
 /**
- * Журнал действий: кто, что и когда сделал — человеческими фразами, по дням.
+ * Журнал действий — лента событий: кто, что и когда сделал, человеческими фразами, по дням.
+ *
+ *  - слева панель фильтров: период, поиск, разделы (с числом и долей) и сотрудники;
+ *  - справа лента по дням: время, цветная точка раздела на линии и фраза; одинаковые действия
+ *    подряд (тот же сотрудник, то же действие с тем же объектом) сворачиваются в одну запись «×N».
  * Только администратор. Названия товаров, клиентов и партий подставляет сервер.
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -8,50 +12,35 @@ import { useNavigate } from "react-router-dom";
 import { apiError } from "../api/client";
 import { listAudit, listUsers, type AuditCat, type AuditEntry, type User } from "../api/domain";
 import { Empty, PeriodPicker, periodOf, type Period } from "../components/cargo";
-import Select from "../components/Select";
 import { css, mix } from "../design/css";
-import { I_TRASH, Icon, Svg } from "../design/icons";
-import { MONO, PANEL, Page, SearchInput, THEAD } from "../design/table";
-import { HButton, ModalError, SkeletonRows, btnGhost } from "../design/ui";
+import { I_SEARCH, I_TRASH, Icon, Svg } from "../design/icons";
+import { MONO, Page } from "../design/table";
+import { HButton, ModalError, SkeletonRows } from "../design/ui";
 import { STATUS_LABEL, date, som } from "../lib/cargo";
 import { openItem, useDebounced } from "../lib/events";
 
 const PAGE = 50;
+const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 
 // --- Разделы --------------------------------------------------------------------------------
 
-const CATS: { key: AuditCat | ""; label: string; fg: string; bg: string; icon: ReactNode }[] = [
-  { key: "", label: "Все", fg: "var(--text-2)", bg: "var(--hover)", icon: null },
-  { key: "item", label: "Заказы и товары", fg: "var(--amber)", bg: "var(--amber-tint)", icon: <Icon name="orders" size={15} /> },
-  { key: "receive", label: "Приём", fg: "var(--accent-strong)", bg: "var(--accent-tint)", icon: <Icon name="receive" size={15} /> },
-  { key: "issue", label: "Выдача", fg: "var(--violet)", bg: "var(--violet-tint)", icon: <Icon name="issue" size={15} /> },
-  { key: "payment", label: "Оплаты", fg: "var(--green)", bg: "var(--green-tint)", icon: <span style={css(MONO + ";font-weight:700;font-size:13px")}>с</span> },
-  { key: "customer", label: "Клиенты", fg: "var(--text-2)", bg: "var(--hover)", icon: <Icon name="customers" size={15} /> },
-  { key: "batch", label: "Партии", fg: "var(--text-2)", bg: "var(--hover)", icon: <Icon name="batches" size={15} /> },
-  { key: "import", label: "Импорт", fg: "var(--text-2)", bg: "var(--hover)", icon: <Icon name="import" size={15} /> },
-  { key: "user", label: "Сотрудники", fg: "var(--text-2)", bg: "var(--hover)", icon: <Icon name="staff" size={15} /> },
-  { key: "delete", label: "Удаления", fg: "var(--danger)", bg: "var(--danger-tint)", icon: <Svg paths={I_TRASH} size={14} /> },
+const CATS: { key: AuditCat | ""; label: string; fg: string; bg: string; dot: string; icon: ReactNode }[] = [
+  { key: "", label: "Все действия", fg: "var(--text-2)", bg: "var(--hover)", dot: "var(--text-4)", icon: <Icon name="audit" size={15} /> },
+  { key: "item", label: "Заказы и товары", fg: "var(--amber)", bg: "var(--amber-tint)", dot: "var(--amber-dot)", icon: <Icon name="orders" size={15} /> },
+  { key: "receive", label: "Приём", fg: "var(--accent-strong)", bg: "var(--accent-tint)", dot: "var(--accent)", icon: <Icon name="receive" size={15} /> },
+  { key: "issue", label: "Выдача", fg: "var(--violet)", bg: "var(--violet-tint)", dot: "var(--violet-dot)", icon: <Icon name="issue" size={15} /> },
+  { key: "payment", label: "Оплаты", fg: "var(--green)", bg: "var(--green-tint)", dot: "var(--green-dot)", icon: <span style={css("font-weight:600;font-size:13px;line-height:1")}>с</span> },
+  { key: "customer", label: "Клиенты", fg: "#0E7490", bg: "color-mix(in srgb,#06B6D4 14%,var(--surface))", dot: "#06B6D4", icon: <Icon name="customers" size={15} /> },
+  { key: "batch", label: "Партии", fg: "#4338CA", bg: "color-mix(in srgb,#6366F1 14%,var(--surface))", dot: "#6366F1", icon: <Icon name="batches" size={15} /> },
+  { key: "import", label: "Импорт", fg: "#15803D", bg: "color-mix(in srgb,#22C55E 14%,var(--surface))", dot: "#22C55E", icon: <Icon name="import" size={15} /> },
+  { key: "user", label: "Сотрудники", fg: "#BE185D", bg: "color-mix(in srgb,#EC4899 13%,var(--surface))", dot: "#EC4899", icon: <Icon name="staff" size={15} /> },
+  { key: "delete", label: "Удаления", fg: "var(--danger)", bg: "var(--danger-tint)", dot: "var(--danger-dot)", icon: <Svg paths={I_TRASH} size={14} /> },
 ];
-/** Короткие подписи разделов для колонки таблицы. */
-const SHORT: Record<AuditCat, string> = {
-  item: "Товары",
-  receive: "Приём",
-  issue: "Выдача",
-  payment: "Оплата",
-  customer: "Клиенты",
-  batch: "Партии",
-  import: "Импорт",
-  user: "Сотрудники",
-  delete: "Удаление",
-};
-/** Колонки: время · раздел · сотрудник · действие · объект · подробности. */
-const GRID = "74px 128px 130px minmax(0,1.15fr) minmax(0,1.3fr) minmax(0,1.5fr)";
-
 const CAT = Object.fromEntries(CATS.map((c) => [c.key, c])) as Record<AuditCat | "", (typeof CATS)[number]>;
 
 // --- Экран ----------------------------------------------------------------------------------
 
-export default function Audit({ isDesktop = true }: { isDesktop?: boolean }) {
+export default function Audit(_: { isDesktop?: boolean }) {
   const [period, setPeriod] = useState<Period>(() => periodOf("month"));
   const [cat, setCat] = useState<AuditCat | "">("");
   const [userId, setUserId] = useState("");
@@ -109,181 +98,284 @@ export default function Audit({ isDesktop = true }: { isDesktop?: boolean }) {
     }
   }
 
-  const all = Object.values(counts).reduce((s, n) => s + (n ?? 0), 0);
-  const days = useMemo(() => groupByDay(rows ?? []), [rows]);
+  const all = Object.values(counts).reduce((s, x) => s + (x ?? 0), 0);
+  const maxCat = Math.max(1, ...Object.values(counts).map((x) => x ?? 0));
+  const days = useMemo(() => groupByDay(rows ?? []).map(([d, list]) => [d, collapse(list)] as const), [rows]);
+  const filtered = !!(cat || userId || q);
 
   return (
     <Page size="wide">
-      {/* Фильтры */}
-      <div style={css(PANEL + ";padding:12px 14px;margin-bottom:12px;display:flex;flex-direction:column;gap:12px")}>
-        <div style={css("display:flex;flex-wrap:wrap;gap:10px;align-items:center")}>
-          <PeriodPicker value={period} onChange={setPeriod} />
-          <div style={css("flex:1")} />
-          <Select
-            value={userId}
-            onChange={setUserId}
-            width={190}
-            height={34}
-            fontSize={12.5}
-            highlight={!!userId}
-            ariaLabel="Сотрудник"
-            options={[{ value: "", label: "Все сотрудники" }, ...users.map((u) => ({ value: String(u.id), label: u.full_name || u.login, hint: "@" + u.login }))]}
-          />
-          <SearchInput value={query} onChange={setQuery} placeholder="Товар, клиент, код…" width={isDesktop ? 240 : 400} />
-        </div>
-        <div style={css("display:flex;flex-wrap:wrap;gap:6px")}>
-          {CATS.map((c) => {
-            const n = c.key ? (counts[c.key] ?? 0) : all;
-            if (c.key && !n && cat !== c.key) return null;
-            const on = cat === c.key;
-            return (
-              <HButton
-                key={c.key || "all"}
-                onClick={() => setCat(c.key)}
-                s={mix("display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;border-radius:9px;font-size:12.5px;cursor:pointer;transition:all .12s", {
-                  border: `1px solid ${on ? c.fg : "var(--border)"}`,
-                  background: on ? c.bg : "var(--surface)",
-                  color: on ? c.fg : "var(--text-2)",
-                  fontWeight: on ? 600 : 500,
-                })}
-                hover={on ? undefined : "border-color:var(--border-strong)"}
-              >
-                {c.icon && <span style={mix("display:flex", { color: c.fg })}>{c.icon}</span>}
-                {c.label}
-                <span style={css(MONO + ";font-size:11px;opacity:.7")}>{n}</span>
-              </HButton>
-            );
-          })}
-        </div>
-      </div>
+      <div className="au-layout">
+        {/* Фильтры */}
+        <aside className="au-rail">
+          <div className="au-card">
+            <div style={css("font-size:12px;color:var(--text-3);margin-bottom:10px")}>Период</div>
+            <PeriodPicker value={period} onChange={setPeriod} />
+            <label className="au-search">
+              <span style={css("display:flex;color:var(--text-4)")}>
+                <Svg paths={I_SEARCH} size={15} />
+              </span>
+              <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setQuery("")} placeholder="Товар, клиент, код…" aria-label="Поиск по журналу" />
+            </label>
+          </div>
 
-      {error && <ModalError text={error} />}
-
-      {/* Лента */}
-      {!rows ? (
-        <SkeletonRows rows={6} />
-      ) : rows.length === 0 ? (
-        <div style={css(PANEL)}>
-          <Empty
-            icon="audit"
-            title="За этот период записей нет"
-            text={q || cat || userId ? "Измените фильтры или период" : "Здесь появляются заказы, приёмы, выдачи, оплаты, импорты и удаления"}
-          />
-        </div>
-      ) : (
-        <div style={css(PANEL)}>
-          {isDesktop && (
-            <div style={mix(THEAD, { gridTemplateColumns: GRID })}>
-              {["Время", "Раздел", "Сотрудник", "Действие", "Объект", "Подробности"].map((h) => (
-                <div key={h} style={css("padding:9px 10px")}>
-                  {h}
-                </div>
-              ))}
+          <div className="au-card au-cats-card">
+            <div className="au-cats-title" style={css("display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px")}>
+              <span style={css("font-size:12px;color:var(--text-3)")}>Разделы</span>
+              {cat && (
+                <HButton onClick={() => setCat("")} className="au-reset" s="" hover="">
+                  сбросить
+                </HButton>
+              )}
             </div>
-          )}
-          {days.map(([day, list]) => (
-            <section key={day}>
-              <div
-                style={css(
-                  "display:flex;align-items:center;gap:10px;padding:7px 16px;background:var(--accent-tint2);border-bottom:1px solid var(--border-2)"
-                )}
-              >
-                <span style={css("width:6px;height:6px;border-radius:50%;background:var(--accent)")} />
-                <span style={css("font-size:12.5px;font-weight:700;color:var(--accent-strong)")}>{dayTitle(day)}</span>
-                <span style={css("font-size:11.5px;color:var(--text-4)")}>
-                  {list.length} {plural(list.length, "запись", "записи", "записей")}
-                </span>
-              </div>
-              {list.map((a) => (isDesktop ? <Row key={a.id} a={a} /> : <Entry key={a.id} a={a} />))}
-            </section>
-          ))}
-          <div style={css("display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid var(--border-2);font-size:12px;color:var(--text-3)")}>
-            <span>
-              Показано <b style={css(MONO + ";color:var(--text)")}>{rows.length}</b> из <b style={css(MONO + ";color:var(--text)")}>{total}</b>
+            <div className="au-cats">
+              {CATS.map((c) => {
+                const count = c.key ? (counts[c.key] ?? 0) : all;
+                if (c.key && !count && cat !== c.key) return null;
+                const on = cat === c.key;
+                return (
+                  <button key={c.key || "all"} type="button" className={"au-cat" + (on ? " on" : "")} onClick={() => setCat(c.key)} style={{ ["--c" as string]: c.dot }}>
+                    <span style={mix("width:28px;height:28px;border-radius:9px;flex:none;display:grid;place-items:center", { background: c.bg, color: c.fg })}>{c.icon}</span>
+                    <span style={css("flex:1;min-width:0")}>
+                      <span style={css("display:block;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.label}</span>
+                      {c.key && (
+                        <span className="au-cat-bar">
+                          <span style={mix("display:block;height:100%;border-radius:999px", { width: `${Math.max(4, Math.round((count / maxCat) * 100))}%`, background: c.dot })} />
+                        </span>
+                      )}
+                    </span>
+                    <span style={css(NUM + ";font-size:12.5px;color:var(--text-3)")}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+        </aside>
+
+        {/* Лента */}
+        <section className="au-feed">
+          <div className="au-feed-head">
+            <span style={css("min-width:0;margin-right:auto")}>
+              <span style={css("display:block;font-size:15px;font-weight:500;color:var(--text)")}>{cat ? CAT[cat].label : "Все действия"}</span>
+              <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-4)")}>
+                {rows ? `${total} ${plural(total, "запись", "записи", "записей")} за период${filtered ? " по фильтру" : ""}` : "загружаем…"}
+              </span>
             </span>
-            <div style={css("flex:1")} />
-            {rows.length < total && (
-              <HButton onClick={more} disabled={loadingMore} s={btnGhost + ";height:32px;font-size:12.5px"} hover="border-color:var(--accent)">
-                {loadingMore ? "Загрузка…" : `Показать ещё ${Math.min(PAGE, total - rows.length)}`}
-              </HButton>
+            {users.length > 1 && (
+              <div className="au-who" role="group" aria-label="Сотрудник">
+                <button type="button" className={"au-who-btn" + (userId ? "" : " on")} onClick={() => setUserId("")}>
+                  Все
+                </button>
+                {users.map((u) => {
+                  const on = userId === String(u.id);
+                  const name = u.full_name || u.login;
+                  return (
+                    <button key={u.id} type="button" className={"au-who-btn" + (on ? " on" : "")} onClick={() => setUserId(on ? "" : String(u.id))} title={`${name} · @${u.login}`}>
+                      <Avatar name={name} size={22} />
+                      <span style={css("max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")}>{name.split(/[\s(]/)[0]}</span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
-        </div>
-      )}
+
+          {error && (
+            <div style={css("padding:0 18px 12px")}>
+              <ModalError text={error} />
+            </div>
+          )}
+
+          {!rows ? (
+            <div style={css("padding:16px 18px")}>
+              <SkeletonRows rows={6} />
+            </div>
+          ) : rows.length === 0 ? (
+            <Empty icon="audit" title="За этот период записей нет" text={filtered ? "Измените фильтры или период" : "Здесь появляются заказы, приёмы, выдачи, оплаты, импорты и удаления"} />
+          ) : (
+            <>
+              {days.map(([day, groups]) => (
+                <div key={day}>
+                  <div className="au-day">
+                    <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{dayTitle(day).title}</span>
+                    <span style={css("font-size:12px;color:var(--text-4)")}>{dayTitle(day).sub}</span>
+                    <span style={css("flex:1;min-width:12px;border-bottom:1px solid var(--border-2);transform:translateY(-4px)")} />
+                    <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
+                      {groups.reduce((s, g) => s + g.length, 0)} {plural(groups.reduce((s, g) => s + g.length, 0), "запись", "записи", "записей")}
+                    </span>
+                  </div>
+                  {groups.map((g, i) => (
+                    <FeedItem key={g[0].id} group={g} first={i === 0} last={i === groups.length - 1} />
+                  ))}
+                </div>
+              ))}
+              <div className="au-more">
+                <span style={css(NUM)}>
+                  Показано {rows.length} из {total}
+                </span>
+                {rows.length < total && (
+                  <HButton onClick={more} disabled={loadingMore} className="au-more-btn" s="" hover="">
+                    {loadingMore ? "Загрузка…" : `Показать ещё ${Math.min(PAGE, total - rows.length)}`}
+                  </HButton>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+      </div>
     </Page>
   );
 }
 
-// --- Запись -----------------------------------------------------------------------------------
+// --- Запись ленты -----------------------------------------------------------------------------
 
-/** Строка таблицы (компьютер): всё в одну строку, длинное обрезается с подсказкой. */
-function Row({ a }: { a: AuditEntry }) {
+/** Пауза, после которой однотипные действия уже не сворачиваются вместе. */
+const BURST_MS = 15 * 60_000;
+/** Сколько строк раскрытой группы показывать сразу. */
+const SUBS = 10;
+
+/**
+ * Однотипные действия подряд — одной записью: тот же сотрудник, то же действие с тем же видом
+ * объекта, без перерыва дольше 15 минут. Например, «изменил сотрудника @kassa и ещё 6».
+ */
+function collapse(list: AuditEntry[]): AuditEntry[][] {
+  const out: AuditEntry[][] = [];
+  const key = (a: AuditEntry) => [a.user_id, a.action, a.entity].join("|");
+  for (const a of list) {
+    const g = out[out.length - 1];
+    const prev = g?.[g.length - 1];
+    if (prev && key(prev) === key(a) && Date.parse(prev.created_at) - Date.parse(a.created_at) <= BURST_MS) g.push(a);
+    else out.push([a]);
+  }
+  return out;
+}
+
+/** Действие и объект записи — без имени сотрудника. */
+function Phrase({ a, d }: { a: AuditEntry; d: Described }) {
+  return (
+    <>
+      {d.verb}
+      {d.obj && (
+        <>
+          {a.entity === "order" ? " — " : " "}
+          {d.obj}
+        </>
+      )}
+      {d.sub && <span style={css("color:var(--text-4)")}> · {d.sub}</span>}
+    </>
+  );
+}
+
+function FeedItem({ group, first, last }: { group: AuditEntry[]; first: boolean; last: boolean }) {
   const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(false);
+  const a = group[0];
   const c = CAT[a.cat] ?? CAT[""];
   const d = describe(a, nav);
   const who = a.user_name || a.user_login || "Система";
-  const cell = "padding:7px 10px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+  const times = group.map((x) => hhmm(x.created_at));
+  const span = times[times.length - 1] === times[0] ? times[0] : `${times[times.length - 1]}–${times[0]}`;
+  // Повтор одного и того же (тот же объект и данные) — показываем только время; разные объекты — списком.
+  const same = group.every((x) => x.entity_id === a.entity_id && x.new_value === a.new_value);
+  const rest = group.length - 1;
   return (
-    <div className="audit-row" style={mix("display:grid;align-items:center;min-height:42px;border-bottom:1px solid var(--hover);font-size:13px", { gridTemplateColumns: GRID })}>
-      <span style={css(cell + ";" + MONO + ";font-size:12px;color:var(--text-3);padding-left:16px")}>{hhmm(a.created_at)}</span>
-      <span style={css(cell)}>
-        <span style={mix("display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px 0 7px;border-radius:7px;font-size:12px;font-weight:600", { background: c.bg, color: c.fg })}>
-          <span style={css("display:flex")}>{c.icon ?? <Icon name="audit" size={14} />}</span>
-          {SHORT[a.cat] ?? a.cat}
-        </span>
+    <div className={"au-item" + (first ? " first" : "") + (last ? " last" : "")}>
+      <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);padding-top:6px;white-space:nowrap")}>{span}</span>
+      <span className="au-node">
+        <span style={mix("position:relative;z-index:1;width:30px;height:30px;border-radius:10px;display:grid;place-items:center;box-shadow:0 0 0 4px var(--surface)", { background: c.bg, color: c.fg })}>{c.icon}</span>
       </span>
-      <span style={css(cell + ";display:flex;align-items:center;gap:7px")} title={a.user_login ? "@" + a.user_login : undefined}>
-        <span style={css("width:22px;height:22px;border-radius:50%;background:var(--hover);color:var(--text-2);display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;flex:none")}>
-          {who.slice(0, 1).toUpperCase()}
-        </span>
-        <span style={css("overflow:hidden;text-overflow:ellipsis;font-weight:500")}>{who}</span>
-      </span>
-      <span style={css(cell + ";color:var(--text-2)")} title={d.verb}>
-        {d.verb}
-      </span>
-      <span style={css(cell)}>
-        {d.obj ?? <span style={css("color:var(--text-5)")}>—</span>}
-        {d.sub && <span style={css("color:var(--text-4)")}> · {d.sub}</span>}
-      </span>
-      <span style={css(cell + ";display:flex;gap:6px;padding-right:16px")}>{d.details ?? <span style={css("color:var(--text-5)")}>—</span>}</span>
+      <div style={css("min-width:0;padding-top:4px")}>
+        <div style={css("font-size:13.5px;line-height:1.55;color:var(--text-2)")}>
+          <span style={css("display:inline-flex;vertical-align:middle;margin:-3px 6px 0 0")}>
+            <Avatar name={who} size={20} />
+          </span>
+          <b style={css("font-weight:500;color:var(--text);margin-right:4px")} title={a.user_login ? "@" + a.user_login : undefined}>
+            {who}
+          </b>
+          <Phrase a={a} d={d} />
+          {rest > 0 && (
+            <HButton onClick={() => setOpen((v) => !v)} className={"au-times" + (open ? " on" : "")} s="" hover="" aria-expanded={open}>
+              {same ? `×${group.length}` : `и ещё ${rest}`}
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden style={css("margin-left:5px;transition:transform .2s")}>
+                <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </HButton>
+          )}
+        </div>
+        {d.details && <div style={css("display:flex;flex-wrap:wrap;gap:6px;margin-top:5px")}>{d.details}</div>}
+        {open && rest > 0 &&
+          (same ? (
+            <div className="au-open" style={css("display:flex;flex-wrap:wrap;gap:5px;margin-top:8px")}>
+              {times.map((t, i) => (
+                <span key={i} className="au-time-chip">
+                  {t}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="au-open au-subs">
+              {group.slice(1, all ? undefined : SUBS + 1).map((x) => (
+                <SubRow key={x.id} a={x} />
+              ))}
+              {!all && rest > SUBS && (
+                <HButton onClick={() => setAll(true)} className="au-reset" s="align-self:flex-start;margin-top:4px" hover="">
+                  показать все {rest}
+                </HButton>
+              )}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }
 
-/** Запись на телефоне: время, иконка раздела и фраза. */
-
-function Entry({ a }: { a: AuditEntry }) {
+/** Строка раскрытой группы: время, действие, объект и подробности. */
+function SubRow({ a }: { a: AuditEntry }) {
   const nav = useNavigate();
-  const c = CAT[a.cat] ?? CAT[""];
   const d = describe(a, nav);
   return (
-    <div style={css("display:grid;grid-template-columns:46px 30px minmax(0,1fr);gap:12px;align-items:start;padding:8px 16px;border-bottom:1px solid var(--hover)")}>
-      <span style={css(MONO + ";font-size:12px;color:var(--text-3);padding-top:6px")}>{hhmm(a.created_at)}</span>
-      <span style={mix("width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center", { background: c.bg, color: c.fg })}>
-        {c.icon ?? <Icon name="audit" size={15} />}
+    <div className="au-sub">
+      <span style={css(NUM + ";font-size:12px;color:var(--text-4);white-space:nowrap")}>{hhmm(a.created_at)}</span>
+      <span style={css("min-width:0;font-size:13px;line-height:1.5;color:var(--text-2)")}>
+        <Phrase a={a} d={d} />
+        {d.details && <span style={css("display:inline-flex;flex-wrap:wrap;gap:6px;margin-left:8px;vertical-align:middle")}>{d.details}</span>}
       </span>
-      <div style={css("min-width:0;padding-top:3px")}>
-        <div style={css("font-size:13.5px;line-height:1.5;color:var(--text-2)")}>
-          <b style={css("color:var(--text);font-weight:600")}>{a.user_name || a.user_login || "Система"}</b> {d.verb}
-          {d.obj && (
-            <>
-              {a.entity === "order" ? " — " : " "}
-              {d.obj}
-            </>
-          )}
-          {d.sub && <span style={css("color:var(--text-4)")}> · {d.sub}</span>}
-        </div>
-        {d.details && <div style={css("display:flex;flex-wrap:wrap;gap:6px;margin-top:5px")}>{d.details}</div>}
-      </div>
     </div>
+  );
+}
+
+const AVATAR_BG = [
+  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
+  "linear-gradient(135deg,#22C55E,#0EA5E9)",
+  "linear-gradient(135deg,#F59E0B,#EF4444)",
+  "linear-gradient(135deg,#EC4899,#8B5CF6)",
+  "linear-gradient(135deg,#06B6D4,#3B82F6)",
+];
+
+/** Аватар-буква; цвет — от имени, как на других страницах. */
+function Avatar({ name, size }: { name: string; size: number }) {
+  const n = [...name].reduce((s, ch) => s + ch.charCodeAt(0), 0);
+  return (
+    <span
+      style={mix("border-radius:50%;flex:none;display:inline-grid;place-items:center;color:#fff;font-weight:600", {
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.42),
+        background: AVATAR_BG[n % AVATAR_BG.length],
+      })}
+    >
+      {name.trim().slice(0, 1).toUpperCase()}
+    </span>
   );
 }
 
 /** Ссылка на объект записи (жирная, кликабельная, если объект ещё существует). */
 function Obj({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
-  if (!onClick) return <b style={css("color:var(--text);font-weight:600")}>{children}</b>;
+  if (!onClick) return <b style={css("color:var(--text);font-weight:500")}>{children}</b>;
   return (
-    <HButton onClick={onClick} s="border:none;background:transparent;padding:0;font:inherit;font-weight:600;color:var(--text);cursor:pointer;text-align:left" hover="color:var(--accent);text-decoration:underline">
+    <HButton onClick={onClick} s="border:none;background:transparent;padding:0;font:inherit;font-weight:500;color:var(--text);cursor:pointer;text-align:left;transition:color .15s" hover="color:var(--accent)">
       {children}
     </HButton>
   );
@@ -292,7 +384,7 @@ function Obj({ children, onClick }: { children: ReactNode; onClick?: () => void 
 function Chip({ children, tone }: { children: ReactNode; tone?: "danger" | "green" }) {
   return (
     <span
-      style={mix("display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 9px;border-radius:7px;border:1px solid var(--border-2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", {
+      style={mix("display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--border-2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", {
         background: tone === "danger" ? "var(--danger-tint)" : tone === "green" ? "var(--green-tint)" : "var(--surface-2)",
         color: tone === "danger" ? "var(--danger)" : tone === "green" ? "var(--green)" : "var(--text-2)",
       })}
@@ -309,7 +401,7 @@ function Diff({ label, from, to }: { label: string; from: string; to: string }) 
       <span style={css("color:var(--text-4)")}>{label}:</span>
       <span style={css("text-decoration:line-through;color:var(--text-4)")}>{from}</span>
       <span style={css("color:var(--text-4)")}>→</span>
-      <b style={css("font-weight:600;color:var(--text)")}>{to}</b>
+      <b style={css("font-weight:500;color:var(--text)")}>{to}</b>
     </Chip>
   );
 }
@@ -512,14 +604,17 @@ function groupByDay(rows: AuditEntry[]): [string, AuditEntry[]][] {
   return [...m.entries()];
 }
 
-function dayTitle(day: string): string {
+/** «Сегодня · четверг, 8 октября», «Вчера · …» или «3 октября · пятница». */
+function dayTitle(day: string): { title: string; sub: string } {
   const today = localDay(new Date().toISOString());
   const y = new Date();
   y.setDate(y.getDate() - 1);
-  const label = new Date(`${day}T12:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long", weekday: "long" });
-  if (day === today) return `Сегодня · ${label}`;
-  if (day === localDay(y.toISOString())) return `Вчера · ${label}`;
-  return label.charAt(0).toUpperCase() + label.slice(1);
+  const d = new Date(`${day}T12:00:00`);
+  const words = d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  const wd = d.toLocaleDateString("ru-RU", { weekday: "long" });
+  if (day === today) return { title: "Сегодня", sub: `${wd}, ${words}` };
+  if (day === localDay(y.toISOString())) return { title: "Вчера", sub: `${wd}, ${words}` };
+  return { title: words, sub: wd };
 }
 
 function plural(count: number, one: string, few: string, many: string) {

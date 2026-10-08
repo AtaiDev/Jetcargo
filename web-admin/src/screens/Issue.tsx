@@ -966,32 +966,64 @@ function buckets(from: string, to: string, byDay: DayStat[]): { unit: "day" | "w
   return { unit, list: [...out.values()] };
 }
 
-/** Небольшой график выдач за период: высота — сумма, подсказка — сколько выдач и на сколько. */
-function MiniChart({ period, byDay }: { period: Period; byDay: DayStat[] }) {
+/**
+ * График выдач за период: столбики на светлых дорожках, высота — сумма.
+ * Над лучшим днём — его доля; при наведении — дата, сумма, доля от всего периода и число выдач.
+ */
+function HistoryChart({ period, byDay }: { period: Period; byDay: DayStat[] }) {
   const { unit, list } = useMemo(() => buckets(period.date_from, period.date_to, byDay), [period.date_from, period.date_to, byDay]);
+  const total = list.reduce((a, b) => a + b.sale, 0);
   const max = Math.max(1, ...list.map((b) => b.sale));
+  const best = list.reduce<Bucket | null>((a, b) => (b.sale > (a?.sale ?? 0) ? b : a), null);
+  const pct = (v: number) => (total ? Math.round((v / total) * 100) : 0);
   // Подписи: не больше ~7, последняя — всегда.
   const every = Math.max(1, Math.ceil(list.length / 7));
   const shown = (i: number) => (list.length - 1 - i) % every === 0;
   return (
-    <div>
-      <div style={css("font-size:11.5px;font-weight:500;color:var(--text-2);margin-bottom:10px")}>
-        Выдачи {unit === "day" ? "по дням" : unit === "week" ? "по неделям" : "по месяцам"}
+    <div className="iss-chart">
+      <div style={css("display:flex;align-items:baseline;gap:8px;margin-bottom:6px")}>
+        <span style={css("font-size:12.5px;font-weight:500;color:var(--text)")}>Выдачи {unit === "day" ? "по дням" : unit === "week" ? "по неделям" : "по месяцам"}</span>
+        <span style={css(NUM + ";margin-left:auto;font-size:11.5px;color:var(--text-4);white-space:nowrap")}>{total ? `всего ${som(total)}` : "выдач не было"}</span>
       </div>
-      <div className="iss-bars">
-        {list.map((b, i) => (
-          <div key={b.key} className={"iss-bar" + (b.now ? " now" : "") + (b.issues ? "" : " zero") + (i < 2 ? " first" : i >= list.length - 2 ? " last" : "")}>
-            <span className="iss-bar-fill" style={{ height: b.issues ? `${Math.max(10, Math.round((b.sale / max) * 100))}%` : "3px" }} />
-            <span className="iss-tip">
-              <span style={css("display:block;color:rgba(255,255,255,.7)")}>{b.tip}</span>
-              <span style={css(NUM)}>{b.issues ? `${b.issues} ${plural(b.issues, "выдача", "выдачи", "выдач")} · ${som(b.sale)}` : "выдач не было"}</span>
-            </span>
-          </div>
-        ))}
+      <div className="iss-cols">
+        {list.map((b, i) => {
+          const h = b.issues ? Math.max(7, Math.round((b.sale / max) * 100)) : 0;
+          return (
+            <div
+              key={b.key}
+              tabIndex={0}
+              aria-label={`${b.tip}: ${b.issues ? `${b.issues} ${plural(b.issues, "выдача", "выдачи", "выдач")}, ${som(b.sale)}, ${pct(b.sale)}%` : "выдач не было"}`}
+              className={"iss-col" + (b.now ? " now" : "") + (i < 2 ? " first" : i >= list.length - 2 ? " last" : "")}
+            >
+              {best && best.key === b.key && b.sale > 0 && (
+                <span className="iss-col-top" style={{ bottom: `calc(${h}% + 5px)` }}>
+                  {pct(b.sale)}%
+                </span>
+              )}
+              {h > 0 && <span className="iss-col-fill" style={{ height: `${h}%` }} />}
+              <span className="iss-tip">
+                <span style={css("display:block;font-size:11px;color:rgba(255,255,255,.65)")}>{b.tip}</span>
+                {b.issues ? (
+                  <>
+                    <span style={css(NUM + ";display:flex;align-items:center;gap:7px;margin-top:3px;font-size:14px;font-weight:600")}>
+                      {som(b.sale)}
+                      <span style={css("font-size:11px;font-weight:600;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,.16)")}>{pct(b.sale)}% периода</span>
+                    </span>
+                    <span style={css(NUM + ";display:block;font-size:11px;color:rgba(255,255,255,.65);margin-top:1px")}>
+                      {b.issues} {plural(b.issues, "выдача", "выдачи", "выдач")}
+                    </span>
+                  </>
+                ) : (
+                  <span style={css("display:block;margin-top:2px")}>выдач не было</span>
+                )}
+              </span>
+            </div>
+          );
+        })}
       </div>
-      <div className="iss-bars iss-xl">
+      <div className="iss-cols iss-xl">
         {list.map((b, i) => (
-          <span key={b.key} style={mix(b.now ? "color:var(--accent-strong);font-weight:500" : "")}>
+          <span key={b.key} style={mix(b.now ? "color:var(--accent-strong);font-weight:600" : "")}>
             {shown(i) ? b.label : ""}
           </span>
         ))}
@@ -1000,67 +1032,132 @@ function MiniChart({ period, byDay }: { period: Period; byDay: DayStat[] }) {
   );
 }
 
-/** Цвета денег выданного: оплачено заранее, принято при выдаче, долг — одни и те же в кольце, строках и точках ленты. */
+/** Цвета денег выданного: оплачено заранее, принято при выдаче, долг — одни и те же в кольце, полосе, строках и точках ленты. */
 const MONEY = {
   before: "var(--accent)",
   now: "var(--green-dot)",
   debt: "var(--danger-dot)",
 } as const;
+/** Те же доли — градиентом для кольца и полосы. */
+const MONEY_GRAD = {
+  before: ["#6A8BFF", "#3E63DD"],
+  now: ["#4ADE80", "#16A34A"],
+  debt: ["#F87171", "#DC2626"],
+} as const;
 
-/** Кольцо: из чего сложилась сумма выданного; в центре — сколько оплачено. */
+/**
+ * Кольцо: из чего сложилась сумма выданного; в центре — сколько оплачено.
+ * Каждая доля — точная дуга с прямыми концами и ровным промежутком 3px; маленькая доля
+ * получает хотя бы 6° (за счёт самой большой), чтобы её было видно и она ни к чему не липла.
+ */
+const RING = { size: 116, r: 46, w: 12 };
+
+function ringPoint(deg: number): string {
+  const a = ((deg - 90) * Math.PI) / 180;
+  const c = RING.size / 2;
+  return `${(c + RING.r * Math.cos(a)).toFixed(3)} ${(c + RING.r * Math.sin(a)).toFixed(3)}`;
+}
+
+function ringArc(from: number, to: number): string {
+  return `M ${ringPoint(from)} A ${RING.r} ${RING.r} 0 ${to - from > 180 ? 1 : 0} 1 ${ringPoint(to)}`;
+}
+
 function IssueRing({ before, now, debt }: { before: number; now: number; debt: number }) {
   const total = before + now + debt;
-  const r = 38;
-  const parts = total > 0 ? [
-    { v: before, c: MONEY.before },
-    { v: now, c: MONEY.now },
-    { v: debt, c: MONEY.debt },
-  ] : [];
+  const parts = (
+    [
+      { k: "before", v: before },
+      { k: "now", v: now },
+      { k: "debt", v: debt },
+    ] as const
+  ).filter((p) => p.v > 0);
+  const gap = parts.length > 1 ? (3 / RING.r) * (180 / Math.PI) : 0;
+  const minSpan = 6 + gap;
+  // Доли в градусах; слишком маленькие дотягиваем до minSpan, разницу забираем у самой большой.
+  const spans = parts.map((p) => (p.v / total) * 360);
+  let extra = 0;
+  spans.forEach((s, i) => {
+    if (s < minSpan) {
+      extra += minSpan - s;
+      spans[i] = minSpan;
+    }
+  });
+  if (extra > 0) spans[spans.indexOf(Math.max(...spans))] -= extra;
   let at = 0;
+  const arcs = parts.map((p, i) => {
+    const from = at + gap / 2;
+    const to = at + spans[i] - gap / 2;
+    at += spans[i];
+    return { k: p.k, d: ringArc(from, to) };
+  });
   const paid = total > 0 ? Math.round(((before + now) / total) * 100) : 0;
+  const c = RING.size / 2;
   return (
-    <div style={css("position:relative;width:96px;height:96px;flex:none")}>
-      <svg width="96" height="96" viewBox="0 0 96 96" style={css("transform:rotate(-90deg)")}>
-        <circle cx="48" cy="48" r={r} fill="none" stroke="var(--border-2)" strokeWidth="10" />
-        {parts.map((p, i) => {
-          const len = (p.v / total) * 100;
-          const el =
-            len > 0 ? (
-              <circle
-                key={i}
-                className="ring-grow"
-                cx="48"
-                cy="48"
-                r={r}
-                fill="none"
-                stroke={p.c}
-                strokeWidth="10"
-                pathLength={100}
-                strokeDasharray={`${Math.max(len - (len > 2 ? 0.8 : 0), 0.6)} 100`}
-                strokeDashoffset={-at}
-              />
-            ) : null;
-          at += len;
-          return el;
-        })}
+    <div style={mix("position:relative;flex:none", { width: RING.size, height: RING.size })}>
+      <svg width={RING.size} height={RING.size} viewBox={`0 0 ${RING.size} ${RING.size}`} shapeRendering="geometricPrecision" style={css("display:block")}>
+        <defs>
+          {(Object.keys(MONEY_GRAD) as (keyof typeof MONEY_GRAD)[]).map((k) => (
+            <linearGradient key={k} id={`issRing-${k}`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={RING.size} y2={RING.size}>
+              <stop offset="0%" stopColor={MONEY_GRAD[k][0]} />
+              <stop offset="100%" stopColor={MONEY_GRAD[k][1]} />
+            </linearGradient>
+          ))}
+          <radialGradient id="issRing-inner" cx="50%" cy="35%" r="70%">
+            <stop offset="0%" style={{ stopColor: "color-mix(in srgb, var(--accent) 10%, var(--surface))" }} />
+            <stop offset="100%" style={{ stopColor: "var(--surface)" }} />
+          </radialGradient>
+        </defs>
+        <circle cx={c} cy={c} r={RING.r - RING.w / 2 - 1} fill="url(#issRing-inner)" />
+        <circle cx={c} cy={c} r={RING.r} fill="none" stroke="var(--border-2)" strokeWidth={RING.w} />
+        {parts.length === 1 ? (
+          <circle cx={c} cy={c} r={RING.r} fill="none" stroke={`url(#issRing-${parts[0].k})`} strokeWidth={RING.w} />
+        ) : (
+          arcs.map((a) => (
+            <path key={a.k} className="ring-grow" d={a.d} fill="none" stroke={`url(#issRing-${a.k})`} strokeWidth={RING.w} strokeLinecap="butt" pathLength={100} strokeDasharray="100 100" />
+          ))
+        )}
       </svg>
       <div style={css("position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center")}>
-        <span style={mix(NUM + ";font-size:19px;font-weight:600;line-height:1", { color: total > 0 ? "var(--text)" : "var(--text-4)" })}>{total > 0 ? `${paid}%` : "—"}</span>
-        <span style={css("font-size:10.5px;color:var(--text-4);margin-top:2px")}>оплачено</span>
+        <span style={mix(NUM + ";font-size:25px;font-weight:600;letter-spacing:-.02em;line-height:1", { color: total > 0 ? "var(--text)" : "var(--text-4)" })}>
+          {total > 0 ? <CountUp text={`${paid}%`} /> : "—"}
+        </span>
+        <span style={css("font-size:11px;color:var(--text-4);margin-top:3px")}>оплачено</span>
       </div>
     </div>
   );
 }
 
-function MoneyLine({ dot, label, value }: { dot: string; label: string; value: number }) {
+/** Полоса долей: оплачено заранее / при выдаче / долг. */
+function SplitBar({ parts }: { parts: { k: keyof typeof MONEY_GRAD; v: number }[] }) {
+  const total = parts.reduce((a, p) => a + p.v, 0);
   return (
-    <div style={css("display:flex;align-items:center;gap:7px;font-size:12px;min-width:0")}>
-      <span style={mix("width:8px;height:8px;border-radius:50%;flex:none", { background: dot })} />
-      <span style={css("color:var(--text-3);white-space:nowrap")}>{label}</span>
-      <span style={css("flex:1;border-bottom:1px dotted var(--border);margin:0 2px;transform:translateY(-3px);min-width:12px")} />
-      <b style={mix(NUM + ";font-weight:500;white-space:nowrap", { color: value ? "var(--text)" : "var(--text-4)" })}>
+    <div className="iss-split bar-grow">
+      {total > 0 &&
+        parts
+          .filter((p) => p.v > 0)
+          .map((p) => (
+            <span key={p.k} style={{ flex: `${p.v} 1 0`, minWidth: 6, background: `linear-gradient(90deg, ${MONEY_GRAD[p.k][0]}, ${MONEY_GRAD[p.k][1]})` }} />
+          ))}
+    </div>
+  );
+}
+
+function MoneyLine({ dot, label, value, share }: { dot: string; label: string; value: number; share: number }) {
+  return (
+    <div style={css("display:grid;grid-template-columns:auto minmax(0,1fr) auto 44px;align-items:center;gap:8px;min-width:0")}>
+      <span style={mix("width:8px;height:8px;border-radius:50%", { background: dot })} />
+      <span style={css("font-size:12.5px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
+      <b style={mix(NUM + ";font-size:13px;font-weight:500;white-space:nowrap", { color: value ? "var(--text)" : "var(--text-4)" })}>
         <CountUp text={som(value)} />
       </b>
+      <span
+        style={mix(NUM + ";justify-self:end;font-size:11px;font-weight:500;padding:2px 6px;border-radius:6px", {
+          background: value ? `color-mix(in srgb, ${dot} 14%, transparent)` : "var(--hover)",
+          color: value ? dot : "var(--text-4)",
+        })}
+      >
+        {share}%
+      </span>
     </div>
   );
 }
@@ -1071,28 +1168,36 @@ const I_RECEIPT: PathDef = [
   ["path", { d: "M8 12h8" }],
   ["path", { d: "M8 16h5" }],
 ];
+const I_TROPHY: PathDef = [
+  ["path", { d: "M8 21h8" }],
+  ["path", { d: "M12 17v4" }],
+  ["path", { d: "M7 4h10v5a5 5 0 0 1-10 0V4Z" }],
+  ["path", { d: "M17 5h3v2a3 3 0 0 1-3 3" }],
+  ["path", { d: "M7 5H4v2a3 3 0 0 0 3 3" }],
+];
 
-const TILE_TONE = {
-  accent: ["var(--accent-tint)", "var(--accent)"],
-  green: ["var(--green-tint)", "var(--green)"],
-  violet: ["var(--violet-tint)", "var(--violet)"],
-  amber: ["var(--amber-tint)", "var(--amber)"],
+const TILE_GRAD = {
+  violet: "linear-gradient(135deg,#A78BFA,#7C3AED)",
+  accent: "linear-gradient(135deg,#6A8BFF,#3E63DD)",
+  green: "linear-gradient(135deg,#34D399,#0EA5E9)",
+  amber: "linear-gradient(135deg,#FBBF24,#F97316)",
 } as const;
 
-/** Плитка итога: иконка в цветной подложке, подпись, число и пояснение. */
-function SumTile({ icon, tone, label, value, sub }: { icon: ReactNode; tone: keyof typeof TILE_TONE; label: string; value: string; sub: string }) {
-  const [tint, fg] = TILE_TONE[tone];
+/** Плитка итога: яркий значок, подпись, число и пояснение. */
+function SumTile({ icon, tone, label, value, sub }: { icon: ReactNode; tone: keyof typeof TILE_GRAD; label: string; value: string; sub: string }) {
   return (
-    <div style={css("border-radius:12px;padding:11px 12px;min-width:0;display:flex;flex-direction:column;gap:7px;background:var(--surface);border:1px solid var(--border-2)")}>
-      <div style={css("display:flex;align-items:center;gap:7px;min-width:0")}>
-        <span style={mix("width:22px;height:22px;border-radius:7px;flex:none;display:grid;place-items:center", { background: tint, color: fg })}>{icon}</span>
-        <span style={css("font-size:11.5px;font-weight:500;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
+    <div className="iss-tile">
+      <div style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
+        <span style={mix("width:26px;height:26px;border-radius:8px;flex:none;display:grid;place-items:center;color:#fff;box-shadow:0 4px 10px -4px rgba(15,18,25,.35)", { background: TILE_GRAD[tone] })}>
+          {icon}
+        </span>
+        <span style={css("font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
       </div>
       <div>
-        <div style={mix(NUM + ";font-size:17px;font-weight:500;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: value === "—" ? "var(--text-5)" : "var(--text)" })}>
+        <div style={mix(NUM + ";font-size:18px;font-weight:500;letter-spacing:-.01em;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: value === "—" ? "var(--text-5)" : "var(--text)" })}>
           <CountUp text={value} />
         </div>
-        <div style={css("font-size:11px;color:var(--text-4);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>
+        <div style={css("font-size:11px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>
       </div>
     </div>
   );
@@ -1107,6 +1212,7 @@ function IssueHistory({ toast }: { toast: Toast }) {
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState<IssueList | null>(null);
   const [open, setOpen] = useState<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     listIssues({
@@ -1122,6 +1228,11 @@ function IssueHistory({ toast }: { toast: Toast }) {
   }, [q, period.date_from, period.date_to, offset]);
   useEffect(load, [load]);
   useEffect(() => setOffset(0), [q, period.date_from, period.date_to]);
+  // Новая страница или период — лента снова с начала.
+  // В фигурных скобках: свежий Chrome возвращает из scrollTo промис, а эффект должен вернуть ничего.
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: 0 });
+  }, [offset, q, period.date_from, period.date_to]);
   useRefresh(load);
 
   const byDay = useMemo(() => data?.by_day ?? [], [data]);
@@ -1141,93 +1252,110 @@ function IssueHistory({ toast }: { toast: Toast }) {
   const debt = s?.debt ?? 0;
   const now = s?.paid_now ?? 0;
   const before = s ? Math.max(0, s.sale - debt - now) : 0;
+  const share = (v: number) => (s && s.sale ? Math.round((v / s.sale) * 100) : 0);
   const avg = s && data.total ? Math.round(s.sale / data.total) : 0;
+  const best = byDay.reduce<DayStat | null>((a, d) => (d.sale > (a?.sale ?? 0) ? d : a), null);
+  const bestDate = best ? new Date(`${best.day}T00:00:00`) : null;
 
   return (
     <section className="iss-hist" style={css(CARD + ";overflow:hidden")}>
       {/* Слева — сводка за период */}
       <aside className="iss-hist-side">
-        <div className="iss-hist-stick">
-          <div style={css("display:flex;align-items:center;gap:10px;min-width:0")}>
-            <span style={css("width:32px;height:32px;border-radius:10px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-              <Icon name="issue" size={17} />
-            </span>
-            <div style={css("min-width:0")}>
-              <div style={css(TITLE)}>История выдач</div>
-              <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{periodText(period.date_from, period.date_to)}</div>
-            </div>
+        <div style={css("display:flex;align-items:center;gap:11px;min-width:0")}>
+          <span style={css("width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#6A8BFF,#7C3AED);box-shadow:0 8px 18px -8px rgba(62,99,221,.7)")}>
+            <Icon name="issue" size={18} />
+          </span>
+          <div style={css("min-width:0")}>
+            <div style={css(TITLE)}>История выдач</div>
+            <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{periodText(period.date_from, period.date_to)}</div>
           </div>
+        </div>
 
-          <div style={css("display:flex;align-items:center;gap:16px;min-width:0")}>
+        <div className="iss-hero">
+          <div style={css("position:relative;display:flex;align-items:center;gap:16px;min-width:0")}>
             <IssueRing before={before} now={now} debt={debt} />
             <div style={css("flex:1;min-width:0")}>
               <div style={css("font-size:12px;color:var(--text-3)")}>Выдано на сумму</div>
-              <div style={css(NUM + ";font-size:26px;font-weight:500;letter-spacing:-.02em;line-height:1.15;white-space:nowrap")}>{s ? <CountUp text={som(s.sale)} /> : "—"}</div>
-              <div style={css(NUM + ";font-size:11.5px;color:var(--text-4);margin-top:2px")}>
-                {data ? `${data.total} ${plural(data.total, "выдача", "выдачи", "выдач")}` : "…"}
+              <div style={css(NUM + ";font-size:27px;font-weight:500;letter-spacing:-.02em;line-height:1.15;margin-top:2px;white-space:nowrap")}>{s ? <CountUp text={som(s.sale)} /> : "—"}</div>
+              <div style={css(NUM + ";font-size:11.5px;color:var(--text-4);margin-top:3px")}>
+                {data ? `${data.total} ${plural(data.total, "выдача", "выдачи", "выдач")}${byDay.length ? ` за ${byDay.length} ${plural(byDay.length, "день", "дня", "дней")}` : ""}` : "…"}
               </div>
             </div>
           </div>
-
-          <div style={css("display:flex;flex-direction:column;gap:6px")}>
-            <MoneyLine dot={MONEY.before} label="Оплачено заранее" value={before} />
-            <MoneyLine dot={MONEY.now} label="Принято при выдаче" value={now} />
-            <MoneyLine dot={MONEY.debt} label="Долг по выданным" value={debt} />
+          <div style={css("position:relative;display:flex;flex-direction:column;gap:9px;margin-top:16px")}>
+            <SplitBar
+              parts={[
+                { k: "before", v: before },
+                { k: "now", v: now },
+                { k: "debt", v: debt },
+              ]}
+            />
+            <MoneyLine dot={MONEY.before} label="Оплачено заранее" value={before} share={share(before)} />
+            <MoneyLine dot={MONEY.now} label="Принято при выдаче" value={now} share={share(now)} />
+            <MoneyLine dot={MONEY.debt} label="Долг по выданным" value={debt} share={share(debt)} />
           </div>
-
-          <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
-            <SumTile icon={<Icon name="customers" size={13} />} tone="violet" label="Клиентов" value={s ? String(s.customers) : "—"} sub="забрали товар" />
-            <SumTile icon={<Icon name="stock" size={13} />} tone="accent" label="Товаров" value={s ? String(s.items) : "—"} sub={s ? `${s.qty} шт` : " "} />
-            <SumTile icon={<Svg paths={I_RECEIPT} size={13} sw={2} />} tone="green" label="В среднем" value={avg ? som(avg) : "—"} sub="на одну выдачу" />
-            <SumTile icon={<Icon name="issue" size={13} />} tone="amber" label="Выдач" value={data ? String(data.total) : "—"} sub={byDay.length ? `в ${byDay.length} ${plural(byDay.length, "день", "дня", "дней")}` : "за период"} />
-          </div>
-
-          <MiniChart period={period} byDay={byDay} />
         </div>
+
+        <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:10px")}>
+          <SumTile icon={<Icon name="customers" size={14} />} tone="violet" label="Клиентов" value={s ? String(s.customers) : "—"} sub="забрали товар" />
+          <SumTile icon={<Icon name="stock" size={14} />} tone="accent" label="Товаров" value={s ? String(s.items) : "—"} sub={s ? `${s.qty} шт` : " "} />
+          <SumTile icon={<Svg paths={I_RECEIPT} size={14} sw={2} />} tone="green" label="В среднем" value={avg ? som(avg) : "—"} sub="на одну выдачу" />
+          <SumTile
+            icon={<Svg paths={I_TROPHY} size={14} sw={2} />}
+            tone="amber"
+            label="Лучший день"
+            value={best ? som(best.sale) : "—"}
+            sub={bestDate ? `${bestDate.getDate()} ${MONTHS[bestDate.getMonth()]} · ${best!.issues} ${plural(best!.issues, "выдача", "выдачи", "выдач")}` : "выдач не было"}
+          />
+        </div>
+
+        <HistoryChart period={period} byDay={byDay} />
       </aside>
 
-      {/* Справа — фильтры и лента выдач */}
-      <div style={css("min-width:0;display:flex;flex-direction:column")}>
-        <div style={css("display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:14px 18px;border-bottom:1px solid var(--border-2)")}>
+      {/* Справа — фильтры и лента выдач: ровно по высоте сводки, остальное — прокруткой */}
+      <div className="iss-hist-main">
+        <div style={css("flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:14px 18px;border-bottom:1px solid var(--border-2)")}>
           <PeriodPicker value={period} onChange={setPeriod} />
           <span style={css("flex:1")} />
           <SearchInput value={query} onChange={setQuery} placeholder="Клиент или телефон…" width={220} />
         </div>
 
-        {!data ? (
-          <div style={css("padding:16px 18px")}>
-            <SkeletonRows rows={4} />
-          </div>
-        ) : data.rows.length === 0 ? (
-          <Empty icon="issue" title={q ? "Ничего не найдено" : "За этот период выдач нет"} text="Выберите другой период или измените поиск" />
-        ) : (
-          <div style={css("padding-bottom:8px")}>
-            {groups.map((g) => {
-              const t = dayTitle(g.day);
-              const stat = byDay.find((d) => d.day === g.day);
-              const n = stat?.issues ?? g.rows.length;
-              const sale = stat?.sale ?? g.rows.reduce((a, r) => a + r.items.reduce((x, i) => x + i.sale, 0), 0);
-              return (
-                <div key={g.day}>
-                  <div className="iss-tl-day">
-                    <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{t.title}</span>
-                    <span style={css("font-size:12px;color:var(--text-4)")}>{t.sub}</span>
-                    <span style={css("flex:1;min-width:12px;border-bottom:1px solid var(--border-2);transform:translateY(-4px)")} />
-                    <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
-                      {n} {plural(n, "выдача", "выдачи", "выдач")} · <span style={css("font-weight:500;color:var(--text-2)")}>{som(sale)}</span>
-                    </span>
-                  </div>
-                  {g.rows.map((r, i) => (
-                    <TimelineRow key={r.id} r={r} first={i === 0} last={i === g.rows.length - 1} onOpen={setOpen} />
-                  ))}
-                </div>
-              );
-            })}
-            <div style={css("padding:0 18px 6px")}>
-              <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
+        <div ref={listRef} className="iss-hist-list thin-scroll">
+          {!data ? (
+            <div style={css("padding:16px 18px")}>
+              <SkeletonRows rows={4} />
             </div>
-          </div>
-        )}
+          ) : data.rows.length === 0 ? (
+            <Empty icon="issue" title={q ? "Ничего не найдено" : "За этот период выдач нет"} text="Выберите другой период или измените поиск" />
+          ) : (
+            <>
+              {groups.map((g) => {
+                const t = dayTitle(g.day);
+                const stat = byDay.find((d) => d.day === g.day);
+                const n = stat?.issues ?? g.rows.length;
+                const sale = stat?.sale ?? g.rows.reduce((a, r) => a + r.items.reduce((x, i) => x + i.sale, 0), 0);
+                return (
+                  <div key={g.day}>
+                    <div className="iss-tl-day">
+                      <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{t.title}</span>
+                      <span style={css("font-size:12px;color:var(--text-4)")}>{t.sub}</span>
+                      <span style={css("flex:1;min-width:12px;border-bottom:1px solid var(--border-2);transform:translateY(-4px)")} />
+                      <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
+                        {n} {plural(n, "выдача", "выдачи", "выдач")} · <span style={css("font-weight:500;color:var(--text-2)")}>{som(sale)}</span>
+                      </span>
+                    </div>
+                    {g.rows.map((r, i) => (
+                      <TimelineRow key={r.id} r={r} first={i === 0} last={i === g.rows.length - 1} onOpen={setOpen} />
+                    ))}
+                  </div>
+                );
+              })}
+              <div style={css("padding:0 18px 22px")}>
+                <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
+              </div>
+            </>
+          )}
+        </div>
       </div>
       {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
     </section>

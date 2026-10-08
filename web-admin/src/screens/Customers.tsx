@@ -1,8 +1,10 @@
 /**
- * Клиенты: быстрый поиск (имя, телефон в любом формате, код клиента) и карточка
- * клиента — все его товары, суммы, оплаты, долг, что заказано / на складе / выдано.
+ * Клиенты — «телефонная книга»: большой поиск (имя, телефон в любом формате, код клиента),
+ * фильтры-пилюли с цифрами и справочник разделами — по алфавиту (с алфавитной полосой),
+ * по давности заказа или рейтингом (должники, крупные); у каждого — полоса оплаты. Карточка клиента — все его товары,
+ * суммы, оплаты, долг, что заказано / на складе / выдано.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
@@ -30,29 +32,43 @@ import PhoneInput from "../components/PhoneInput";
 import Select from "../components/Select";
 import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
-import { I_BACK, I_BOX, I_USER, Svg } from "../design/icons";
-import { PANEL, Page, PrimaryAction, SearchInput, THEAD } from "../design/table";
-import {
-  FieldLabel,
-  HButton,
-  LoadError,
-  ModalError,
-  ModalShell,
-  ST,
-  SkeletonRows,
-  btnGhost,
-  btnPrimary,
-  inputStyle,
-} from "../design/ui";
+import { I_BACK, I_CLOSE, I_PLUS, I_SEARCH, I_USER, Icon, Svg } from "../design/icons";
+import { PANEL, Page } from "../design/table";
+import { FieldLabel, HButton, LoadError, ModalError, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary, inputStyle } from "../design/ui";
 import { METHOD_OPTIONS, date, parseMoney, som, todayIso } from "../lib/cargo";
 import { emit, useDebounced, useRefresh } from "../lib/events";
 
 type Toast = (kind: "success" | "error", text: string) => void;
-const LIMIT = 50;
+const LIMIT = 100;
+const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 
 // --- Список ---------------------------------------------------------------------------
 
 type Filter = "" | "debt" | "in_stock";
+
+const SORTS: { key: CustomerSort; label: string }[] = [
+  { key: "recent", label: "Недавние" },
+  { key: "name", label: "А–Я" },
+  { key: "debt", label: "Должники" },
+  { key: "sale", label: "Крупные" },
+];
+
+/** Раздел справочника: буква — по алфавиту, давность — для недавних, без разделов — для рейтингов. */
+function sectionOf(c: CustomerRow, sort: CustomerSort): string {
+  if (sort === "name") {
+    const ch = c.name.trim().charAt(0).toUpperCase();
+    return /\p{L}/u.test(ch) ? ch : "#";
+  }
+  if (sort === "recent") {
+    if (!c.last_order_date) return "Без заказов";
+    const days = Math.round((new Date(todayIso()).getTime() - new Date(c.last_order_date.slice(0, 10)).getTime()) / 86400000);
+    if (days <= 0) return "Сегодня";
+    if (days < 7) return "На этой неделе";
+    if (days < 31) return "В этом месяце";
+    return "Раньше";
+  }
+  return "";
+}
 
 export default function Customers({ isDesktop, toast }: { isDesktop: boolean; toast: Toast }) {
   const nav = useNavigate();
@@ -64,11 +80,15 @@ export default function Customers({ isDesktop, toast }: { isDesktop: boolean; to
   const [data, setData] = useState<(PageOf<CustomerRow> & { summary: CustomersSummary }) | null>(null);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  /** По какой сортировке пришли текущие строки — разделы строим по ней, а не по только что нажатой. */
+  const [shownSort, setShownSort] = useState<CustomerSort>(sort);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(() => {
     listCustomers({ q, filter, sort, limit: LIMIT, offset })
       .then((d) => {
         setData(d);
+        setShownSort(sort);
         setError("");
       })
       .catch((e) => setError(apiError(e, "Не удалось загрузить клиентов")));
@@ -77,128 +97,129 @@ export default function Customers({ isDesktop, toast }: { isDesktop: boolean; to
   useEffect(() => setOffset(0), [q, filter, sort]);
   useRefresh(load);
 
+  const sections = useMemo(() => {
+    const out: { key: string; rows: CustomerRow[] }[] = [];
+    for (const c of data?.rows ?? []) {
+      const k = sectionOf(c, shownSort);
+      const last = out[out.length - 1];
+      if (last && last.key === k) last.rows.push(c);
+      else out.push({ key: k, rows: [c] });
+    }
+    return out;
+  }, [data, shownSort]);
+  const ranked = shownSort === "debt" || shownSort === "sale";
   const s = data?.summary;
-  const GRID = "minmax(230px,1.7fr) minmax(170px,1.1fr) 110px 110px 116px 118px 30px";
-  // Заголовки таблицы: по некоторым можно сортировать.
-  const HEAD: { label: string; sort?: CustomerSort; right?: boolean }[] = [
-    { label: "Клиент", sort: "name" },
-    { label: "Товары" },
-    { label: "Сумма", sort: "sale", right: true },
-    { label: "Оплачено", right: true },
-    { label: "Долг", sort: "debt", right: true },
-    { label: "Посл. заказ", sort: "recent" },
-    { label: "" },
-  ];
 
   return (
     <Page size="wide">
-      {/* Плитки-фильтры: сразу видно, сколько должников и кого ждут на выдачу */}
-      <div style={mix("display:grid;gap:10px;margin-bottom:14px", { gridTemplateColumns: "repeat(3,minmax(0,1fr))" })}>
-        <FilterTile
-          active={filter === ""}
-          onClick={() => setFilter("")}
-          label="Все клиенты"
-          value={s ? String(s.total) : "…"}
-          hint={s ? `${s.active} заказывали в этом месяце` : ""}
-          tone="accent"
-          compact={!isDesktop}
-          icon={<Svg paths={I_USER} size={16} />}
-        />
-        <FilterTile
-          active={filter === "debt"}
-          onClick={() => setFilter(filter === "debt" ? "" : "debt")}
-          label="С долгом"
-          value={s ? String(s.debtors) : "…"}
-          hint={s ? (s.debt > 0 ? `должны ${som(s.debt)}` : "долгов нет") : ""}
-          tone="danger"
-          compact={!isDesktop}
-          icon={<span style={css(MONO + ";font-weight:700;font-size:14px")}>с</span>}
-        />
-        <FilterTile
-          active={filter === "in_stock"}
-          onClick={() => setFilter(filter === "in_stock" ? "" : "in_stock")}
-          label="Ждут выдачи"
-          value={s ? String(s.waiting) : "…"}
-          hint={s ? (s.in_stock > 0 ? `${s.in_stock} ${plural(s.in_stock, "товар", "товара", "товаров")} на складе` : "на складе пусто") : ""}
-          tone="green"
-          compact={!isDesktop}
-          icon={<Svg paths={I_BOX} size={16} />}
-        />
-      </div>
-
-      <div style={css("display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px")}>
-        <div style={css("flex:1 1 260px;min-width:0")}>
-          <SearchInput value={query} onChange={setQuery} placeholder="Имя, телефон или код клиента…" width={420} />
+      {/* Поиск и фильтры */}
+      <section className="cu-hero">
+        <div style={css("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
+          <label className="cu-search">
+            <span style={css("display:flex;color:var(--accent)")}>
+              <Svg paths={I_SEARCH} size={20} sw={2} />
+            </span>
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+              placeholder={isDesktop ? "Найти клиента — имя, телефон в любом формате или код" : "Имя, телефон или код"}
+              aria-label="Найти клиента"
+              autoFocus={isDesktop}
+            />
+            {query ? (
+              <HButton
+                onClick={() => {
+                  setQuery("");
+                  searchRef.current?.focus();
+                }}
+                title="Очистить"
+                s="width:30px;height:30px;flex:none;display:grid;place-items:center;border:none;border-radius:9px;background:transparent;color:var(--text-4);cursor:pointer"
+                hover="background:var(--hover);color:var(--text-2)"
+              >
+                <Svg paths={I_CLOSE} size={15} />
+              </HButton>
+            ) : (
+              data && <span style={css(NUM + ";flex:none;font-size:12.5px;color:var(--text-4);white-space:nowrap")}>{s?.total ?? data.total} в книге</span>
+            )}
+          </label>
+          <HButton onClick={() => setCreating(true)} className="cu-new" s="" hover="">
+            <Svg paths={I_PLUS} size={16} sw={2.4} />
+            Новый клиент
+          </HButton>
         </div>
-        {!isDesktop && (
-          <Select<CustomerSort>
-            value={sort}
-            onChange={setSort}
-            width={170}
-            height={34}
-            fontSize={12.5}
-            ariaLabel="Сортировка"
-            options={[
-              { value: "recent", label: "Сначала недавние" },
-              { value: "debt", label: "Больше долг" },
-              { value: "sale", label: "Больше сумма" },
-              { value: "name", label: "По имени" },
-            ]}
+        <div style={css("display:flex;flex-wrap:wrap;gap:8px;margin-top:14px")}>
+          <Pill active={filter === ""} onClick={() => setFilter("")} dot="var(--accent)" label="Все" value={s ? String(s.total) : "…"} hint={s ? `${s.active} заказывали в этом месяце` : ""} />
+          <Pill
+            active={filter === "debt"}
+            onClick={() => setFilter(filter === "debt" ? "" : "debt")}
+            dot="var(--danger-dot)"
+            label="С долгом"
+            value={s ? String(s.debtors) : "…"}
+            hint={s ? (s.debt > 0 ? `должны ${som(s.debt)}` : "долгов нет") : ""}
+            tone="var(--danger)"
           />
-        )}
-        {data && (q || filter) && (
-          <span style={css("font-size:12px;color:var(--text-3);white-space:nowrap")}>
-            найдено <b style={css(MONO + ";color:var(--text)")}>{data.total}</b>
-          </span>
-        )}
-        <PrimaryAction onClick={() => setCreating(true)}>Новый клиент</PrimaryAction>
+          <Pill
+            active={filter === "in_stock"}
+            onClick={() => setFilter(filter === "in_stock" ? "" : "in_stock")}
+            dot={ST.in_stock.dot}
+            label="Ждут выдачи"
+            value={s ? String(s.waiting) : "…"}
+            hint={s ? (s.in_stock > 0 ? `${s.in_stock} ${plural(s.in_stock, "товар", "товара", "товаров")} на складе` : "на складе пусто") : ""}
+          />
+        </div>
+      </section>
+
+      {/* Сортировка */}
+      <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 2px 10px")}>
+        <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>{filter === "debt" ? "Должники" : filter === "in_stock" ? "Ждут выдачи" : q ? "Найдено" : "Все клиенты"}</span>
+        {data && <span style={css(NUM + ";font-size:12.5px;color:var(--text-4)")}>{data.total}</span>}
+        <span style={css("flex:1")} />
+        <Tabs<CustomerSort> value={sort} onChange={setSort} tabs={SORTS} />
       </div>
 
       {error && <ModalError text={error} />}
       {!data && !error ? (
-        <SkeletonRows rows={6} />
+        <div className="cu-book" style={css("padding:16px")}>
+          <SkeletonRows rows={6} />
+        </div>
       ) : (
         data && (
           <>
-            <div style={css(PANEL)}>
-              {isDesktop && (
-                <div style={mix(THEAD, { gridTemplateColumns: GRID })}>
-                  {HEAD.map((h, i) => {
-                    const on = h.sort && sort === h.sort;
-                    const cell = mix("padding:10px 14px;display:flex;align-items:center;gap:4px;white-space:nowrap;border:none;background:transparent;font:inherit;letter-spacing:inherit;text-transform:inherit", {
-                      justifyContent: h.right ? "flex-end" : "flex-start",
-                      color: on ? "var(--text)" : "var(--text-3)",
-                      cursor: h.sort ? "pointer" : "default",
-                    });
-                    return h.sort ? (
-                      <HButton
-                        key={i}
-                        onClick={() => setSort(h.sort!)}
-                        s={cell}
-                        hover="color:var(--text)"
-                        title="Сортировать"
-                      >
-                        {h.label}
-                        <span style={mix("font-size:9px", { opacity: on ? 1 : 0.35 })}>{h.sort === "name" ? "▲" : "▼"}</span>
-                      </HButton>
-                    ) : (
-                      <div key={i} style={cell}>
-                        {h.label}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {data.rows.length === 0 ? (
+            {data.rows.length === 0 ? (
+              <div className="cu-book">
                 <Empty
                   icon="customers"
                   title={q || filter ? "Никого не найдено" : "Клиентов пока нет"}
                   text={q || filter ? "Попробуйте другой запрос — телефон можно вводить в любом формате" : "Клиенты создаются сами при новом заказе или импорте Excel"}
                 />
-              ) : (
-                data.rows.map((c) => (isDesktop ? <DesktopRow key={c.id} c={c} grid={GRID} onOpen={() => nav(`/customers/${c.id}`)} /> : <MobileRow key={c.id} c={c} onOpen={() => nav(`/customers/${c.id}`)} />))
-              )}
-            </div>
+              </div>
+            ) : (
+              <div style={css("display:flex;gap:10px;align-items:flex-start")}>
+                <div className="cu-book" style={css("flex:1;min-width:0")}>
+                  {sections.map((sec, si) => (
+                    <div key={sec.key || si} id={sec.key ? `cu-sec-${sec.key}` : undefined}>
+                      {sec.key && (
+                        <div className={"cu-sec" + (shownSort === "name" ? " letter" : "")}>
+                          <span>{sec.key}</span>
+                          <span style={css(NUM + ";font-size:12px;font-weight:400;color:var(--text-4)")}>{sec.rows.length}</span>
+                        </div>
+                      )}
+                      {sec.rows.map((c) => (
+                        <ContactRow
+                          key={c.id}
+                          c={c}
+                          rank={ranked ? offset + data.rows.indexOf(c) + 1 : null}
+                          onOpen={() => nav(`/customers/${c.id}`)}
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+                {shownSort === "name" && isDesktop && sections.length > 1 && <AlphaRail letters={sections.map((x) => x.key)} />}
+              </div>
+            )}
             <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
           </>
         )
@@ -218,123 +239,30 @@ export default function Customers({ isDesktop, toast }: { isDesktop: boolean; to
   );
 }
 
-const TONES = {
-  accent: { fg: "var(--accent)", tint: "var(--accent-tint)", border: "var(--accent)" },
-  danger: { fg: "var(--danger)", tint: "var(--danger-tint)", border: "var(--danger-dot)" },
-  green: { fg: "var(--green)", tint: "var(--green-tint)", border: "var(--green-dot)" },
-} as const;
-
-function FilterTile({
-  active,
-  onClick,
-  label,
-  value,
-  hint,
-  tone,
-  icon,
-  compact,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  value: string;
-  hint: string;
-  tone: keyof typeof TONES;
-  icon: ReactNode;
-  compact?: boolean;
-}) {
-  const t = TONES[tone];
+/** Пилюля-фильтр: цветная точка, подпись, число и пояснение. */
+function Pill({ active, onClick, dot, label, value, hint, tone }: { active: boolean; onClick: () => void; dot: string; label: string; value: string; hint: string; tone?: string }) {
   return (
-    <HButton
-      onClick={onClick}
-      s={mix(
-        (compact ? "display:flex;align-items:center;gap:0;padding:9px 10px;min-width:0;" : "display:flex;align-items:center;gap:12px;padding:12px 14px;") + "border-radius:10px;background:var(--surface);cursor:pointer;text-align:left;transition:border-color .12s,box-shadow .12s",
-        {
-          border: `1px solid ${active ? t.border : "var(--border)"}`,
-          boxShadow: active ? `0 0 0 3px ${t.tint}` : "none",
-        }
-      )}
-      hover={active ? undefined : "border-color:var(--border-strong)"}
-    >
-      {!compact && (
-        <span style={mix("width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none", { background: t.tint, color: t.fg })}>
-          {icon}
-        </span>
-      )}
-      <span style={css("min-width:0;flex:1")}>
-        <span style={css("display:block;font-size:11.5px;font-weight:500;color:var(--text-3)")}>{label}</span>
-        <span style={mix("display:flex;align-items:baseline;min-width:0", { flexDirection: compact ? "column" : "row", gap: compact ? 0 : 8 })}>
-          <span style={mix(MONO + ";font-weight:600", { fontSize: compact ? 18 : 21, color: compact && active ? t.fg : "var(--text)" })}>{value}</span>
-          <span style={mix("color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%", { fontSize: compact ? 10.5 : 11.5 })}>{hint}</span>
-        </span>
+    <HButton onClick={onClick} className={"cu-pill" + (active ? " on" : "")} s="" hover="" aria-pressed={active}>
+      <span style={mix("width:8px;height:8px;border-radius:50%;flex:none", { background: dot })} />
+      <span style={css("color:var(--text-2)")}>{label}</span>
+      <span style={mix(NUM + ";font-size:15px;font-weight:500", { color: tone ?? "var(--text)" })}>
+        <CountUp text={value} />
       </span>
+      {hint && <span className="cu-pill-hint">{hint}</span>}
     </HButton>
   );
 }
 
-/** Кружок с инициалами; цвет стабилен для одного и того же имени. */
-const AVATAR_TONES = [
-  ["var(--accent-tint)", "var(--accent-strong)"],
-  ["var(--violet-tint)", "var(--violet)"],
-  ["var(--amber-tint)", "var(--amber)"],
-  ["var(--green-tint)", "var(--green)"],
-  ["var(--danger-tint2)", "var(--danger-muted)"],
-];
-function Avatar({ name, size = 34 }: { name: string; size?: number }) {
-  const letters = name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  const [bg, fg] = AVATAR_TONES[h % AVATAR_TONES.length];
+/** Алфавитная полоса справа: буквы разделов, клик — к разделу. */
+function AlphaRail({ letters }: { letters: string[] }) {
   return (
-    <span
-      style={mix("display:flex;align-items:center;justify-content:center;border-radius:50%;flex:none;font-weight:600;letter-spacing:.02em", {
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.38),
-        background: bg,
-        color: fg,
-      })}
-    >
-      {letters}
-    </span>
-  );
-}
-
-/** Полоска «заказано → на складе → выдано» и подпись с ненулевыми счётчиками. */
-function ItemsBar({ c, compact }: { c: Pick<CustomerRow, "ordered" | "in_stock" | "issued">; compact?: boolean }) {
-  const total = c.ordered + c.in_stock + c.issued;
-  const parts = [
-    { n: c.ordered, dot: ST.ordered.dot, label: "заказано" },
-    { n: c.in_stock, dot: ST.in_stock.dot, label: "на складе" },
-    { n: c.issued, dot: ST.issued.dot, label: "выдано" },
-  ];
-  if (!total) return <span style={css("font-size:11.5px;color:var(--text-5)")}>нет товаров</span>;
-  return (
-    <div style={css("min-width:0")} title={parts.map((p) => `${p.label}: ${p.n}`).join(" · ")}>
-      <div style={mix("display:flex;gap:2px;height:5px;border-radius:3px;overflow:hidden;background:var(--border-2)", { width: compact ? "90px" : "100%" })}>
-        {parts.map((p) => p.n > 0 && <span key={p.label} style={mix("height:100%", { flex: p.n, background: p.dot })} />)}
-      </div>
-      <div style={css("display:flex;gap:9px;margin-top:5px;font-size:11px;color:var(--text-3);white-space:nowrap;overflow:hidden")}>
-        {parts
-          .filter((p) => p.n > 0)
-          .map((p) => (
-            <span key={p.label} style={css("display:inline-flex;align-items:center;gap:4px")}>
-              <span style={mix("width:6px;height:6px;border-radius:50%", { background: p.dot })} />
-              <b style={css(MONO + ";font-weight:600;color:var(--text)")}>{p.n}</b>
-              {!compact && p.label}
-            </span>
-          ))}
-      </div>
-    </div>
-  );
-}
-
-function DebtPill({ debt }: { debt: number }) {
-  if (debt <= 0) return <span style={css("color:var(--text-5)")}>—</span>;
-  return (
-    <span style={css("display:inline-block;padding:3px 8px;border-radius:6px;background:var(--danger-tint);color:var(--danger);font-weight:600;white-space:nowrap;" + MONO)}>
-      {som(debt)}
-    </span>
+    <nav className="cu-rail" aria-label="Алфавит">
+      {letters.map((l) => (
+        <button key={l} type="button" onClick={() => document.getElementById(`cu-sec-${l}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          {l}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -358,59 +286,141 @@ function plural(n: number, one: string, few: string, many: string) {
   return many;
 }
 
-function DesktopRow({ c, grid, onOpen }: { c: CustomerRow; grid: string; onOpen: () => void }) {
+/** Строка справочника: аватар, имя и телефон, товары по этапам, деньги с полосой оплаты, последний заказ, быстрые действия. */
+function ContactRow({ c, rank, onOpen }: { c: CustomerRow; rank: number | null; onOpen: () => void }) {
+  const nav = useNavigate();
+  const stages = [
+    { n: c.ordered, dot: ST.ordered.dot, label: "ждём" },
+    { n: c.in_stock, dot: ST.in_stock.dot, label: "на складе" },
+    { n: c.issued, dot: ST.issued.dot, label: "выдано" },
+  ].filter((x) => x.n > 0);
+  const empty = !stages.length && !c.sale;
+  const newOrder = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    nav(`/new-order?customer=${c.id}`);
+  };
   return (
-    <div onClick={onOpen} className="row-click" style={mix("display:grid;align-items:center;border-bottom:1px solid var(--hover);font-size:12.5px;min-height:58px", { gridTemplateColumns: grid })}>
-      <div style={css("padding:9px 14px;display:flex;align-items:center;gap:11px;min-width:0")}>
-        <Avatar name={c.name} />
-        <div style={css("min-width:0")}>
-          <div style={css("display:flex;align-items:center;gap:7px;min-width:0")}>
-            <span style={css("font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.name}</span>
-            {c.code && <span style={css("flex:none;font-size:10.5px;padding:1px 6px;border-radius:5px;background:var(--hover);color:var(--text-3);" + MONO)}>{c.code}</span>}
-          </div>
-          <div style={css(MONO + ";font-size:11.5px;color:var(--text-3);margin-top:2px;white-space:nowrap")}>{c.phone || "без телефона"}</div>
-        </div>
-      </div>
-      <div style={css("padding:9px 14px;min-width:0")}>
-        <ItemsBar c={c} />
-      </div>
-      <div style={css("padding:9px 14px;text-align:right;font-weight:500;" + MONO)}>{c.sale ? som(c.sale) : "—"}</div>
-      <div style={css("padding:9px 14px;text-align:right;color:var(--text-2);" + MONO)}>{c.paid ? som(c.paid) : "—"}</div>
-      <div style={css("padding:9px 14px;text-align:right")}>
-        <DebtPill debt={c.debt} />
-      </div>
-      <div style={css("padding:9px 14px;white-space:nowrap")}>
-        {c.last_order_date ? (
-          <>
-            <div style={css("font-size:12.5px;color:var(--text)")}>{ago(c.last_order_date)}</div>
-            <div style={css(MONO + ";font-size:11px;color:var(--text-4);margin-top:1px")}>{date(c.last_order_date)}</div>
-          </>
-        ) : (
-          <span style={css("color:var(--text-5)")}>—</span>
-        )}
-      </div>
-      <div style={css("padding-right:12px;color:var(--text-5);display:flex;justify-content:flex-end;font-size:16px")}>›</div>
+    <div onClick={onOpen} className="cu-row" title="Открыть карточку клиента">
+      <span style={css("position:relative;display:flex")}>
+        <Avatar name={c.name} size={42} />
+        {c.in_stock > 0 && <span className="cu-badge" title={`на складе ${c.in_stock}`}>{c.in_stock}</span>}
+      </span>
+      <span style={css("min-width:0")}>
+        <span style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
+          {rank !== null && <span className="cu-rank">#{rank}</span>}
+          <span className="cu-name">{c.name}</span>
+          {c.code && <span style={css(MONO + ";flex:none;font-size:10.5px;padding:1px 6px;border-radius:6px;background:var(--hover);color:var(--text-3)")}>{c.code}</span>}
+        </span>
+        <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-3);margin-top:2px;white-space:nowrap")}>{c.phone || "без телефона"}</span>
+      </span>
+
+      {empty ? (
+        // Без заказов: вместо прочерков — спокойная плашка и кнопка первого заказа.
+        <span className="cu-empty">
+          <span className="cu-empty-ghost" aria-hidden>
+            <i style={{ width: 54 }} />
+            <i style={{ width: 38 }} />
+          </span>
+          <span style={css("min-width:0")}>
+            <span style={css("display:block;font-size:12.5px;color:var(--text-2)")}>Пока без заказов</span>
+            <span style={css(NUM + ";display:block;font-size:11.5px;color:var(--text-4);margin-top:1px")}>в книге с {date(c.created_at.slice(0, 10))}</span>
+          </span>
+          <HButton onClick={newOrder} title="Оформить первый заказ" className="cu-act cu-first" s="" hover="">
+            <Svg paths={I_PLUS} size={13} sw={2.4} />
+            Первый заказ
+          </HButton>
+        </span>
+      ) : (
+        <>
+          <span className="cu-hide" style={css("display:flex;flex-wrap:wrap;gap:4px 12px;min-width:0;font-size:12.5px;color:var(--text-3)")}>
+            {stages.map((x) => (
+              <span key={x.label} style={css("display:inline-flex;align-items:center;gap:6px;white-space:nowrap")}>
+                <span style={mix("width:7px;height:7px;border-radius:50%", { background: x.dot })} />
+                <b style={css(NUM + ";font-weight:500;color:var(--text)")}>{x.n}</b> {x.label}
+              </span>
+            ))}
+          </span>
+          <Money sale={c.sale} debt={c.debt} />
+          <span className="cu-hide" style={css("min-width:0;white-space:nowrap")}>
+            {c.last_order_date ? (
+              <>
+                <span style={css("display:block;font-size:12.5px;color:var(--text-2)")}>{ago(c.last_order_date)}</span>
+                <span style={css(NUM + ";display:block;font-size:11.5px;color:var(--text-4);margin-top:1px")}>{date(c.last_order_date)}</span>
+              </>
+            ) : (
+              <span style={css("font-size:12.5px;color:var(--text-4)")}>—</span>
+            )}
+          </span>
+          <span className="cu-actions cu-hide">
+            {c.in_stock > 0 && (
+              <HButton
+                onClick={(e) => {
+                  e.stopPropagation();
+                  nav(`/issue?customer=${c.id}`);
+                }}
+                title="Выдать товары"
+                className="cu-act green"
+                s=""
+                hover=""
+              >
+                <Icon name="issue" size={14} />
+                Выдать
+              </HButton>
+            )}
+            <HButton onClick={newOrder} title="Новый заказ" className="cu-act" s="" hover="">
+              <Svg paths={I_PLUS} size={13} sw={2.4} />
+              Заказ
+            </HButton>
+          </span>
+        </>
+      )}
     </div>
   );
 }
 
-function MobileRow({ c, onOpen }: { c: CustomerRow; onOpen: () => void }) {
+/**
+ * Деньги клиента ровной колонкой: сверху сумма заказов и состояние (долг или «оплачено»),
+ * под ними полоса — зелёная часть оплачена, красная — долг. Процент — в подсказке.
+ */
+function Money({ sale, debt }: { sale: number; debt: number }) {
+  const paid = Math.max(0, sale - debt);
+  const pct = sale > 0 ? Math.round((paid / sale) * 100) : 0;
   return (
-    <div onClick={onOpen} className="row-click" style={css("display:flex;align-items:center;gap:11px;padding:11px 12px;border-bottom:1px solid var(--hover)")}>
-      <Avatar name={c.name} size={36} />
-      <div style={css("flex:1;min-width:0")}>
-        <div style={css("display:flex;align-items:center;gap:6px")}>
-          <span style={css("font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.name}</span>
-          {c.code && <span style={css("flex:none;font-size:10px;padding:1px 5px;border-radius:5px;background:var(--hover);color:var(--text-3);" + MONO)}>{c.code}</span>}
-        </div>
-        <div style={css(MONO + ";font-size:11.5px;color:var(--text-3);margin:2px 0 5px")}>{c.phone || "без телефона"}</div>
-        <ItemsBar c={c} compact />
-      </div>
-      <div style={css("text-align:right;flex:none;font-size:12.5px")}>
-        <DebtPill debt={c.debt} />
-        <div style={css("font-size:11px;color:var(--text-4);margin-top:5px")}>{ago(c.last_order_date)}</div>
-      </div>
-    </div>
+    <span className="cu-money" title={sale ? `оплачено ${pct}% · ${som(paid)} из ${som(sale)}` : undefined}>
+      <span style={css("display:flex;align-items:baseline;justify-content:space-between;gap:10px")}>
+        <span style={mix(NUM + ";font-size:12px;white-space:nowrap", { color: debt > 0 ? "var(--danger)" : "var(--green)" })}>{debt > 0 ? `долг ${som(debt)}` : "✓ оплачено"}</span>
+        <span style={css(NUM + ";font-size:14px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(sale)}</span>
+      </span>
+      <span className="cu-bar">
+        {paid > 0 && <i style={{ flexGrow: paid, background: "linear-gradient(90deg,#34D399,#16A34A)" }} />}
+        {debt > 0 && <i style={{ flexGrow: debt, background: "linear-gradient(90deg,#FB7185,#E5484D)" }} />}
+      </span>
+    </span>
+  );
+}
+
+/** Аватар-буква; цвет — от имени, как на других страницах. */
+const AVATAR_BG = [
+  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
+  "linear-gradient(135deg,#22C55E,#0EA5E9)",
+  "linear-gradient(135deg,#F59E0B,#EF4444)",
+  "linear-gradient(135deg,#EC4899,#8B5CF6)",
+  "linear-gradient(135deg,#06B6D4,#3B82F6)",
+];
+
+function Avatar({ name, size = 34 }: { name: string; size?: number }) {
+  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+  return (
+    <span
+      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:600", {
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.4),
+        background: AVATAR_BG[n % AVATAR_BG.length],
+      })}
+    >
+      {name.trim().slice(0, 1).toUpperCase()}
+    </span>
   );
 }
 
@@ -457,20 +467,20 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
       </HButton>
 
       {/* Шапка: кто это, как связаться, как давно с нами — и действия */}
-      <div style={css(PANEL + ";padding:16px 18px;margin-bottom:12px")}>
+      <div className="cu-card-head" style={css("margin-bottom:12px")}>
         <div style={css("display:flex;flex-wrap:wrap;gap:14px 16px;align-items:center")}>
-          <Avatar name={c.name} size={50} />
+          <Avatar name={c.name} size={56} />
           <div style={css("min-width:0;flex:1 1 260px")}>
             <div style={css("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
-              <span style={css("font-size:20px;font-weight:700;letter-spacing:-.01em")}>{c.name}</span>
+              <span style={css("font-size:21px;font-weight:500;letter-spacing:-.01em")}>{c.name}</span>
               {c.code && <span style={css("font-size:11px;padding:2px 7px;border-radius:6px;background:var(--hover);color:var(--text-2);" + MONO)}>код {c.code}</span>}
-              {t.debt > 0 && <span style={css("font-size:11px;font-weight:600;padding:2px 8px;border-radius:6px;background:var(--danger-tint);color:var(--danger)")}>должен {som(t.debt)}</span>}
+              {t.debt > 0 && <span style={css(NUM + ";font-size:12px;font-weight:500;padding:3px 9px;border-radius:999px;background:var(--danger-tint);color:var(--danger)")}>должен {som(t.debt)}</span>}
             </div>
             <div style={css("display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;margin-top:5px;font-size:12.5px;color:var(--text-3)")}>
               {c.phone ? (
                 <HButton
                   onClick={() => navigator.clipboard?.writeText(c.phone).then(() => toast("success", "Телефон скопирован"))}
-                  s={"border:none;background:transparent;padding:0;cursor:pointer;font-size:13px;color:var(--text);" + MONO}
+                  s={"border:none;background:transparent;padding:0;cursor:pointer;font-size:14px;color:var(--text);" + NUM}
                   hover="color:var(--accent)"
                   title="Скопировать"
                 >
@@ -609,13 +619,13 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
 function Metric({ label, value, color, sub, bar, bl, bt }: { label: string; value: string; color?: string; sub?: string; bar?: number; bl?: boolean; bt?: boolean }) {
   return (
     <div style={mix("padding:14px 18px;min-width:0", { borderLeft: bl ? "1px solid var(--border-2)" : undefined, borderTop: bt ? "1px solid var(--border-2)" : undefined })}>
-      <div style={css("font-size:11.5px;font-weight:500;color:var(--text-3)")}>{label}</div>
-      <div style={mix(MONO + ";font-size:22px;font-weight:600;margin-top:3px;white-space:nowrap", { color: color ?? "var(--text)" })}>
+      <div style={css("font-size:12px;color:var(--text-3)")}>{label}</div>
+      <div style={mix(NUM + ";font-size:23px;font-weight:500;letter-spacing:-.02em;margin-top:4px;white-space:nowrap", { color: color ?? "var(--text)" })}>
         <CountUp text={value} />
       </div>
       {bar !== undefined && (
-        <div style={css("height:4px;border-radius:2px;background:var(--border-2);margin-top:8px;overflow:hidden")}>
-          <div style={mix("height:100%;border-radius:2px;background:var(--green-dot);transition:width .3s", { width: bar + "%" })} />
+        <div style={css("height:6px;border-radius:999px;background:var(--danger-tint);margin-top:9px;overflow:hidden")}>
+          <div className="bar-grow" style={mix("height:100%;border-radius:999px;background:linear-gradient(90deg,#34D399,#16A34A)", { width: bar + "%" })} />
         </div>
       )}
       {sub && <div style={css("font-size:11.5px;color:var(--text-4);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>}

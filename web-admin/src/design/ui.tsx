@@ -244,12 +244,15 @@ export const btnDanger =
   "height:36px;padding:0 18px;background:var(--danger-solid);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer";
 
 // ---- Тост ----
-export function Toast({ kind, text }: { kind: "success" | "error"; text: string }) {
+/** Всплывающее сообщение снизу по центру: плавно выезжает снизу и уезжает вниз (leaving). */
+export function Toast({ kind, text, leaving }: { kind: "success" | "error"; text: string; leaving?: boolean }) {
   const isError = kind === "error";
   return (
     <div
+      role="status"
+      className={"toast" + (leaving ? " out" : "")}
       style={css(
-        "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:10px;background:var(--toast-bg);color:#fff;font-size:13px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,.3);animation:slideUp .18s ease"
+        "position:fixed;left:50%;bottom:24px;z-index:60;display:flex;align-items:center;gap:9px;padding:11px 16px;border-radius:12px;background:var(--toast-bg);color:#fff;font-size:13px;font-weight:500;box-shadow:0 12px 32px rgba(0,0,0,.3);max-width:calc(100vw - 32px)"
       )}
     >
       <span style={{ display: "flex", color: isError ? "var(--toast-danger)" : "var(--toast-ok)" }}>

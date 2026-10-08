@@ -2,7 +2,7 @@
  * Оболочка панели: сайдбар (десктоп), выдвижное меню (мобайл), шапка, тосты.
  * Разметка и стили 1:1 из исходного макета админки.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Navigate,
   Route,
@@ -137,7 +137,9 @@ function Shell() {
   const nav = useNavigate();
   const [width, setWidth] = useState(() => window.innerWidth);
   const [navOpen, setNavOpen] = useState(false);
-  const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  // leaving — тост уезжает вниз перед тем, как исчезнуть.
+  const [toast, setToast] = useState<{ id: number; kind: "success" | "error"; text: string; leaving: boolean } | null>(null);
+  const toastTimers = useRef<number[]>([]);
   const [inStock, setInStock] = useState(0);
   const [openItemId, setOpenItemId] = useState<number | null>(null);
 
@@ -162,8 +164,14 @@ function Shell() {
   useEffect(() => onOpenItem(setOpenItemId), []);
 
   function showToast(kind: "success" | "error", text: string) {
-    setToast({ kind, text });
-    window.setTimeout(() => setToast(null), 2800);
+    // Новый тост сменяет прежний; таймеры прежнего отменяем, иначе они закроют новый раньше времени.
+    toastTimers.current.forEach((t) => window.clearTimeout(t));
+    const id = Date.now();
+    setToast({ id, kind, text, leaving: false });
+    toastTimers.current = [
+      window.setTimeout(() => setToast((t) => (t && t.id === id ? { ...t, leaving: true } : t)), 2600),
+      window.setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), 2900),
+    ];
   }
 
   // Пока проверяем вход, поверх страницы стоит заставка из index.html (src/lib/boot.ts).
@@ -197,7 +205,7 @@ function Shell() {
           // Замок был декоративным: кнопка всё равно навигировала, и сотрудник
           // попадал на админ-экран (данные потом отдавали 403). Теперь не пускаем.
           if (locked) {
-            setToast({ kind: "error", text: "Раздел доступен только администратору" });
+            showToast("error", "Раздел доступен только администратору");
             return;
           }
           nav(item.path);
@@ -388,7 +396,8 @@ function Shell() {
           </header>
         )}
 
-        <main style={css("flex:1;min-height:0;overflow:auto;position:relative")}>
+        {/* scrollbar-gutter: место под полосу прокрутки занято заранее — при подгрузке данных страница не сдвигается вбок. */}
+        <main style={css("flex:1;min-height:0;overflow:auto;position:relative;scrollbar-gutter:stable")}>
           <Routes>
             <Route path="/" element={<Overview isDesktop={isDesktop} isAdmin={isAdmin} />} />
             <Route path="/receive" element={<Receive toast={showToast} />} />
@@ -483,7 +492,7 @@ function Shell() {
         </div>
       )}
 
-      {toast && <Toast kind={toast.kind} text={toast.text} />}
+      {toast && <Toast key={toast.id} kind={toast.kind} text={toast.text} leaving={toast.leaving} />}
     </div>
   );
 }

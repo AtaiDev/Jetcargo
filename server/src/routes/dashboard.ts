@@ -95,8 +95,8 @@ function profitFor(list: ItemView[], bs: BatchCalc[], from: string, to: string) 
 
 /** Поступило денег за период — по дате оплаты, без отменённых. */
 function cashIn(from: string, to: string) {
-  return all<{ amount: number; paid_at: string }>(
-    `SELECT p.amount, p.paid_at FROM payments p
+  return all<{ amount: number; paid_at: string; method: string }>(
+    `SELECT p.amount, p.paid_at, p.method FROM payments p
        JOIN v_items v ON v.id = p.order_item_id WHERE p.deleted_at IS NULL`
   ).filter((p) => localDay(p.paid_at) >= from && localDay(p.paid_at) <= to);
 }
@@ -378,7 +378,20 @@ dashboardRouter.get("/finance", (req, res) => {
   res.json({
     period: { date_from: from, date_to: to },
     totals: { ...pt, debts_total: totals(list).debt },
-    cash_in: { amount: cash.reduce((a, p) => a + p.amount, 0), count: cash.length },
+    cash_in: {
+      amount: cash.reduce((a, p) => a + p.amount, 0),
+      count: cash.length,
+      // Чем платили и по дням — для разбивки способов оплаты и графика поступлений.
+      by_method: Object.values(
+        cash.reduce<Record<string, { method: string; amount: number; count: number }>>((acc, p) => {
+          const m = (acc[p.method] ??= { method: p.method, amount: 0, count: 0 });
+          m.amount += p.amount;
+          m.count += 1;
+          return acc;
+        }, {})
+      ).sort((a, b) => b.amount - a.amount),
+      by_day: dayList(from, to).map((day) => ({ day, amount: cash.filter((p) => localDay(p.paid_at) === day).reduce((a, p) => a + p.amount, 0) })),
+    },
     months: byMonth(list, lastMonths(12, to)),
     debtors,
     payments,
