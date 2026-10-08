@@ -1,13 +1,13 @@
 /**
- * Новый заказ. Слева — одна карточка: клиент и товары таблицей. Справа — отдельный блок «Итог заказа»
- * (как чек): сумма, выкуп и прибыль, дата, статус и оплата маленькими переключателями, кнопка «Сохранить»
- * (или Ctrl+Enter). Колонки одной высоты, итог всегда на виду.
+ * Новый заказ — «касса».
  *
- * Товары вводятся как в таблице: Enter в последнем поле строки добавляет новую
- * строку. Сумма — цена клиенту, Реальная цена — выкуп; прибыль видна сразу.
+ * Слева: клиент одной полосой (поиск, недавние, новый клиент), строка быстрого ввода
+ * (Enter — товар в список; можно вставить сразу несколько строк из Excel) и список товаров
+ * карточками с правкой и удалением. Справа — «касса» (обычная карточка): сумма крупно, выкуп и прибыль,
+ * когда оформлен, статус, оплата, комментарий и кнопка «Сохранить» (или Ctrl+Enter из любого поля).
  * Заказ сохраняется одной транзакцией: либо весь, либо ничего.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
@@ -15,8 +15,8 @@ import { createOrder, getCustomer, getSettings, listCustomers, type CustomerCard
 import { MONO, css, mix } from "../design/css";
 import CountUp from "../design/CountUp";
 import { I_ARROW_RIGHT, I_BOX, I_CLOSE, I_PLUS, I_USER, Svg } from "../design/icons";
-import { PANEL, Page } from "../design/table";
-import { HButton, ModalError, ST, btnPrimary, inputStyle } from "../design/ui";
+import { Page } from "../design/table";
+import { HButton, ST, inputStyle } from "../design/ui";
 import { cased, capFirst, parseMoney, som, todayIso, upper } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
 import PhoneInput from "../components/PhoneInput";
@@ -51,6 +51,7 @@ interface Row {
   price: string;
   real: string;
 }
+type Field = "name" | "code" | "qty" | "price" | "real";
 
 let rowKey = 1;
 const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -58,6 +59,37 @@ const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.g
 const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 const emptyRow = (code = ""): Row => ({ key: rowKey++, name: "", code, qty: "1", price: "", real: "" });
 const isBlank = (r: Row) => !r.name.trim() && !r.code.trim() && !r.price.trim() && !r.real.trim();
+const money = (s: string) => {
+  const n = parseMoney(s);
+  return n === null || Number.isNaN(n) ? null : n;
+};
+
+/** Что не так со строкой товара — и в каком поле. */
+function rowError(r: Row): { field: Field; text: string } | null {
+  if (!r.name.trim()) return { field: "name", text: "впишите название товара" };
+  const q = Number(r.qty);
+  if (!Number.isInteger(q) || q <= 0) return { field: "qty", text: "количество — целое число больше нуля" };
+  const p = parseMoney(r.price);
+  if (p === null || Number.isNaN(p)) return { field: "price", text: "впишите сумму клиенту" };
+  const c = parseMoney(r.real);
+  if (c !== null && Number.isNaN(c)) return { field: "real", text: "выкуп — число" };
+  return null;
+}
+
+/** Цвета кассы — из темы, как у остальных карточек. */
+const K = {
+  text: "var(--text)",
+  mut: "var(--text-3)",
+  dim: "var(--text-4)",
+  line: "var(--border-2)",
+  soft: "var(--surface-2)",
+  border: "var(--border-strong)",
+  green: "var(--green)",
+  red: "var(--danger)",
+  amber: "var(--amber)",
+  blue: "var(--accent-strong)",
+};
+const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:16px";
 
 export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toast: Toast }) {
   const nav = useNavigate();
@@ -65,6 +97,7 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
 
   // --- Клиент ---
   const [customer, setCustomer] = useState<CustomerCard | null>(null);
+  const [newMode, setNewMode] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -74,6 +107,9 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
     getCustomer(id)
       .then((c) => {
         setCustomer(c);
+        setNewMode(false);
+        setNewName("");
+        setNewPhone("");
       })
       .catch(() => setCustomer(null));
   }, []);
@@ -93,25 +129,61 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   useEffect(loadRecent, [loadRecent]);
   useRefresh(loadRecent);
 
+  const openNew = () => {
+    setNewMode(true);
+    setTimeout(() => nameRef.current?.focus(), 30);
+  };
   /** Поиск никого не нашёл — переносим имя или номер в форму нового клиента и ставим курсор в пустое поле. */
   const prefillNew = (p: { name?: string; phone?: string }) => {
+    setNewMode(true);
     if (p.name !== undefined) setNewName(p.name);
     if (p.phone !== undefined) setNewPhone(p.phone);
-    setTimeout(() => (p.phone ? nameRef.current : phoneBox.current?.querySelector("input"))?.focus(), 20);
+    setTimeout(() => (p.phone ? nameRef.current : phoneBox.current?.querySelector("input"))?.focus(), 30);
+  };
+  const cancelNew = () => {
+    setNewMode(false);
+    setNewName("");
+    setNewPhone("");
   };
 
-  // --- Товары ---
-  const [rows, setRows] = useState<Row[]>(() => [emptyRow(params.get("code") ?? "")]);
-  const nameRefs = useRef(new Map<number, HTMLInputElement>());
-  const focusRow = (key: number) => setTimeout(() => nameRefs.current.get(key)?.focus(), 20);
-  const setRow = (key: number, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
-  const addRow = () => {
-    const r = emptyRow();
-    setRows((rs) => [...rs, r]);
-    focusRow(r.key);
+  // --- Товары: список и строка быстрого ввода ---
+  const [rows, setRows] = useState<Row[]>([]);
+  const [draft, setDraft] = useState<Row>(() => emptyRow(params.get("code") ?? ""));
+  const [draftErr, setDraftErr] = useState<{ field: Field; text: string } | null>(null);
+  const [fresh, setFresh] = useState<number | null>(null);
+  const [editing, setEditing] = useState<Row | null>(null);
+  const [editErr, setEditErr] = useState("");
+  const draftRefs = useRef<Partial<Record<Field, HTMLInputElement | null>>>({});
+  const focusDraft = (f: Field = "name") => setTimeout(() => draftRefs.current[f]?.focus(), 20);
+  const setD = (patch: Partial<Row>) => {
+    setDraft((d) => ({ ...d, ...patch }));
+    setDraftErr(null);
   };
+
+  /** Enter в строке ввода: товар — в список, строка — пустая, курсор — снова в «Название». */
+  const addDraft = () => {
+    if (isBlank(draft)) return focusDraft("name");
+    const err = rowError(draft);
+    if (err) {
+      setDraftErr(err);
+      return focusDraft(err.field);
+    }
+    const r = { ...draft, key: rowKey++ };
+    setRows((rs) => [...rs, r]);
+    setFresh(r.key);
+    setDraft(emptyRow());
+    setDraftErr(null);
+    focusDraft("name");
+  };
+  const onDraftKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      addDraft();
+    }
+  };
+
   /** Вставка из Excel в «Название»: строка — товар; колонки через Tab: название · код · шт · сумма · выкуп. */
-  const pasteRows = (key: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+  const pasteRows = (e: React.ClipboardEvent<HTMLInputElement>) => {
     const text = e.clipboardData.getData("text").replace(/\r/g, "").replace(/\n+$/, "");
     if (!/[\n\t]/.test(text)) return; // обычная вставка одного значения
     e.preventDefault();
@@ -128,16 +200,28 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
         real: cols[4] ?? "",
       }));
     if (!parsed.length) return;
-    setRows((rs) => {
-      const i = rs.findIndex((r) => r.key === key);
-      const keep = i >= 0 && !isBlank(rs[i]) ? 1 : 0; // пустую строку заменяем, заполненную — оставляем
-      return [...rs.slice(0, i + keep), ...parsed, ...rs.slice(i + 1)];
-    });
-    toast("success", `Вставлено товаров: ${parsed.length}`);
+    setRows((rs) => [...rs, ...parsed]);
+    setFresh(parsed[parsed.length - 1].key);
+    toast("success", `Добавлено товаров: ${parsed.length}`);
   };
-  const removeRow = (key: number) => setRows((rs) => (rs.length > 1 ? rs.filter((r) => r.key !== key) : [emptyRow()]));
 
-  // --- Параметры ---
+  const removeRow = (key: number) => {
+    setRows((rs) => rs.filter((r) => r.key !== key));
+    if (editing?.key === key) setEditing(null);
+  };
+  const startEdit = (r: Row) => {
+    setEditing({ ...r });
+    setEditErr("");
+  };
+  const saveEdit = () => {
+    if (!editing) return;
+    const err = rowError(editing);
+    if (err) return setEditErr(err.text);
+    setRows((rs) => rs.map((r) => (r.key === editing.key ? editing : r)));
+    setEditing(null);
+  };
+
+  // --- Параметры заказа ---
   const [orderDate, setOrderDate] = useState(todayIso());
   // Время заказа: null — «сейчас» (часы идут сами), иначе указано вручную.
   const [time, setTime] = useState<string | null>(null);
@@ -162,62 +246,63 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
       .catch(() => setRate(null));
   }, []);
 
-  const filled = rows.filter((r) => !isBlank(r));
   const totals = useMemo(() => {
     let sale = 0;
     let cost = 0;
     let withCost = 0;
     let qty = 0;
-    for (const r of filled) {
-      const p = parseMoney(r.price);
-      const c = parseMoney(r.real);
-      sale += p && !Number.isNaN(p) ? p : 0;
+    let profit = 0;
+    for (const r of rows) {
+      const p = money(r.price) ?? 0;
+      const c = money(r.real);
+      sale += p;
       qty += Number(r.qty) || 0;
-      if (c !== null && !Number.isNaN(c)) {
+      if (c !== null) {
         cost += c;
         withCost++;
+        profit += p - c;
       }
     }
-    const profit = filled.reduce((s, r) => {
-      const p = parseMoney(r.price);
-      const c = parseMoney(r.real);
-      return c !== null && !Number.isNaN(c) && p !== null && !Number.isNaN(p) ? s + p - c : s;
-    }, 0);
-    const paidNum = pay === "full" ? sale : pay === "part" ? parseMoney(paid) ?? 0 : 0;
-    return { sale, cost, withCost, qty, profit, paid: Number.isNaN(paidNum) ? 0 : paidNum };
-  }, [filled, pay, paid]);
+    const paidNum = pay === "full" ? sale : pay === "part" ? money(paid) ?? 0 : 0;
+    return { sale, cost, withCost, qty, profit, paid: paidNum };
+  }, [rows, pay, paid]);
+
+  /** Товары к сохранению: список + то, что осталось в строке ввода (если там что-то вписано). */
+  const toSave = () => (isBlank(draft) ? rows : [...rows, draft]);
 
   function validate(): string {
-    if (!customer && !newName.trim() && !newPhone.trim()) return "Выберите клиента или укажите имя и телефон нового";
-    if (!filled.length) return "Добавьте хотя бы один товар";
-    for (const [i, r] of filled.entries()) {
-      const n = i + 1;
-      if (!r.name.trim()) return `Строка ${n}: укажите название`;
-      const q = Number(r.qty);
-      if (!Number.isInteger(q) || q <= 0) return `Строка ${n}: количество — целое число больше нуля`;
-      const p = parseMoney(r.price);
-      if (p === null || Number.isNaN(p)) return `Строка ${n}: укажите сумму`;
-      const c = parseMoney(r.real);
-      if (c !== null && Number.isNaN(c)) return `Строка ${n}: реальная цена — число`;
+    if (!customer && !newName.trim() && !newPhone.trim()) return "Выберите клиента или впишите имя и телефон нового";
+    if (!isBlank(draft)) {
+      const err = rowError(draft);
+      if (err) {
+        setDraftErr(err);
+        return `Строка ввода: ${err.text}`;
+      }
     }
+    const list = toSave();
+    if (!list.length) return "Добавьте товар: впишите его в строку ввода и нажмите Enter";
+    for (const [i, r] of list.entries()) {
+      const err = rowError(r);
+      if (err) return `Товар ${i + 1}: ${err.text}`;
+    }
+    const sale = list.reduce((s, r) => s + (money(r.price) ?? 0), 0);
     if (pay === "part") {
-      const a = parseMoney(paid);
-      if (a === null || Number.isNaN(a) || a <= 0) return "Укажите сумму частичной оплаты";
-      if (a > totals.sale) return "Оплата больше суммы заказа";
+      const a = money(paid);
+      if (a === null || a <= 0) return "Впишите, сколько оплатил клиент";
+      if (a > sale) return "Оплата больше суммы заказа";
     }
-    if (time !== null) {
-      if (!/^\d{2}:\d{2}$/.test(time)) return "Укажите время заказа";
-      if (new Date(`${orderDate}T${time}:00`).getTime() > Date.now() + 60_000) return "Время заказа ещё не наступило";
-    }
+    if (time !== null && new Date(`${orderDate}T${time}:00`).getTime() > Date.now() + 60_000) return "Время заказа ещё не наступило";
     return "";
   }
 
   async function save() {
+    if (busy) return;
     const err = validate();
     setError(err);
     if (err) return;
     setBusy(true);
     try {
+      const list = toSave();
       const r = await createOrder({
         customer_id: customer?.customer.id,
         customer_name: customer ? undefined : newName.trim(),
@@ -227,16 +312,15 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
         status,
         comment,
         pay,
-        paid_amount: pay === "part" ? parseMoney(paid) ?? 0 : undefined,
-        items: filled.map((row) => {
-          const price = parseMoney(row.price) ?? 0;
-          const real = parseMoney(row.real);
+        paid_amount: pay === "part" ? money(paid) ?? 0 : undefined,
+        items: list.map((row) => {
+          const price = money(row.price) ?? 0;
           return {
             name: row.name.trim(),
             code: row.code.trim(),
             qty: Number(row.qty),
             price,
-            real_price: real === null || Number.isNaN(real) ? null : real,
+            real_price: money(row.real),
             price_cny: rate ? Math.round((price / rate) * 100) / 100 : null,
           };
         }),
@@ -259,11 +343,13 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
         comment,
       });
       emit("cargo:changed");
-      // Форма — заново, как при первом открытии: следующий заказ начинается с клиента.
+      // Касса — заново, как при первом открытии: следующий заказ начинается с клиента.
       setCustomer(null);
-      setNewName("");
-      setNewPhone("");
-      setRows([emptyRow()]);
+      cancelNew();
+      setRows([]);
+      setDraft(emptyRow());
+      setDraftErr(null);
+      setEditing(null);
       setComment("");
       setOrderDate(todayIso());
       setStatus("ordered");
@@ -291,30 +377,25 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const cell = "height:36px;padding:0 10px;border:1px solid var(--border-strong);border-radius:8px;font-size:13px;outline:none;background:var(--surface);width:100%;min-width:0";
-  const GRID = isDesktop ? "20px minmax(0,1.7fr) minmax(0,1fr) 56px 98px 98px 84px 28px" : "repeat(4,minmax(0,1fr))";
-  // На телефоне: «Товар N» и ✕ сверху, название во всю ширину, код + шт, клиенту + выкуп, прибыль.
-  const at = (col: string, row?: number): CSSProperties | undefined => (isDesktop ? undefined : { gridColumn: col, gridRow: row });
   const debt = Math.max(0, totals.sale - totals.paid);
   const paidShare = totals.sale > 0 ? Math.min(100, Math.round((totals.paid / totals.sale) * 100)) : 0;
-  const who = customer ? customer.customer.name : newName.trim() || newPhone.trim() ? `${newName.trim() || newPhone.trim()} · новый клиент` : "";
+  const who = customer ? customer.customer.name : newName.trim() || newPhone.trim() ? newName.trim() || newPhone.trim() : "";
+  const draftProfit = money(draft.price) !== null && money(draft.real) !== null ? (money(draft.price) ?? 0) - (money(draft.real) ?? 0) : null;
+
+  // Поля строки ввода: подпись над полем, ошибка — красной рамкой.
+  const QUICK = isDesktop ? "minmax(0,2fr) minmax(0,1.15fr) 62px 116px 116px auto" : "repeat(4,minmax(0,1fr))";
+  const qInput = (f: Field, extra = "") =>
+    mix(inputStyle + ";height:42px;border-radius:10px;font-size:13.5px;background:var(--surface);" + extra, draftErr?.field === f && "border-color:var(--danger)!important;box-shadow:0 0 0 3px var(--danger-tint)");
+  const qCell = (col: string, children: ReactNode, label: string) => (
+    <label style={mix("display:flex;flex-direction:column;gap:5px;min-width:0", !isDesktop && { gridColumn: col })}>
+      <span style={css("font-size:11px;font-weight:600;color:var(--text-3)")}>{label}</span>
+      {children}
+    </label>
+  );
 
   return (
     <Page size="wide">
       <div style={css("display:flex;flex-direction:column;gap:14px")}>
-        {saved && (
-          <SavedBanner
-            saved={saved}
-            isDesktop={isDesktop}
-            onDetails={() => setDetails(true)}
-            onAgain={() => {
-              pickCustomer(saved.id);
-              setSaved(null);
-            }}
-            onOpen={() => nav(`/customers/${saved.id}`)}
-            onClose={() => setSaved(null)}
-          />
-        )}
         {saved && details && (
           <OrderDetails
             saved={saved}
@@ -328,336 +409,418 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
           />
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "minmax(0,1fr) 372px" : "minmax(0,1fr)", gap: 16, alignItems: "stretch" }}>
-          {/* ---------- Слева: клиент и товары — одна карточка ---------- */}
-          <section style={css(PANEL + ";border-radius:16px;display:flex;flex-direction:column;overflow:visible;min-width:0")}>
-            {/* Клиент */}
-            <div style={css("padding:18px 20px")}>
-              <SectionHead icon={I_USER} title="Клиент" hint={customer ? undefined : "найдите или впишите нового"} />
+        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "minmax(0,1fr) 384px" : "minmax(0,1fr)", gap: 16, alignItems: "stretch" }}>
+          {/* ================= Слева: клиент, ввод, список ================= */}
+          <div style={css("display:flex;flex-direction:column;gap:14px;min-width:0")}>
+            {saved && (
+              <SavedBanner
+                saved={saved}
+                isDesktop={isDesktop}
+                onDetails={() => setDetails(true)}
+                onAgain={() => {
+                  pickCustomer(saved.id);
+                  setSaved(null);
+                }}
+                onOpen={() => nav(`/customers/${saved.id}`)}
+                onClose={() => setSaved(null)}
+              />
+            )}
+            {/* --- Клиент --- */}
+            <section style={css(CARD + ";position:relative;padding:14px 16px;overflow:visible")}>
               {customer ? (
                 <div style={css("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
-                  <span
-                    style={css(
-                      "width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--violet-dot));color:#fff;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;flex:none"
-                    )}
-                  >
-                    {customer.customer.name.trim().slice(0, 1).toUpperCase()}
-                  </span>
-                  <div style={css("min-width:120px;flex:1")}>
-                    <div style={css("font-size:15.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{customer.customer.name}</div>
+                  <Avatar name={customer.customer.name} size={46} />
+                  <div style={css("flex:1;min-width:140px")}>
+                    <div style={css("font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-4)")}>Клиент</div>
+                    <div style={css("font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{customer.customer.name}</div>
                     <div style={css(MONO + ";font-size:12.5px;color:var(--text-3)")}>{customer.customer.phone || "без телефона"}</div>
                   </div>
                   <div style={css("display:flex;gap:6px;flex-wrap:wrap")}>
-                    <Chip label="заказано" value={String(customer.totals.ordered)} dot={ST.ordered.dot} />
-                    <Chip label="на складе" value={String(customer.totals.in_stock)} dot={ST.in_stock.dot} />
-                    <Chip label="долг" value={som(customer.totals.debt)} danger={customer.totals.debt > 0} />
+                    <Fact label="заказано" value={String(customer.totals.ordered)} dot={ST.ordered.dot} />
+                    <Fact label="на складе" value={String(customer.totals.in_stock)} dot={ST.in_stock.dot} />
+                    <Fact label="долг" value={som(customer.totals.debt)} dot={customer.totals.debt > 0 ? ST.unpaid.dot : ST.paid.dot} danger={customer.totals.debt > 0} />
                   </div>
                   <HButton
                     onClick={() => {
                       setCustomer(null);
                       setSaved(null);
                     }}
-                    s="height:30px;padding:0 12px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--text-2);font-size:12px;cursor:pointer"
-                    hover="border-color:var(--accent);color:var(--accent-strong)"
+                    title="Выбрать другого клиента"
+                    s={mix(
+                      "width:36px;height:36px;display:grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-3);cursor:pointer",
+                      !isDesktop && "position:absolute;top:12px;right:12px"
+                    )}
+                    hover="border-color:var(--danger);color:var(--danger);background:var(--danger-tint)"
                   >
-                    Сменить
+                    <Svg paths={I_CLOSE} size={15} sw={2} />
                   </HButton>
                 </div>
-              ) : (
-                <div style={css("display:flex;flex-direction:column;gap:12px")}>
-                  <CustomerSearch autoFocus onPick={pickCustomer} onCreate={prefillNew} />
-                  <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "auto minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)", gap: 10, alignItems: "center" }}>
-                    <span style={css("font-size:12px;color:var(--text-4);white-space:nowrap")}>или новый:</span>
-                    <input ref={nameRef} value={newName} onChange={(e) => setNewName(cased(e, capFirst))} placeholder="Имя клиента" style={css(inputStyle)} />
-                    <div ref={phoneBox}>
-                      <PhoneInput value={newPhone} onChange={setNewPhone} />
+              ) : newMode ? (
+                <div style={css("display:flex;flex-direction:column;gap:8px")}>
+                  <div style={css("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
+                    <span style={css("width:46px;height:46px;border-radius:50%;flex:none;display:grid;place-items:center;border:1.5px dashed var(--accent);color:var(--accent);background:var(--accent-tint2)")}>
+                      <Svg paths={I_USER_PLUS} size={20} sw={1.9} />
+                    </span>
+                    <div style={{ flex: 1, minWidth: 200, display: "grid", gridTemplateColumns: isDesktop ? "minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)", gap: 10 }}>
+                      <input
+                        ref={nameRef}
+                        value={newName}
+                        onChange={(e) => setNewName(cased(e, capFirst))}
+                        placeholder="Имя нового клиента"
+                        style={css(inputStyle + ";height:42px;border-radius:10px;font-size:13.5px")}
+                      />
+                      <div ref={phoneBox}>
+                        <PhoneInput value={newPhone} onChange={setNewPhone} height={42} />
+                      </div>
                     </div>
+                    <HButton
+                      onClick={cancelNew}
+                      s="height:42px;padding:0 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-2);font-size:12.5px;cursor:pointer"
+                      hover="border-color:var(--accent);color:var(--accent-strong)"
+                    >
+                      Найти в базе
+                    </HButton>
+                  </div>
+                  <div style={css("font-size:11.5px;color:var(--text-4);padding-left:58px")}>
+                    Новый клиент · если такой номер уже есть в базе, заказ добавится к этому клиенту
+                  </div>
+                </div>
+              ) : (
+                <div style={css("display:flex;flex-direction:column;gap:10px")}>
+                  <div style={css("display:flex;gap:10px;align-items:center")}>
+                    <div style={css("flex:1;min-width:0")}>
+                      <CustomerSearch autoFocus onPick={pickCustomer} onCreate={prefillNew} />
+                    </div>
+                    <HButton
+                      onClick={openNew}
+                      s="height:44px;padding:0 14px;border:1px dashed var(--border-strong);border-radius:10px;background:transparent;color:var(--text-2);font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer;flex:none"
+                      hover="border-color:var(--accent);color:var(--accent);background:var(--accent-tint2)"
+                    >
+                      <Svg paths={I_USER_PLUS} size={16} sw={1.9} />
+                      {isDesktop ? "Новый клиент" : "Новый"}
+                    </HButton>
                   </div>
                   {recent.length > 0 && (
                     <div style={css("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}>
-                      <span style={css("font-size:12px;color:var(--text-4);margin-right:2px")}>недавние:</span>
+                      <span style={css("font-size:11.5px;color:var(--text-4);margin-right:2px")}>Недавние:</span>
                       {recent.map((c) => (
                         <HButton
                           key={c.id}
                           onClick={() => pickCustomer(c.id)}
-                          title={c.phone || c.name}
+                          title={c.debt > 0 ? `${c.phone || c.name} · долг ${som(c.debt)}` : c.phone || c.name}
                           s="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 3px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:12px;color:var(--text);cursor:pointer;max-width:200px"
                           hover="border-color:var(--accent);background:var(--accent-tint2)"
                         >
-                          <span style={css("width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:10.5px;font-weight:700;background:var(--accent-tint);color:var(--accent-strong)")}>
-                            {c.name.trim().slice(0, 1).toUpperCase()}
-                          </span>
+                          <Avatar name={c.name} size={22} />
                           <span style={css("white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.name}</span>
-                          {c.debt > 0 && <span style={css("flex:none;width:6px;height:6px;border-radius:50%;background:var(--danger-dot)")} title={`долг ${som(c.debt)}`} />}
+                          {c.debt > 0 && <span style={css("flex:none;width:6px;height:6px;border-radius:50%;background:var(--danger-dot)")} />}
                         </HButton>
                       ))}
                     </div>
                   )}
                 </div>
               )}
-            </div>
+            </section>
 
-            {/* Товары */}
-            <div style={css("padding:18px 20px 20px;border-top:1px solid var(--border-2);display:flex;flex-direction:column;flex:1;min-width:0")}>
-              <SectionHead
-                icon={I_BOX}
-                title="Товары"
-                hint={filled.length ? `${filled.length} ${plural(filled.length, "позиция", "позиции", "позиций")} · ${totals.qty} шт` : undefined}
-              />
-              {isDesktop && (
-                <div
-                  style={mix(
-                    "display:grid;gap:8px;align-items:center;padding:0 0 8px;font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-4);white-space:nowrap",
-                    { gridTemplateColumns: GRID }
-                  )}
-                >
-                  <span />
-                  <span>Название</span>
-                  <span>Код / трек</span>
-                  <span style={css("text-align:center")}>Шт</span>
-                  <span>Клиенту</span>
-                  <span>Выкуп</span>
-                  <span style={css("text-align:right")}>Прибыль</span>
-                  <span />
-                </div>
+            {/* --- Строка быстрого ввода --- */}
+            <section
+              style={css(
+                "position:relative;border-radius:16px;padding:14px 16px 12px;background:linear-gradient(135deg,var(--accent-tint) 0%,var(--surface) 55%);border:1px solid var(--accent-border);box-shadow:0 8px 24px color-mix(in srgb,var(--accent) 9%,transparent)"
               )}
-              <div style={css("display:flex;flex-direction:column;gap:" + (isDesktop ? "6px" : "10px"))}>
-                {rows.map((r, i) => {
-                  const p = parseMoney(r.price);
-                  const c = parseMoney(r.real);
-                  const profit = p !== null && c !== null && !Number.isNaN(p) && !Number.isNaN(c) ? p - c : null;
-                  const onEnter = (e: React.KeyboardEvent) => {
-                    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-                      e.preventDefault();
-                      if (i === rows.length - 1) addRow();
-                      else focusRow(rows[i + 1].key);
-                    }
-                  };
-                  return (
-                    <div
-                      key={r.key}
-                      style={mix(
-                        "display:grid;gap:8px;align-items:center",
-                        { gridTemplateColumns: GRID },
-                        !isDesktop && "padding:12px;border:1px solid var(--border-2);border-radius:12px;background:var(--surface-2)"
-                      )}
-                    >
-                      <span style={mix(isDesktop ? MONO + ";font-size:11.5px;color:var(--text-5);text-align:center" : "font-size:11px;font-weight:600;color:var(--text-4);text-transform:uppercase;letter-spacing:.05em", at("1 / 4", 1))}>
-                        {isDesktop ? i + 1 : `Товар ${i + 1}`}
-                      </span>
-                      <input
-                        ref={(el) => {
-                          if (el) nameRefs.current.set(r.key, el);
-                          else nameRefs.current.delete(r.key);
-                        }}
-                        value={r.name}
-                        onChange={(e) => setRow(r.key, { name: cased(e, capFirst) })}
-                        onPaste={(e) => pasteRows(r.key, e)}
-                        placeholder="Название товара"
-                        style={mix(cell, at("1 / -1"))}
-                      />
-                      <input value={r.code} onChange={(e) => setRow(r.key, { code: cased(e, upper) })} placeholder="Код" autoCapitalize="characters" spellCheck={false} style={mix(cell + ";" + MONO, at("1 / 4"))} />
-                      <input value={r.qty} onChange={(e) => setRow(r.key, { qty: e.target.value })} inputMode="numeric" aria-label="Количество" style={mix(cell + ";" + MONO + ";text-align:center;padding:0 4px", at("4 / 5"))} />
-                      <MoneyCell value={r.price} onChange={(v) => setRow(r.key, { price: v })} placeholder={isDesktop ? "сумма" : "клиенту"} style={at("1 / 3")} />
-                      <MoneyCell value={r.real} onChange={(v) => setRow(r.key, { real: v })} placeholder="выкуп" onKeyDown={onEnter} style={at("3 / 5")} />
-                      <span
-                        style={mix(MONO + ";font-size:13px;font-weight:600;white-space:nowrap", at("1 / -1"), {
-                          textAlign: isDesktop ? "right" : "left",
-                          color: profit === null ? "var(--text-5)" : profit < 0 ? "var(--danger)" : "var(--green)",
-                        })}
-                      >
-                        {profit === null ? (isDesktop ? "—" : "прибыль —") : `${isDesktop ? "" : "прибыль "}${profit > 0 ? "+" : ""}${som(profit)}`}
-                      </span>
-                      <HButton
-                        onClick={() => removeRow(r.key)}
-                        title="Убрать строку"
-                        s={mix("width:28px;height:28px;border:none;background:transparent;border-radius:7px;color:var(--text-5);cursor:pointer;display:flex;align-items:center;justify-content:center", at("4 / 5", 1), !isDesktop && "justify-self:end")}
-                        hover="background:var(--danger-tint);color:var(--danger)"
-                      >
-                        <Svg paths={I_CLOSE} size={14} />
-                      </HButton>
-                    </div>
-                  );
-                })}
-              </div>
-              {totals.withCost > 0 && totals.withCost < filled.length && (
-                <span style={css("font-size:11.5px;color:var(--text-4);margin-top:8px")}>прибыль по {totals.withCost} из {filled.length} — у остальных не указан выкуп</span>
-              )}
-              <HButton
-                onClick={addRow}
-                className="add-zone"
-                s={mix(
-                  "flex:1;width:100%;margin-top:12px;border:1.5px dashed var(--border-strong);border-radius:14px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;padding:16px;cursor:pointer;font:inherit;color:var(--text-3);text-align:center;transition:border-color .15s,background .15s",
-                  { minHeight: isDesktop ? 112 : 92 }
-                )}
-                hover="border-color:var(--accent);background:var(--accent-tint2)"
-              >
-                <span className="add-zone-plus" style={css("width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent);transition:transform .15s ease")}>
-                  <Svg paths={I_PLUS} size={18} sw={2.2} />
+            >
+              <div style={css("display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap")}>
+                <span style={css("width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,var(--accent),var(--violet-dot));box-shadow:0 3px 8px color-mix(in srgb,var(--accent) 35%,transparent)")}>
+                  <Svg paths={I_PLUS} size={15} sw={2.4} />
                 </span>
-                <span style={css("font-size:13.5px;font-weight:600;color:var(--text)")}>Добавить товар</span>
+                <span style={css("font-size:14.5px;font-weight:700")}>Добавить товар</span>
                 {isDesktop && (
-                  <span style={css("display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center;font-size:11.5px")}>
-                    <Kbd>Enter</Kbd> в «выкупе» — следующая строка
-                    <span style={css("color:var(--text-5)")}>·</span>
-                    <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> — сохранить заказ
+                  <span style={css("margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-4)")}>
+                    <Kbd>Enter</Kbd> — в список · можно вставить строки из Excel
                   </span>
                 )}
-                <span style={css("font-size:11.5px;color:var(--text-4)")}>можно вставить сразу несколько строк из Excel в «Название»</span>
-              </HButton>
-              <div style={css("padding-top:16px")}>
-                <Field label="Комментарий к заказу">
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: QUICK, gap: 8, alignItems: "end" }}>
+                {qCell(
+                  "1 / -1",
                   <input
-                    value={comment}
-                    onChange={(e) => setComment(cased(e, capFirst))}
-                    placeholder="необязательно — например, «доставка до двери»"
-                    style={css(inputStyle + ";height:38px")}
-                  />
-                </Field>
-              </div>
-            </div>
-          </section>
-
-          {/* ---------- Справа: итог заказа — отдельный блок ---------- */}
-          <aside style={mix(PANEL + ";border-radius:16px;min-width:0;overflow:visible", isDesktop && "align-self:start;position:sticky;top:16px")}>
-            <div>
-              {/* Шапка: сумма заказа */}
-              <div
-                style={css(
-                  "border-radius:15px 15px 0 0;padding:18px 20px 20px;color:#fff;background:radial-gradient(circle at 100% 0,rgba(255,255,255,.22),transparent 46%),linear-gradient(135deg,var(--accent),var(--violet-dot))"
+                    ref={(el) => {
+                      draftRefs.current.name = el;
+                    }}
+                    value={draft.name}
+                    onChange={(e) => setD({ name: cased(e, capFirst) })}
+                    onKeyDown={onDraftKey}
+                    onPaste={pasteRows}
+                    placeholder="Название товара"
+                    style={qInput("name")}
+                  />,
+                  "Название"
                 )}
-              >
-                <div style={css("display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;opacity:.92")}>
-                  <Svg paths={I_RECEIPT} size={16} sw={2} />
-                  Итог заказа
-                  <span style={css("margin-left:auto;font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:999px;background:rgba(255,255,255,.18)")}>
-                    {filled.length} {plural(filled.length, "позиция", "позиции", "позиций")} · {totals.qty} шт
-                  </span>
-                </div>
-                <div style={css(NUM + ";font-size:34px;font-weight:700;letter-spacing:-.025em;line-height:1.2;margin-top:10px;white-space:nowrap")}>
-                  <CountUp text={som(totals.sale)} duration={500} />
-                </div>
-                <div style={css("font-size:12px;opacity:.85;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{who || "клиент не выбран"}</div>
-              </div>
-
-              <div style={css("padding:16px 20px 18px;display:flex;flex-direction:column;gap:14px")}>
-                <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
-                  <Metric
-                    icon={I_BAG}
-                    tone="violet"
-                    label="Выкуп"
-                    value={totals.withCost ? som(totals.cost) : "—"}
-                    sub={totals.withCost && totals.sale > 0 ? `${Math.round((totals.cost / totals.sale) * 100)}% от суммы` : "впишите выкуп"}
-                  />
-                  <Metric
-                    icon={I_TREND}
-                    tone={totals.profit < 0 ? "danger" : "green"}
-                    label="Прибыль"
-                    value={totals.withCost ? `${totals.profit > 0 ? "+" : ""}${som(totals.profit)}` : "—"}
-                    badge={totals.withCost && totals.cost > 0 ? `${totals.profit >= 0 ? "+" : ""}${Math.round((totals.profit / totals.cost) * 100)}%` : undefined}
-                    sub={totals.withCost ? "наценка на выкуп" : "появится с выкупом"}
-                  />
-                </div>
-
-                <Field label="Когда оформлен">
-                  <div style={css("display:grid;grid-template-columns:minmax(0,1fr) 124px;gap:8px")}>
-                    <DatePicker value={orderDate} onChange={setOrderDate} width="100%" height={38} words ariaLabel="Дата заказа" />
-                    <TimePicker value={time ?? clock} auto={time === null} onChange={setTime} onNow={() => setTime(null)} width="100%" height={38} ariaLabel="Время заказа" />
-                  </div>
-                </Field>
-                <Field label="Статус товаров">
-                  <Pills
-                    value={status}
-                    onChange={setStatus}
-                    options={[
-                      { key: "ordered", label: "Заказан", dot: ST.ordered.dot, bg: ST.ordered.bg, fg: ST.ordered.fg },
-                      { key: "in_stock", label: "Уже на складе", dot: ST.in_stock.dot, bg: ST.in_stock.bg, fg: ST.in_stock.fg },
-                    ]}
-                  />
-                </Field>
-                <Field label="Оплата">
-                  <Pills
-                    value={pay}
-                    onChange={setPay}
-                    options={[
-                      { key: "none", label: "Не оплачено", dot: ST.unpaid.dot, bg: ST.unpaid.bg, fg: ST.unpaid.fg },
-                      { key: "full", label: "Полностью", dot: ST.paid.dot, bg: ST.paid.bg, fg: ST.paid.fg },
-                      { key: "part", label: "Частично", dot: ST.partial.dot, bg: ST.partial.bg, fg: ST.partial.fg },
-                    ]}
-                  />
-                  {pay === "part" && (
-                    <div style={css("margin-top:8px")}>
-                      <MoneyCell value={paid} onChange={setPaid} placeholder={totals.sale > 0 ? `сколько оплатил из ${totals.sale.toLocaleString("ru-RU")}` : "сколько оплатил"} />
-                    </div>
-                  )}
-                </Field>
-
-                {/* Оплачено / долг — полосой */}
-                <div>
-                  <div style={css("height:6px;border-radius:4px;overflow:hidden;background:" + (totals.sale > 0 ? "var(--danger-tint)" : "var(--border-2)"))}>
-                    <div style={mix("height:100%;border-radius:4px;background:var(--green-dot);transition:width .3s ease", { width: `${paidShare}%` })} />
-                  </div>
-                  <div style={css("display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;white-space:nowrap")}>
-                    <span style={css("color:var(--text-3)")}>
-                      оплачено <b style={css(NUM + ";color:var(--green)")}>{som(totals.paid)}</b>
-                    </span>
-                    <span style={css("color:var(--text-3)")}>
-                      долг <b style={mix(NUM, { color: debt > 0 ? "var(--danger)" : "var(--text-3)" })}>{som(debt)}</b>
-                    </span>
-                  </div>
-                </div>
-
-                <ModalError text={error} />
+                {qCell(
+                  "1 / 4",
+                  <input
+                    ref={(el) => {
+                      draftRefs.current.code = el;
+                    }}
+                    value={draft.code}
+                    onChange={(e) => setD({ code: cased(e, upper) })}
+                    onKeyDown={onDraftKey}
+                    placeholder="Трек"
+                    autoCapitalize="characters"
+                    spellCheck={false}
+                    style={qInput("code", MONO)}
+                  />,
+                  "Код / трек"
+                )}
+                {qCell(
+                  "4 / 5",
+                  <input
+                    ref={(el) => {
+                      draftRefs.current.qty = el;
+                    }}
+                    value={draft.qty}
+                    onChange={(e) => setD({ qty: e.target.value })}
+                    onKeyDown={onDraftKey}
+                    inputMode="numeric"
+                    style={qInput("qty", NUM + ";text-align:center;padding:0 6px")}
+                  />,
+                  "Шт"
+                )}
+                {qCell(
+                  "1 / 3",
+                  <MoneyCell
+                    inputRef={(el) => {
+                      draftRefs.current.price = el;
+                    }}
+                    value={draft.price}
+                    onChange={(v) => setD({ price: v })}
+                    onKeyDown={onDraftKey}
+                    placeholder="0"
+                    height={42}
+                    invalid={draftErr?.field === "price"}
+                  />,
+                  "Клиенту"
+                )}
+                {qCell(
+                  "3 / 5",
+                  <MoneyCell
+                    inputRef={(el) => {
+                      draftRefs.current.real = el;
+                    }}
+                    value={draft.real}
+                    onChange={(v) => setD({ real: v })}
+                    onKeyDown={onDraftKey}
+                    placeholder="0"
+                    height={42}
+                    invalid={draftErr?.field === "real"}
+                  />,
+                  "Выкуп"
+                )}
                 <HButton
-                  disabled={busy}
-                  onClick={save}
-                  title="Сохранить заказ (Ctrl+Enter)"
-                  s={btnPrimary + ";height:46px;width:100%;border-radius:12px;font-size:14.5px;font-weight:600;box-shadow:0 6px 16px color-mix(in srgb,var(--accent) 32%,transparent)"}
+                  onClick={addDraft}
+                  title="Добавить в список (Enter)"
+                  s={mix(
+                    "height:42px;padding:0 16px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 30%,transparent)",
+                    !isDesktop && "grid-column:1 / -1"
+                  )}
                   hover="background:var(--accent-hover)"
                 >
-                  {busy ? "Сохраняю…" : "Сохранить заказ"}
+                  <Svg paths={I_PLUS} size={14} sw={2.4} />
+                  Добавить
                 </HButton>
-                {isDesktop && (
-                  <div style={css("display:flex;align-items:center;justify-content:center;gap:6px;font-size:11.5px;color:var(--text-4);margin-top:-6px")}>
-                    или <Kbd>Ctrl</Kbd>+<Kbd>Enter</Kbd> из любого поля
-                  </div>
+              </div>
+              <div style={css("display:flex;align-items:center;gap:10px;min-height:18px;margin-top:8px;font-size:12px")}>
+                {draftErr ? (
+                  <span style={css("color:var(--danger);font-weight:500")}>⚠ {draftErr.text}</span>
+                ) : draftProfit !== null ? (
+                  <span style={mix("font-weight:600;" + NUM, { color: draftProfit < 0 ? "var(--danger)" : "var(--green)" })}>
+                    прибыль с товара {draftProfit > 0 ? "+" : ""}
+                    {som(draftProfit)}
+                  </span>
+                ) : (
+                  <span style={css("color:var(--text-4)")}>Впишите название и сумму — Enter добавит товар в заказ</span>
                 )}
               </div>
+            </section>
+
+            {/* --- Список товаров --- */}
+            <section style={css(CARD + ";display:flex;flex-direction:column;flex:1;min-height:220px;overflow:hidden")}>
+              <div style={css("display:flex;align-items:center;gap:10px;padding:14px 16px 12px")}>
+                <span style={css("width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
+                  <Svg paths={I_BOX} size={16} sw={1.9} />
+                </span>
+                <span style={css("font-size:15px;font-weight:700")}>Товары в заказе</span>
+                {rows.length > 0 && (
+                  <span style={css("font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2);" + NUM)}>
+                    {rows.length} {plural(rows.length, "позиция", "позиции", "позиций")} · {totals.qty} шт
+                  </span>
+                )}
+              </div>
+
+              {rows.length === 0 ? (
+                <div style={css("flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px 16px 30px;text-align:center")}>
+                  <span style={css("width:56px;height:56px;border-radius:18px;display:grid;place-items:center;background:var(--surface-2);border:1px dashed var(--border-strong);color:var(--text-4)")}>
+                    <Svg paths={I_BOX} size={24} sw={1.6} />
+                  </span>
+                  <div style={css("font-size:14px;font-weight:600;color:var(--text-2)")}>Пока пусто</div>
+                  <div style={css("font-size:12.5px;color:var(--text-4);max-width:360px;line-height:1.5")}>
+                    Впишите товар в строку выше и нажмите <Kbd>Enter</Kbd> — он появится здесь. Можно вставить сразу весь список из Excel.
+                  </div>
+                </div>
+              ) : (
+                <div style={css("display:flex;flex-direction:column")}>
+                  {rows.map((r, i) =>
+                    editing?.key === r.key ? (
+                      <EditRow
+                        key={r.key}
+                        row={editing}
+                        index={i}
+                        isDesktop={isDesktop}
+                        error={editErr}
+                        onChange={(patch) => {
+                          setEditing((e) => (e ? { ...e, ...patch } : e));
+                          setEditErr("");
+                        }}
+                        onSave={saveEdit}
+                        onCancel={() => setEditing(null)}
+                      />
+                    ) : (
+                      <ItemRow key={r.key} row={r} index={i} compact={!isDesktop} fresh={fresh === r.key} onEdit={() => startEdit(r)} onRemove={() => removeRow(r.key)} />
+                    )
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+
+          {/* ================= Справа: касса ================= */}
+          <aside
+            style={mix(
+              CARD + ";position:relative;min-width:0;color:var(--text)",
+              // На высоте экрана: середина прокручивается, «Сохранить» всегда видна внизу.
+              isDesktop ? "align-self:start;position:sticky;top:16px;display:flex;flex-direction:column;max-height:calc(100vh - 112px)" : "display:flex;flex-direction:column"
+            )}
+          >
+            <div style={css("position:relative;flex:none;padding:18px 20px 0")}>
+              <div style={css("display:flex;align-items:center;gap:8px")}>
+                <Svg paths={I_RECEIPT} size={15} sw={2} />
+                <span style={mix("font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase", { color: K.mut })}>Касса</span>
+                <span style={mix("margin-left:auto;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:999px;" + NUM, { background: K.soft, color: K.mut })}>
+                  {rows.length} {plural(rows.length, "позиция", "позиции", "позиций")} · {totals.qty} шт
+                </span>
+              </div>
+              <div style={css("display:flex;align-items:center;gap:9px;margin-top:14px;min-width:0")}>
+                {who ? <Avatar name={who} size={28} /> : <span style={mix("width:28px;height:28px;border-radius:50%;flex:none;border:1.5px dashed", { borderColor: K.border })} />}
+                <span style={mix("font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: who ? K.text : K.dim })}>
+                  {who || "клиент не выбран"}
+                </span>
+                {!customer && who && <span style={mix("flex:none;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px", { background: "var(--accent-tint)", color: K.blue })}>новый</span>}
+              </div>
+              <div style={mix("font-size:12px;margin-top:14px", { color: K.mut })}>Сумма заказа</div>
+              <div style={css("font-size:42px;font-weight:700;letter-spacing:-.03em;line-height:1.1;white-space:nowrap;" + NUM)}>
+                <CountUp text={som(totals.sale)} duration={450} />
+              </div>
+              {!isBlank(draft) && (
+                <div style={mix("font-size:11.5px;margin-top:4px", { color: K.amber })}>+ товар в строке ввода — Enter, чтобы добавить</div>
+              )}
+            </div>
+
+            <div style={css("position:relative;flex:none;display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:14px 20px 0")}>
+              <DarkStat label="Выкуп" value={totals.withCost ? som(totals.cost) : "—"} sub={totals.withCost && totals.sale > 0 ? `${Math.round((totals.cost / totals.sale) * 100)}% от суммы` : "впишите выкуп"} />
+              <DarkStat
+                label="Прибыль"
+                value={totals.withCost ? `${totals.profit > 0 ? "+" : ""}${som(totals.profit)}` : "—"}
+                color={totals.withCost ? (totals.profit < 0 ? K.red : K.green) : undefined}
+                badge={totals.withCost && totals.cost > 0 ? `${totals.profit >= 0 ? "+" : ""}${Math.round((totals.profit / totals.cost) * 100)}%` : undefined}
+                sub={totals.withCost ? "наценка на выкуп" : "появится с выкупом"}
+              />
+            </div>
+
+            <div className="thin-scroll" style={mix("position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:16px 20px;margin-top:14px;border-top:1px solid", { borderColor: K.line })}>
+              <DField label="Когда оформлен">
+                <div style={css("display:grid;grid-template-columns:minmax(0,1fr) 118px;gap:8px")}>
+                  <DatePicker value={orderDate} onChange={setOrderDate} width="100%" height={38} words ariaLabel="Дата заказа" />
+                  <TimePicker value={time ?? clock} auto={time === null} onChange={setTime} onNow={() => setTime(null)} width="100%" height={38} ariaLabel="Время заказа" />
+                </div>
+              </DField>
+              <DField label="Статус товаров">
+                <DarkSeg
+                  value={status}
+                  onChange={setStatus}
+                  options={[
+                    { key: "ordered", label: "Заказан", color: K.amber },
+                    { key: "in_stock", label: "Уже на складе", color: K.blue },
+                  ]}
+                />
+              </DField>
+              <DField label="Оплата">
+                <DarkSeg
+                  value={pay}
+                  onChange={setPay}
+                  options={[
+                    { key: "none", label: "Не оплачено", color: K.red },
+                    { key: "full", label: "Полностью", color: K.green },
+                    { key: "part", label: "Частично", color: K.amber },
+                  ]}
+                />
+                {pay === "part" && (
+                  <div style={css("margin-top:8px")}>
+                    <MoneyCell value={paid} onChange={setPaid} placeholder={totals.sale > 0 ? `сколько оплатил из ${totals.sale.toLocaleString("ru-RU")}` : "сколько оплатил"} height={38} />
+                  </div>
+                )}
+                <div style={css("margin-top:10px")}>
+                  <div style={mix("height:6px;border-radius:4px;overflow:hidden", { background: totals.sale > 0 ? "var(--danger-tint)" : K.soft })}>
+                    <div style={mix("height:100%;border-radius:4px;transition:width .3s ease", { width: `${paidShare}%`, background: K.green })} />
+                  </div>
+                  <div style={mix("display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;white-space:nowrap", { color: K.mut })}>
+                    <span>
+                      оплачено <b style={mix(NUM, { color: K.green })}>{som(totals.paid)}</b>
+                    </span>
+                    <span>
+                      долг <b style={mix(NUM, { color: debt > 0 ? K.red : K.mut })}>{som(debt)}</b>
+                    </span>
+                  </div>
+                </div>
+              </DField>
+              <DField label="Комментарий">
+                <input
+                  value={comment}
+                  onChange={(e) => setComment(cased(e, capFirst))}
+                  placeholder="необязательно — например, «доставка до двери»"
+                  style={css(inputStyle + ";height:38px;border-radius:10px")}
+                />
+              </DField>
+            </div>
+
+            <div style={mix("position:relative;flex:none;display:flex;flex-direction:column;gap:10px;padding:14px 20px 18px;border-top:1px solid", { borderColor: K.line })}>
+              {error && (
+                <div role="alert" style={mix("padding:9px 12px;border-radius:10px;font-size:12.5px;line-height:1.4", { background: "var(--danger-tint)", border: "1px solid var(--danger-border)", color: "var(--danger)" })}>
+                  {error}
+                </div>
+              )}
+              <HButton
+                disabled={busy}
+                onClick={save}
+                title="Сохранить заказ (Ctrl+Enter)"
+                s="height:54px;width:100%;border:none;border-radius:14px;background:linear-gradient(135deg,#5B7CFA 0%,#7C5CF6 100%);color:#fff;font-size:15.5px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 12px 28px rgba(91,124,250,.45),inset 0 1px 0 rgba(255,255,255,.25);transition:transform .12s,box-shadow .12s,filter .12s"
+                hover="filter:brightness(1.08);box-shadow:0 14px 34px rgba(91,124,250,.55),inset 0 1px 0 rgba(255,255,255,.25)"
+              >
+                {busy ? (
+                  "Сохраняю…"
+                ) : (
+                  <>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                    Сохранить заказ
+                    {isDesktop && <span style={css("font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.18)")}>Ctrl+Enter</span>}
+                  </>
+                )}
+              </HButton>
             </div>
           </aside>
         </div>
       </div>
     </Page>
-  );
-}
-
-const I_RECEIPT: [string, Record<string, unknown>][] = [
-  ["path", { d: "M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" }],
-  ["path", { d: "M8 8h8" }],
-  ["path", { d: "M8 12h8" }],
-  ["path", { d: "M8 16h5" }],
-];
-
-function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
-
-/** Заголовок раздела: иконка в цветной подложке, название, подсказка. */
-function SectionHead({ icon, title, hint, extra }: { icon: [string, Record<string, unknown>][]; title: string; hint?: string; extra?: ReactNode }) {
-  return (
-    <div style={css("display:flex;align-items:center;gap:10px;margin-bottom:14px;min-width:0")}>
-      <span style={css("width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-        <Svg paths={icon} size={16} sw={1.9} />
-      </span>
-      <span style={css("font-size:15px;font-weight:700")}>{title}</span>
-      {hint && <span style={css("font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{hint}</span>}
-      <span style={css("flex:1")} />
-      {extra}
-    </div>
   );
 }
 
@@ -704,8 +867,7 @@ function SavedBanner({
       ref={ref}
       role="status"
       style={mix(
-        "position:relative;overflow:hidden;display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:16px;animation:slideUp .25s ease",
-        !isDesktop && "flex-wrap:wrap",
+        "position:relative;overflow:hidden;display:flex;align-items:center;flex-wrap:wrap;gap:12px 16px;padding:16px 18px;border-radius:16px;animation:slideUp .25s ease",
         {
           border: "1px solid color-mix(in srgb, var(--green-dot) 40%, var(--border))",
           background: "radial-gradient(circle at 0 50%, color-mix(in srgb, var(--green-dot) 16%, transparent), transparent 40%), var(--surface)",
@@ -751,7 +913,7 @@ function SavedBanner({
         <div style={css("font-size:11.5px;color:var(--text-4);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{preview}</div>
       </div>
 
-      <div style={mix("display:flex;align-items:center;gap:8px", !isDesktop && "width:100%;flex-wrap:wrap")}>
+      <div style={mix("display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto", !isDesktop && "width:100%")}>
         <HButton
           onClick={onDetails}
           s="height:36px;padding:0 14px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 30%,transparent)"
@@ -933,64 +1095,77 @@ function OrderDetails({ saved, onClose, onAgain, onOpen }: { saved: Saved; onClo
   );
 }
 
-function Field({ label, right, children }: { label: string; right?: ReactNode; children: ReactNode }) {
+type PathDef = [string, Record<string, unknown>][];
+
+const I_RECEIPT: PathDef = [
+  ["path", { d: "M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" }],
+  ["path", { d: "M8 8h8" }],
+  ["path", { d: "M8 12h8" }],
+  ["path", { d: "M8 16h5" }],
+];
+const I_USER_PLUS: PathDef = [
+  ["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }],
+  ["circle", { cx: 9, cy: 7, r: 4 }],
+  ["path", { d: "M19 8v6" }],
+  ["path", { d: "M22 11h-6" }],
+];
+const I_EDIT: PathDef = [
+  ["path", { d: "M12 20h9" }],
+  ["path", { d: "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" }],
+];
+const I_TRASH: PathDef = [
+  ["path", { d: "M3 6h18" }],
+  ["path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }],
+  ["path", { d: "M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" }],
+];
+
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+/** Аватар-буква; цвет — от имени, чтобы у клиента он всегда был один и тот же. */
+const AVATAR_BG = [
+  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
+  "linear-gradient(135deg,#22C55E,#0EA5E9)",
+  "linear-gradient(135deg,#F59E0B,#EF4444)",
+  "linear-gradient(135deg,#EC4899,#8B5CF6)",
+  "linear-gradient(135deg,#06B6D4,#3B82F6)",
+];
+function Avatar({ name, size }: { name: string; size: number }) {
+  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
   return (
-    <div>
-      <div style={css("display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:6px")}>
-        <span style={css("font-size:11.5px;font-weight:500;color:var(--text-3)")}>{label}</span>
-        {right}
-      </div>
-      {children}
-    </div>
+    <span
+      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:700", {
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.42),
+        background: AVATAR_BG[n % AVATAR_BG.length],
+      })}
+    >
+      {name.trim().slice(0, 1).toUpperCase()}
+    </span>
   );
 }
 
-const I_BAG: [string, Record<string, unknown>][] = [
-  ["path", { d: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" }],
-  ["path", { d: "M3 6h18" }],
-  ["path", { d: "M16 10a4 4 0 0 1-8 0" }],
-];
-const I_TREND: [string, Record<string, unknown>][] = [
-  ["path", { d: "m22 7-8.5 8.5-5-5L2 17" }],
-  ["path", { d: "M16 7h6v6" }],
-];
-
-/** Плитка итога: иконка, подпись, крупное число и пояснение под ним. */
-function Metric({
-  icon,
-  tone,
-  label,
-  value,
-  sub,
-  badge,
-}: {
-  icon: [string, Record<string, unknown>][];
-  tone: "violet" | "green" | "danger";
-  label: string;
-  value: string;
-  sub: string;
-  badge?: string;
-}) {
-  const [tint, fg] = { violet: ["var(--violet-tint)", "var(--violet)"], green: ["var(--green-tint)", "var(--green)"], danger: ["var(--danger-tint)", "var(--danger)"] }[tone];
-  const empty = value === "—";
+/** Сводка по выбранному клиенту: заказано / на складе / долг. */
+function Fact({ label, value, dot, danger }: { label: string; value: string; dot: string; danger?: boolean }) {
   return (
-    <div style={css("min-width:0;padding:11px 12px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border-2)")}>
-      <div style={css("display:flex;align-items:center;gap:7px;min-width:0")}>
-        <span style={mix("width:22px;height:22px;border-radius:7px;display:grid;place-items:center;flex:none", { background: tint, color: fg })}>
-          <Svg paths={icon} size={13} sw={2} />
-        </span>
-        <span style={css("font-size:12px;font-weight:500;color:var(--text-2)")}>{label}</span>
-        {badge && <span style={mix("margin-left:auto;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;" + NUM, { background: tint, color: fg })}>{badge}</span>}
-      </div>
-      <div
-        style={mix(NUM + ";font-size:19px;font-weight:700;margin-top:8px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", {
-          color: empty ? "var(--text-5)" : tone === "violet" ? "var(--text)" : fg,
-        })}
-      >
-        {value}
-      </div>
-      <div style={css("font-size:11px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>
-    </div>
+    <span
+      style={mix("display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:999px;font-size:12px;white-space:nowrap", {
+        background: danger ? "var(--danger-tint)" : "var(--surface-2)",
+        border: `1px solid ${danger ? "var(--danger-border)" : "var(--border-2)"}`,
+        color: danger ? "var(--danger)" : "var(--text-3)",
+      })}
+    >
+      <span style={mix("width:6px;height:6px;border-radius:50%", { background: dot })} />
+      {label}
+      <b style={mix(NUM, { color: danger ? "var(--danger)" : "var(--text)" })}>{value}</b>
+    </span>
   );
 }
 
@@ -1002,56 +1177,183 @@ function Kbd({ children }: { children: ReactNode }) {
   );
 }
 
-/** Маленькие переключатели-«таблетки»: выбранный подсвечен своим цветом. */
-function Pills<K extends string>({
-  value,
-  onChange,
-  options,
-}: {
-  value: K;
-  onChange: (k: K) => void;
-  options: { key: K; label: string; dot: string; bg: string; fg: string }[];
-}) {
+/** Товар в списке: номер, название, код · шт · выкуп, сумма и прибыль; правка и удаление. */
+function ItemRow({ row, index, compact, fresh, onEdit, onRemove }: { row: Row; index: number; compact: boolean; fresh: boolean; onEdit: () => void; onRemove: () => void }) {
+  const price = money(row.price);
+  const real = money(row.real);
+  const profit = price !== null && real !== null ? price - real : null;
+  const bad = rowError(row);
   return (
-    <div style={css("display:flex;flex-wrap:wrap;gap:6px")}>
+    <div className={"po-item" + (fresh ? " po-fresh" : "")} onDoubleClick={onEdit} style={css(`display:flex;align-items:center;gap:${compact ? 10 : 14}px;padding:11px ${compact ? 12 : 16}px;border-top:1px solid var(--border-2)`)}>
+      <span style={css("width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--accent-tint);color:var(--accent-strong);" + NUM)}>
+        {index + 1}
+      </span>
+      <div style={css("flex:1;min-width:0")}>
+        <div style={css("font-size:14px;font-weight:600;color:var(--text);" + (compact ? "line-height:1.3" : "white-space:nowrap;overflow:hidden;text-overflow:ellipsis"))}>{row.name || "без названия"}</div>
+        <div style={css("display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden")}>
+          {row.code ? (
+            <span style={css(MONO + ";font-size:11.5px;padding:0 6px;border-radius:5px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2)")}>{row.code}</span>
+          ) : (
+            <span>без кода</span>
+          )}
+          <span>·</span>
+          <span style={css(NUM)}>{row.qty} шт</span>
+          <span>·</span>
+          <span style={css(NUM)}>выкуп {real === null ? "—" : som(real)}</span>
+        </div>
+        {bad && <div style={css("font-size:11.5px;color:var(--danger);margin-top:2px")}>⚠ {bad.text}</div>}
+      </div>
+      <div style={css("text-align:right;flex:none")}>
+        <div style={css("font-size:15px;font-weight:700;color:var(--text);" + NUM)}>{price === null ? "—" : som(price)}</div>
+        <div style={mix("font-size:12px;font-weight:600;" + NUM, { color: profit === null ? "var(--text-5)" : profit < 0 ? "var(--danger)" : "var(--green)" })}>
+          {profit === null ? "прибыль —" : `${profit > 0 ? "+" : ""}${som(profit)}`}
+        </div>
+      </div>
+      <div className="po-actions" style={css("display:flex;gap:4px;flex:none" + (compact ? ";flex-direction:column" : ""))}>
+        <HButton
+          onClick={onEdit}
+          title="Изменить"
+          s="width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-3);cursor:pointer"
+          hover="border-color:var(--accent);color:var(--accent);background:var(--accent-tint2)"
+        >
+          <Svg paths={I_EDIT} size={14} sw={2} />
+        </HButton>
+        <HButton
+          onClick={onRemove}
+          title="Убрать из заказа"
+          s="width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-3);cursor:pointer"
+          hover="border-color:var(--danger);color:var(--danger);background:var(--danger-tint)"
+        >
+          <Svg paths={I_TRASH} size={14} sw={2} />
+        </HButton>
+      </div>
+    </div>
+  );
+}
+
+/** Правка товара прямо в списке: Enter — сохранить, Esc — отменить. */
+function EditRow({
+  row,
+  index,
+  isDesktop,
+  error,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  row: Row;
+  index: number;
+  isDesktop: boolean;
+  error: string;
+  onChange: (patch: Partial<Row>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const keys = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      onSave();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+    }
+  };
+  const field = inputStyle + ";height:38px;border-radius:9px";
+  return (
+    <div style={css("padding:12px 16px;border-top:1px solid var(--border-2);background:var(--accent-tint2)")}>
+      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "30px minmax(0,2fr) minmax(0,1.1fr) 58px 108px 108px auto" : "repeat(4,minmax(0,1fr))", gap: 8, alignItems: "center" }}>
+        {isDesktop && (
+          <span style={css("width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--accent);color:#fff;" + NUM)}>{index + 1}</span>
+        )}
+        <input autoFocus value={row.name} onChange={(e) => onChange({ name: cased(e, capFirst) })} onKeyDown={keys} placeholder="Название" style={mix(field, !isDesktop && "grid-column:1 / -1")} />
+        <input value={row.code} onChange={(e) => onChange({ code: cased(e, upper) })} onKeyDown={keys} placeholder="Код" style={mix(field + ";" + MONO, !isDesktop && "grid-column:1 / 4")} />
+        <input value={row.qty} onChange={(e) => onChange({ qty: e.target.value })} onKeyDown={keys} inputMode="numeric" aria-label="Количество" style={mix(field + ";text-align:center;padding:0 6px;" + NUM, !isDesktop && "grid-column:4 / 5")} />
+        <MoneyCell value={row.price} onChange={(v) => onChange({ price: v })} onKeyDown={keys} placeholder="клиенту" height={38} style={isDesktop ? undefined : { gridColumn: "1 / 3" }} />
+        <MoneyCell value={row.real} onChange={(v) => onChange({ real: v })} onKeyDown={keys} placeholder="выкуп" height={38} style={isDesktop ? undefined : { gridColumn: "3 / 5" }} />
+        <div style={mix("display:flex;gap:6px", !isDesktop && "grid-column:1 / -1")}>
+          <HButton
+            onClick={onSave}
+            title="Сохранить строку (Enter)"
+            s={mix("height:38px;border:none;border-radius:9px;background:var(--accent);color:#fff;cursor:pointer;display:grid;place-items:center", isDesktop ? "width:38px;padding:0" : "flex:1")}
+            hover="background:var(--accent-hover)"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          </HButton>
+          <HButton
+            onClick={onCancel}
+            title="Отменить правку (Esc)"
+            s={mix("height:38px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-3);cursor:pointer;display:grid;place-items:center", isDesktop ? "width:38px;padding:0" : "flex:1")}
+            hover="border-color:var(--danger);color:var(--danger)"
+          >
+            <Svg paths={I_CLOSE} size={15} sw={2.2} />
+          </HButton>
+        </div>
+      </div>
+      {error && <div style={css("font-size:12px;color:var(--danger);margin-top:6px")}>⚠ {error}</div>}
+    </div>
+  );
+}
+
+/** Поле кассы: подпись сверху. */
+function DField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <div style={mix("font-size:11.5px;font-weight:600;margin-bottom:7px", { color: K.mut })}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+/** Плитка кассы: подпись, число, пояснение; значок — наценка в процентах. */
+function DarkStat({ label, value, sub, color, badge }: { label: string; value: string; sub: string; color?: string; badge?: string }) {
+  return (
+    <div style={mix("min-width:0;padding:11px 12px;border-radius:12px;border:1px solid", { background: K.soft, borderColor: K.line })}>
+      <div style={css("display:flex;align-items:center;gap:6px")}>
+        <span style={mix("font-size:11.5px;font-weight:600", { color: K.mut })}>{label}</span>
+        {badge && <span style={mix("margin-left:auto;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;" + NUM, { background: "var(--green-tint)", color: K.green })}>{badge}</span>}
+      </div>
+      <div style={mix("font-size:18px;font-weight:700;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" + NUM, { color: value === "—" ? K.dim : color ?? K.text })}>{value}</div>
+      <div style={mix("font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: K.dim })}>{sub}</div>
+    </div>
+  );
+}
+
+/** Переключатель кассы: выбранный вариант подсвечен своим цветом. */
+function DarkSeg<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: { key: T; label: string; color: string }[] }) {
+  return (
+    <div
+      style={mix("display:grid;gap:4px;padding:4px;border-radius:12px;border:1px solid", {
+        gridTemplateColumns: `repeat(${options.length},minmax(0,1fr))`,
+        background: K.soft,
+        borderColor: K.line,
+      })}
+    >
       {options.map((o) => {
         const on = o.key === value;
         return (
           <button
             key={o.key}
             type="button"
-            onClick={() => onChange(o.key)}
             aria-pressed={on}
+            onClick={() => onChange(o.key)}
             style={mix(
-              "display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;font-size:12.5px;cursor:pointer;white-space:nowrap;transition:background .12s,color .12s,border-color .12s",
+              "height:34px;padding:0 6px;border-radius:9px;border:1px solid transparent;font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s",
               {
-                border: `1px solid ${on ? `color-mix(in srgb, ${o.dot} 45%, transparent)` : "var(--border)"}`,
-                background: on ? o.bg : "var(--surface)",
-                color: on ? o.fg : "var(--text-2)",
-                fontWeight: on ? 600 : 500,
+                background: on ? `color-mix(in srgb, ${o.color} 10%, var(--surface))` : "transparent",
+                borderColor: on ? `color-mix(in srgb, ${o.color} 45%, transparent)` : "transparent",
+                color: on ? o.color : K.mut,
+                fontWeight: on ? 700 : 500,
               }
             )}
           >
-            <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: on ? o.dot : "var(--border-strong)" })} />
+            <span style={mix("width:6px;height:6px;border-radius:50%;flex:none", { background: on ? o.color : K.dim })} />
             {o.label}
           </button>
         );
       })}
     </div>
-  );
-}
-
-function Chip({ label, value, danger, dot }: { label: string; value: string; danger?: boolean; dot?: string }) {
-  return (
-    <span
-      style={mix("display:inline-flex;gap:5px;align-items:center;font-size:11.5px;padding:4px 9px;border-radius:14px;white-space:nowrap", {
-        background: danger ? "var(--danger-tint)" : "var(--hover)",
-        color: danger ? "var(--danger)" : "var(--text-3)",
-      })}
-    >
-      {dot && <span style={mix("width:6px;height:6px;border-radius:50%", { background: dot })} />}
-      {label} <b style={mix(MONO, { color: danger ? "var(--danger)" : "var(--text)" })}>{value}</b>
-    </span>
   );
 }
 
@@ -1062,28 +1364,34 @@ function MoneyCell({
   onKeyDown,
   height = 36,
   style,
+  invalid,
+  inputRef,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   height?: number;
-  style?: CSSProperties;
+  style?: React.CSSProperties;
+  invalid?: boolean;
+  inputRef?: (el: HTMLInputElement | null) => void;
 }) {
   return (
     <span style={mix("position:relative;display:block;min-width:0", style)}>
       <input
+        ref={inputRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={onKeyDown}
         inputMode="decimal"
         placeholder={placeholder}
         style={mix(
-          "padding:0 24px 0 10px;border:1px solid var(--border-strong);border-radius:8px;font-size:13px;outline:none;background:var(--surface);width:100%;" + MONO,
-          { height }
+          "padding:0 26px 0 11px;border:1px solid var(--border-strong);border-radius:10px;font-size:13.5px;outline:none;background:var(--surface);width:100%;" + NUM,
+          { height },
+          invalid && "border-color:var(--danger)!important;box-shadow:0 0 0 3px var(--danger-tint)"
         )}
       />
-      <span style={css("position:absolute;right:9px;top:50%;transform:translateY(-50%);font-size:11.5px;color:var(--text-4);pointer-events:none")}>с</span>
+      <span style={mix("position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11.5px;pointer-events:none", { color: "var(--text-4)" })}>с</span>
     </span>
   );
 }

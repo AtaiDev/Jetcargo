@@ -260,16 +260,36 @@ warehouseRouter.get("/issues", (req, res) => {
     p.push(until);
   }
   const total = get<{ n: number }>(`SELECT COUNT(*) AS n FROM issues s JOIN customers c ON c.id = s.customer_id WHERE ${where}`, ...p)!.n;
-  // Итоги за весь отобранный период (не только текущая страница).
-  const summary = get<{ items: number; qty: number; sale: number; customers: number }>(
+  // Оплата, принятая прямо при выдаче: платёж «при выдаче» с тем же временем, что и выдача.
+  const PAID_NOW = `p.deleted_at IS NULL AND p.comment = 'при выдаче' AND p.paid_at = s.issued_at`;
+  // Итоги за весь отобранный период (не только текущая страница); debt — сколько по выданным товарам ещё не оплачено.
+  const summary = get<{ items: number; qty: number; sale: number; customers: number; debt: number }>(
     `SELECT COUNT(v.id) AS items, COALESCE(SUM(v.qty), 0) AS qty, COALESCE(SUM(v.sale), 0) AS sale,
-            COUNT(DISTINCT s.customer_id) AS customers
+            COUNT(DISTINCT s.customer_id) AS customers, COALESCE(SUM(v.debt), 0) AS debt
        FROM issues s JOIN customers c ON c.id = s.customer_id JOIN v_items v ON v.issue_id = s.id
       WHERE ${where}`,
     ...p
   )!;
-  const rows = all<{ id: number; customer_id: number; issued_at: string; comment: string; customer_name: string; customer_phone: string; user_login: string | null }>(
-    `SELECT s.id, s.customer_id, s.issued_at, s.comment, c.name AS customer_name, c.phone AS customer_phone, u.login AS user_login
+  const paidNow = get<{ paid: number }>(
+    `SELECT COALESCE(SUM(p.amount), 0) AS paid
+       FROM issues s JOIN customers c ON c.id = s.customer_id
+       JOIN order_items i ON i.issue_id = s.id AND i.deleted_at IS NULL
+       JOIN payments p ON p.order_item_id = i.id AND ${PAID_NOW}
+      WHERE ${where}`,
+    ...p
+  )!.paid;
+  // По дням — для графика и итогов дня. Дни считаем в часовом поясе клиента (tz — минуты к UTC).
+  const tz = Math.max(-840, Math.min(840, optInt(req.query.tz) ?? 0));
+  const byDay = all<{ day: string; issues: number; items: number; sale: number }>(
+    `SELECT date(s.issued_at, ?) AS day, COUNT(DISTINCT s.id) AS issues, COUNT(v.id) AS items, COALESCE(SUM(v.sale), 0) AS sale
+       FROM issues s JOIN customers c ON c.id = s.customer_id JOIN v_items v ON v.issue_id = s.id
+      WHERE ${where} GROUP BY day ORDER BY day`,
+    `${tz >= 0 ? "+" : ""}${tz} minutes`, ...p
+  );
+  const rows = all<{ id: number; customer_id: number; issued_at: string; comment: string; customer_name: string; customer_phone: string; user_login: string | null; paid_now: number }>(
+    `SELECT s.id, s.customer_id, s.issued_at, s.comment, c.name AS customer_name, c.phone AS customer_phone, u.login AS user_login,
+            (SELECT COALESCE(SUM(p.amount), 0) FROM order_items i JOIN payments p ON p.order_item_id = i.id AND ${PAID_NOW}
+              WHERE i.issue_id = s.id AND i.deleted_at IS NULL) AS paid_now
        FROM issues s JOIN customers c ON c.id = s.customer_id LEFT JOIN users u ON u.id = s.user_id
       WHERE ${where} ORDER BY s.issued_at DESC, s.id DESC LIMIT ? OFFSET ?`,
     ...p, limit, offset
@@ -277,6 +297,7 @@ warehouseRouter.get("/issues", (req, res) => {
   res.json({
     rows: rows.map((r) => ({ ...r, items: items("issue_id = ?", [r.id], "ORDER BY id") })),
     total,
-    summary,
+    summary: { ...summary, paid_now: paidNow },
+    by_day: byDay,
   });
 });
