@@ -6,15 +6,17 @@
  * какие пропустятся и почему, и какой долг останется. Выдача оформляется как
  * настоящая выдача (по одной на клиента) и попадает в историю выдач.
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { apiError } from "../api/client";
 import { bulkPay, bulkStatus, type BulkStatusResult, type Item, type ItemStatus } from "../api/domain";
 import { MONO, css, mix } from "../design/css";
-import { HButton, ST } from "../design/ui";
+
+const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
+import { Icon } from "../design/icons";
+import { HButton, ModalCancel, ModalError, ModalShell, ST, btnPrimary, type ModalTone } from "../design/ui";
 import { STATUS_LABEL, som } from "../lib/cargo";
 import { emit } from "../lib/events";
-import { Confirm } from "./cargo";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 
@@ -154,69 +156,246 @@ export default function BulkBar({
         </div>
       )}
 
-      {pending?.kind === "status" && (
-        <Confirm
-          title={pending.status === "issued" ? "Выдать выбранные товары?" : `Перевести в «${STATUS_LABEL[pending.status]}»?`}
-          danger={false}
-          confirmLabel={pending.check.changed ? (pending.status === "issued" ? "Выдать" : "Перевести") : "Понятно"}
-          onClose={() => setPending(null)}
-          onConfirm={pending.check.changed ? run : async () => setPending(null)}
-          text={<StatusCheck status={pending.status} check={pending.check} />}
-        />
-      )}
-      {pending?.kind === "pay" && (
-        <Confirm
-          title="Отметить оплаченными?"
-          danger={false}
-          confirmLabel="Принять оплату"
-          onClose={() => setPending(null)}
-          onConfirm={run}
-          text={
-            <>
-              По <b>{pending.count}</b> товарам будет записана оплата остатка долга — всего <b style={css(MONO)}>{som(pending.amount)}</b>.
-              Оплаты попадут в финансы сегодняшним днём; ошибочную оплату можно отменить в карточке товара.
-            </>
-          }
-        />
-      )}
+      {pending && <BulkModal pending={pending} chosen={chosen} onClose={() => setPending(null)} onRun={run} />}
     </>
   );
 }
 
-function StatusCheck({ status, check }: { status: ItemStatus; check: BulkStatusResult }): ReactNode {
-  return (
-    <div style={css("display:flex;flex-direction:column;gap:8px")}>
-      {check.changed ? (
-        <div>
-          Изменится: <b>{check.changed}</b> тов.
-          {status === "issued" && (
-            <>
-              {" "}
-              — оформится выдача{check.customers > 1 ? ` для ${check.customers} клиентов` : ""}, товары уйдут со склада и появятся в истории
-              выдач.
-            </>
-          )}
-        </div>
-      ) : (
-        <div>Ни один из выбранных товаров не подходит для этого действия.</div>
-      )}
-      {status === "issued" && check.debt > 0 && (
-        <div style={css("color:var(--amber)")}>
-          У выдаваемых товаров останется долг <b style={css(MONO)}>{som(check.debt)}</b> — он сохранится у клиентов.
-        </div>
-      )}
-      {check.skipped.length > 0 && (
-        <div>
-          <div style={css("color:var(--text-3)")}>Пропустятся ({check.skipped.length}):</div>
-          <div style={css("max-height:140px;overflow:auto;font-size:12px;margin-top:4px")}>
-            {check.skipped.map((s) => (
-              <div key={s.id}>
-                {s.name} — <span style={css("color:var(--text-3)")}>{s.reason}</span>
-              </div>
-            ))}
+// --- Подтверждение массового действия -------------------------------------------------------
+
+const TONE_OF: Record<ItemStatus, ModalTone> = { ordered: "amber", in_stock: "accent", issued: "green" };
+const ICON_OF: Record<ItemStatus, string> = { ordered: "orders", in_stock: "receive", issued: "issue" };
+const WHAT_HAPPENS: Record<ItemStatus, string> = {
+  issued: "Оформится выдача — по одной на клиента: товары уйдут со склада и появятся в истории выдач.",
+  in_stock: "Товары отметятся как принятые на склад — их можно будет выдать клиентам.",
+  ordered: "Товары вернутся в статус «Заказан» — как будто ещё не приехали.",
+};
+/** Подсказка, когда ни один товар не подошёл. */
+const CAN_DO: Record<ItemStatus, string> = {
+  issued: "Выдать можно только товары, которые лежат на складе. Сначала примите их на «Приёме товара».",
+  in_stock: "Выберите товары в другом статусе — те, что уже на складе, переводить не нужно.",
+  ordered: "Выберите товары в другом статусе — заказанные уже в нём.",
+};
+
+/**
+ * Что именно произойдёт: плитки с итогами, список товаров «было → станет», пропущенные с причинами
+ * и предупреждение о долге. Если менять нечего — одно окно-пояснение с кнопкой «Понятно».
+ */
+function BulkModal({ pending, chosen, onClose, onRun }: { pending: Pending; chosen: Item[]; onClose: () => void; onRun: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function confirm() {
+    setBusy(true);
+    setError("");
+    try {
+      await onRun();
+    } catch (e) {
+      setError(apiError(e, "Не удалось выполнить"));
+      setBusy(false);
+    }
+  }
+
+  if (pending.kind === "pay") {
+    const owing = chosen.filter((i) => i.debt > 0);
+    return (
+      <ModalShell
+        title="Отметить оплаченными?"
+        subtitle={
+          <span style={css(NUM)}>
+            {pending.count} {plural(pending.count, "товар", "товара", "товаров")} · остаток долга {som(pending.amount)}
+          </span>
+        }
+        icon={<span style={css("font-size:17px;font-weight:500")}>с</span>}
+        tone="green"
+        onClose={onClose}
+        width={520}
+        footer={
+          <>
+            <ModalCancel>Отмена</ModalCancel>
+            <HButton onClick={confirm} disabled={busy} s={btnPrimary + ";min-width:160px"} hover="background:var(--accent-hover)">
+              {busy ? "Записываю…" : `Принять ${som(pending.amount)}`}
+            </HButton>
+          </>
+        }
+      >
+        <div className="mf-body">
+          <div className="mf-card" style={css("justify-content:space-between")}>
+            <span style={css("font-size:12.5px;color:var(--text-3)")}>Будет записано оплат на</span>
+            <span style={css(NUM + ";font-size:22px;font-weight:500;color:var(--green)")}>{som(pending.amount)}</span>
           </div>
+          {owing.length > 0 && (
+            <div>
+              <div className="bk-label">Чей долг закроется</div>
+              <div className="bk-list thin-scroll">
+                {owing.map((i) => (
+                  <div key={i.id} className="bk-row">
+                    <ItemName i={i} />
+                    <span />
+                    <span style={css(NUM + ";font-size:13px;font-weight:500;color:var(--amber);white-space:nowrap")}>{som(i.debt)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="mf-hint">Оплаты попадут в финансы сегодняшним днём. Ошибочную оплату можно отменить в карточке товара.</div>
+          <ModalError text={error} />
         </div>
-      )}
-    </div>
+      </ModalShell>
+    );
+  }
+
+  const { status, check } = pending;
+  const skippedIds = new Set(check.skipped.map((s) => s.id));
+  const moving = chosen.filter((i) => !skippedIds.has(i.id));
+  const n = check.changed;
+  const sum = moving.reduce((s, i) => s + i.sale, 0);
+  const things = (k: number) => `${k} ${plural(k, "товар", "товара", "товаров")}`;
+  const title = !n ? "Нечего менять" : status === "issued" ? `Выдать ${things(n)}?` : `Перевести ${things(n)} в «${STATUS_LABEL[status]}»?`;
+
+  return (
+    <ModalShell
+      title={title}
+      subtitle={
+        n ? (
+          <span style={css(NUM)}>
+            {status === "issued" && `${check.customers} ${plural(check.customers, "клиент", "клиента", "клиентов")} · `}
+            на {som(sum)}
+            {check.skipped.length > 0 && ` · ${check.skipped.length} пропустится`}
+          </span>
+        ) : (
+          "Ни один из выбранных товаров не подходит для этого действия"
+        )
+      }
+      icon={<Icon name={ICON_OF[status]} size={18} />}
+      tone={n ? TONE_OF[status] : "amber"}
+      onClose={onClose}
+      width={560}
+      footer={
+        n ? (
+          <>
+            <ModalCancel>Отмена</ModalCancel>
+            <HButton onClick={confirm} disabled={busy} s={btnPrimary + ";min-width:170px"} hover="background:var(--accent-hover)">
+              {busy ? "Секунду…" : status === "issued" ? `Выдать ${things(n)}` : `Перевести ${things(n)}`}
+            </HButton>
+          </>
+        ) : (
+          <ModalCancel>Понятно</ModalCancel>
+        )
+      }
+    >
+      <div className="mf-body">
+        {/* Итоги — когда менять нечего, они не нужны: всё объясняют причины ниже */}
+        {n > 0 && (
+          <div className="bk-stats">
+            <div className="bk-stat">
+              <span className="bk-stat-l">Изменится</span>
+              <span className="bk-stat-v" style={{ color: n ? ST[status].fg : "var(--text-4)" }}>
+                {n}
+              </span>
+            </div>
+            <div className="bk-stat">
+              <span className="bk-stat-l">Пропустится</span>
+              <span className="bk-stat-v" style={{ color: check.skipped.length ? "var(--text-2)" : "var(--text-4)" }}>
+                {check.skipped.length}
+              </span>
+            </div>
+            {status === "issued" ? (
+              <div className="bk-stat">
+                <span className="bk-stat-l">Останется долг</span>
+                <span className="bk-stat-v" style={{ color: check.debt > 0 ? "var(--amber)" : "var(--green)" }}>
+                  {check.debt > 0 ? som(check.debt) : "нет"}
+                </span>
+              </div>
+            ) : (
+              <div className="bk-stat">
+                <span className="bk-stat-l">На сумму</span>
+                <span className="bk-stat-v">{som(sum)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Что изменится: было → станет */}
+        {n > 0 && moving.length > 0 && (
+          <div>
+            <div className="bk-label">Что изменится</div>
+            <div className="bk-list thin-scroll">
+              {moving.map((i) => (
+                <div key={i.id} className="bk-row">
+                  <ItemName i={i} />
+                  <span className="bk-flow">
+                    <Dot c={ST[i.stage ?? i.status].dot} />
+                    {ST[i.stage ?? i.status].label}
+                    <span style={css("color:var(--text-4)")}>→</span>
+                    <Dot c={ST[status].dot} />
+                    <span style={{ color: ST[status].fg }}>{STATUS_LABEL[status]}</span>
+                  </span>
+                  <span style={css(NUM + ";font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;text-align:right")}>{som(i.sale)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Пропущенные — с причинами */}
+        {check.skipped.length > 0 && (
+          <div>
+            <div className="bk-label">{n ? "Пропустятся" : "Почему"}</div>
+            {/* Сводка причин — чтобы с первого взгляда было ясно, что мешает */}
+            <div className="bk-why">
+              {[...check.skipped.reduce((m, s) => m.set(s.reason, (m.get(s.reason) ?? 0) + 1), new Map<string, number>())].map(([reason, k]) => (
+                <span key={reason} className="bk-why-chip">
+                  {reason}
+                  <b>{k}</b>
+                </span>
+              ))}
+            </div>
+            <div className="bk-list bk-skip thin-scroll">
+              {check.skipped.map((s) => (
+                <div key={s.id} className="bk-row" style={css("grid-template-columns:minmax(0,1fr) auto")}>
+                  <span style={css("min-width:0;font-size:13px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{s.name}</span>
+                  <span className="bk-reason">{s.reason}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {status === "issued" && check.debt > 0 && n > 0 && (
+          <div className="bk-warn">
+            У выдаваемых товаров останется долг <b>{som(check.debt)}</b> — он сохранится у клиентов, принять оплату можно позже.
+          </div>
+        )}
+        {n > 0 ? (
+          <div className="mf-hint">{WHAT_HAPPENS[status]}</div>
+        ) : (
+          <div className="mf-hint">{CAN_DO[status]}</div>
+        )}
+        <ModalError text={error} />
+      </div>
+    </ModalShell>
   );
+}
+
+function ItemName({ i }: { i: Item }) {
+  return (
+    <span style={css("min-width:0")}>
+      <span style={css("display:block;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{i.name}</span>
+      <span style={css("display:block;font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
+        {i.customer_name}
+        {i.code ? ` · ${i.code}` : ""}
+      </span>
+    </span>
+  );
+}
+
+const Dot = ({ c }: { c: string }) => <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: c })} />;
+
+function plural(n: number, one: string, few: string, many: string): string {
+  const a = n % 10;
+  const b = n % 100;
+  if (a === 1 && b !== 11) return one;
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few;
+  return many;
 }

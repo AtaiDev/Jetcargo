@@ -8,7 +8,7 @@ import { apiError } from "../../api/client";
 import { listDashboardWidgets, patchDashboardWidget, type WidgetRow } from "../../api/domain";
 import { css, mix } from "../../design/css";
 import { I_SLIDERS, Svg } from "../../design/icons";
-import { HButton, ModalError, ModalShell, btnGhost } from "../../design/ui";
+import { ModalCancel, ModalError, ModalShell } from "../../design/ui";
 
 export default function Customize({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [rows, setRows] = useState<WidgetRow[]>([]);
@@ -48,44 +48,44 @@ export default function Customize({ onClose, onChanged }: { onClose: () => void;
   return (
     <ModalShell
       title="Графики на обзоре"
-      icon={<Svg paths={I_SLIDERS} size={15} sw={1.7} />}
+      subtitle={rows.length ? `показано ${rows.filter((w) => w.is_visible).length} из ${rows.length} · порядок — стрелками` : "Какие графики показывать и в каком порядке"}
+      icon={<Svg paths={I_SLIDERS} size={17} sw={1.7} />}
       onClose={onClose}
       width={520}
-      footer={
-        <HButton onClick={onClose} s={btnGhost} hover="border-color:var(--accent)">
-          Готово
-        </HButton>
-      }
+      footer={<ModalCancel>Готово</ModalCancel>}
     >
-      <div style={css("padding:16px 18px;display:flex;flex-direction:column;gap:6px")}>
+      <div style={css("padding:16px 18px;display:flex;flex-direction:column;gap:8px")}>
         {error && <ModalError text={error} />}
+        {rows.length === 0 &&
+          !error &&
+          [0, 1, 2, 3].map((i) => <span key={i} className="sk" style={css("height:52px;border-radius:12px")} />)}
         {rows.map((w, i) => (
-          <div
-            key={w.id}
-            style={css("display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)")}
-          >
-            <label style={css("display:flex;align-items:center;gap:6px;cursor:pointer;flex:none;min-width:82px")}>
-              <input
-                type="checkbox"
-                checked={w.is_visible}
-                onChange={(e) => act(() => patchDashboardWidget(w.id, { is_visible: e.target.checked }))}
-                style={css("width:15px;height:15px;accent-color:var(--accent);cursor:pointer")}
-              />
-              <span style={mix("font-size:11.5px;font-weight:500", { color: w.is_visible ? "var(--text-2)" : "var(--text-4)" })}>
-                {w.is_visible ? "Показан" : "Скрыт"}
-              </span>
-            </label>
-            <div style={css("flex:1;font-size:13px;font-weight:500")}>{w.title}</div>
-            <HButton onClick={() => move(i, -1)} s={`${btnGhost};padding:3px 8px;font-size:13px;height:28px;${i === 0 ? "opacity:.35" : ""}`} hover="border-color:var(--accent)">
-              ↑
-            </HButton>
-            <HButton
-              onClick={() => move(i, 1)}
-              s={`${btnGhost};padding:3px 8px;font-size:13px;height:28px;${i === rows.length - 1 ? "opacity:.35" : ""}`}
-              hover="border-color:var(--accent)"
+          <div key={w.id} className={"cz-row" + (w.is_visible ? "" : " off")}>
+            <span className="cz-n">{i + 1}</span>
+            <span style={css("flex:1;min-width:0")}>
+              <span style={css("display:block;font-size:13.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{w.title}</span>
+              <span style={mix("display:block;font-size:12px", { color: w.is_visible ? "var(--green)" : "var(--text-4)" })}>{w.is_visible ? "показан на обзоре" : "скрыт"}</span>
+            </span>
+            <button type="button" className="cz-arrow" disabled={i === 0} onClick={() => move(i, -1)} aria-label="Выше">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+                <path d="M3.5 8.5 7 5l3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button type="button" className="cz-arrow" disabled={i === rows.length - 1} onClick={() => move(i, 1)} aria-label="Ниже">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+                <path d="M3.5 5.5 7 9l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={w.is_visible}
+              aria-label={w.is_visible ? "Скрыть график" : "Показать график"}
+              className={"cz-sw" + (w.is_visible ? " on" : "")}
+              onClick={() => act(() => patchDashboardWidget(w.id, { is_visible: !w.is_visible }))}
             >
-              ↓
-            </HButton>
+              <span />
+            </button>
           </div>
         ))}
       </div>

@@ -9,6 +9,9 @@ import { api } from "./client";
 export type ItemStatus = "ordered" | "in_stock" | "issued";
 export type PayStatus = "unpaid" | "partial" | "paid";
 
+/** Этап для показа: статус, но заказанный товар из загруженной накладной — «В пути». */
+export type ItemStage = ItemStatus | "in_transit";
+
 export interface Item {
   id: number;
   order_id: number;
@@ -40,6 +43,11 @@ export interface Item {
   issue_id: number | null;
   import_id: number | null;
   batch_id: number | null;
+  /** Этап (В пути — по загруженной накладной из Китая) и сама накладная. */
+  stage?: ItemStage;
+  transit_id?: number | null;
+  transit_waybill?: string | null;
+  transit_shipped_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -67,7 +75,8 @@ export interface Page<T> {
 // --- Товары -----------------------------------------------------------------------
 
 export interface ItemQuery {
-  status?: ItemStatus | "active" | "";
+  /** no_code — ещё не выданные товары без кода. */
+  status?: ItemStatus | "active" | "no_code" | "in_transit" | "not_shipped" | "";
   pay?: "paid" | "unpaid" | "partial" | "debt" | "ready" | "";
   q?: string;
   customer_id?: number;
@@ -80,7 +89,7 @@ export interface ItemQuery {
 
 export interface ItemList extends Page<Item> {
   totals: Totals;
-  counts: { all: number; ordered: number; in_stock: number; issued: number };
+  counts: { all: number; ordered: number; in_stock: number; issued: number; no_code?: number; in_transit?: number; not_shipped?: number };
 }
 
 export const listItems = (params: ItemQuery) => api.get<ItemList>("/items", { params }).then((r) => r.data);
@@ -592,6 +601,85 @@ export const previewImport = (file: File, o: ImportOptions) =>
 export const commitImport = (file: File, o: ImportOptions) =>
   api.post<{ import_id: number; counts: ImportPreview["counts"] }>("/import/commit", importForm(file, o)).then((r) => r.data);
 
+// --- Накладные из Китая («В пути») ---
+export interface WaybillMatch {
+  id: number;
+  name: string;
+  customer_id: number;
+  customer_name: string;
+  qty: number;
+  sale: number;
+  status: ItemStatus;
+  stage: ItemStage;
+}
+export type WaybillState = "transit" | "arrived" | "not_found" | "dup";
+export interface WaybillRow {
+  row: number;
+  code: string;
+  waybill: string;
+  shipped_at: string | null;
+  china_in_at: string | null;
+  box: string;
+  client_code: string;
+  state: WaybillState;
+  matches: WaybillMatch[];
+}
+export interface WaybillCounts {
+  rows: number;
+  codes: number;
+  boxes: number;
+  transit: number;
+  transit_items: number;
+  transit_sum: number;
+  customers: number;
+  arrived: number;
+  not_found: number;
+  dup: number;
+}
+export interface WaybillPreview {
+  filename: string;
+  sheet: string;
+  waybills: { waybill: string; shipped_at: string | null; arrives_at: string | null; codes: number; loaded: { id: number; at: string } | null }[];
+  rows: WaybillRow[];
+  counts: WaybillCounts;
+}
+export interface ShipmentStats {
+  codes: number;
+  not_found: number;
+  items: number;
+  in_transit: number;
+  in_stock: number;
+  issued: number;
+  ordered: number;
+  sum: number;
+  customers: number;
+}
+export interface Shipment {
+  id: number;
+  waybill: string;
+  shipped_at: string | null;
+  arrives_at: string | null;
+  filename: string;
+  created_at: string;
+  updated_at: string;
+  user_login: string | null;
+  stats: ShipmentStats;
+}
+export interface ShipmentDetail extends Shipment {
+  rows: { code: string; box: string; china_in_at: string | null; row_no: number | null; matches: WaybillMatch[] }[];
+}
+const fileForm = (file: File) => {
+  const f = new FormData();
+  f.append("file", file);
+  return f;
+};
+export const previewWaybill = (file: File) => api.post<WaybillPreview>("/shipments/preview", fileForm(file)).then((r) => r.data);
+export const commitWaybill = (file: File) =>
+  api.post<{ shipments: { id: number; waybill: string; updated: boolean }[]; counts: WaybillCounts }>("/shipments", fileForm(file)).then((r) => r.data);
+export const listShipments = () => api.get<Shipment[]>("/shipments").then((r) => r.data);
+export const getShipment = (id: number) => api.get<ShipmentDetail>(`/shipments/${id}`).then((r) => r.data);
+export const deleteShipment = (id: number) => api.delete(`/shipments/${id}`).then(() => undefined);
+
 export interface ImportBatch {
   id: number;
   filename: string;
@@ -675,6 +763,10 @@ export interface AuditPage {
   rows: AuditEntry[];
   total: number;
   counts: Partial<Record<AuditCat, number>>;
+  /** Сводки — только на первой странице: записей по дням и часам (в поясе tz) и по сотрудникам. */
+  by_day?: { day: string; n: number }[];
+  by_hour?: { hour: number; n: number }[];
+  by_user?: { user_id: number | null; n: number }[];
 }
-export const listAudit = (params: { cat?: AuditCat | ""; user_id?: number; since?: string; until?: string; q?: string; limit?: number; offset?: number }) =>
+export const listAudit = (params: { cat?: AuditCat | ""; user_id?: number; since?: string; until?: string; q?: string; limit?: number; offset?: number; tz?: number }) =>
   api.get<AuditPage>("/audit", { params }).then((r) => r.data);

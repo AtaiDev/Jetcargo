@@ -72,7 +72,7 @@ function guessField(header: string): FieldKey | null {
 
 // --- Чтение ячеек --------------------------------------------------------------------
 
-function cellText(v: ExcelJS.CellValue): string {
+export function cellText(v: ExcelJS.CellValue): string {
   if (v === null || v === undefined) return "";
   if (v instanceof Date) return isoDate(new Date(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate()));
   if (typeof v === "object") {
@@ -465,9 +465,11 @@ importsRouter.post("/import/commit", upload.single("file"), async (req, res) => 
         if (t.status !== it.status) setStatus(it.id, t.status, "import", userId, { comment: `${note} ${r.row}` });
         const after = items("id = ?", [it.id])[0];
         if (t.paid_target !== null && after && t.paid_target > after.paid + 0.001) {
+          // Как у новых товаров: дата оплаты неизвестна — ставим дату заказа, а не день импорта,
+          // чтобы старые деньги не попадали в «Поступило сегодня».
           run(
-            "INSERT INTO payments (order_item_id, amount, method, comment, import_id, user_id) VALUES (?, ?, 'import', ?, ?, ?)",
-            it.id, Math.min(t.paid_target, after.sale) - after.paid, `${note} ${r.row}`, importId, userId
+            "INSERT INTO payments (order_item_id, amount, method, paid_at, comment, import_id, user_id) VALUES (?, ?, 'import', ?, ?, ?, ?)",
+            it.id, Math.min(t.paid_target, after.sale) - after.paid, `${it.order_date}T12:00:00.000Z`, `${note} ${r.row}`, importId, userId
           );
         }
       }

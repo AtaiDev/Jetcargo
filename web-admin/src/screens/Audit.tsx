@@ -6,16 +6,17 @@
  *    подряд (тот же сотрудник, то же действие с тем же объектом) сворачиваются в одну запись «×N».
  * Только администратор. Названия товаров, клиентов и партий подставляет сервер.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { apiError } from "../api/client";
-import { listAudit, listUsers, type AuditCat, type AuditEntry, type User } from "../api/domain";
-import { Empty, PeriodPicker, periodOf, type Period } from "../components/cargo";
+import { listAudit, listUsers, type AuditCat, type AuditEntry, type AuditPage, type User } from "../api/domain";
+import { PeriodPicker, periodOf, type Period } from "../components/cargo";
+import CountUp from "../design/CountUp";
 import { css, mix } from "../design/css";
 import { I_SEARCH, I_TRASH, Icon, Svg } from "../design/icons";
 import { MONO, Page } from "../design/table";
-import { HButton, ModalError, SkeletonRows } from "../design/ui";
+import { HButton, ModalError } from "../design/ui";
 import { STATUS_LABEL, date, som } from "../lib/cargo";
 import { openItem, useDebounced } from "../lib/events";
 
@@ -52,6 +53,8 @@ export default function Audit(_: { isDesktop?: boolean }) {
   const [counts, setCounts] = useState<Partial<Record<AuditCat, number>>>({});
   const [error, setError] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
+  // Сводки панели «Активность». При смене фильтра старые остаются (приглушённо), пока не придут новые.
+  const [summary, setSummary] = useState<Summary | null>(null);
 
   useEffect(() => {
     listUsers().then(setUsers).catch(() => setUsers([]));
@@ -65,6 +68,7 @@ export default function Audit(_: { isDesktop?: boolean }) {
       since: new Date(`${period.date_from}T00:00:00`).toISOString(),
       until: nextDayIso(period.date_to),
       limit: PAGE,
+      tz: -new Date().getTimezoneOffset(),
     }),
     [cat, userId, q, period]
   );
@@ -76,6 +80,7 @@ export default function Audit(_: { isDesktop?: boolean }) {
         setRows(r.rows);
         setTotal(r.total);
         setCounts(r.counts);
+        setSummary({ by_day: r.by_day ?? [], by_hour: r.by_hour ?? [], by_user: r.by_user ?? [] });
         setError("");
       })
       .catch((e) => {
@@ -102,6 +107,13 @@ export default function Audit(_: { isDesktop?: boolean }) {
   const maxCat = Math.max(1, ...Object.values(counts).map((x) => x ?? 0));
   const days = useMemo(() => groupByDay(rows ?? []).map(([d, list]) => [d, collapse(list)] as const), [rows]);
   const filtered = !!(cat || userId || q);
+  const head = CAT[cat];
+
+  function reset() {
+    setCat("");
+    setUserId("");
+    setQuery("");
+  }
 
   return (
     <Page size="wide">
@@ -111,12 +123,6 @@ export default function Audit(_: { isDesktop?: boolean }) {
           <div className="au-card">
             <div style={css("font-size:12px;color:var(--text-3);margin-bottom:10px")}>Период</div>
             <PeriodPicker value={period} onChange={setPeriod} />
-            <label className="au-search">
-              <span style={css("display:flex;color:var(--text-4)")}>
-                <Svg paths={I_SEARCH} size={15} />
-              </span>
-              <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setQuery("")} placeholder="Товар, клиент, код…" aria-label="Поиск по журналу" />
-            </label>
           </div>
 
           <div className="au-card au-cats-card">
@@ -151,80 +157,410 @@ export default function Audit(_: { isDesktop?: boolean }) {
             </div>
           </div>
 
+          <div className="au-card au-fill-card">
+            <GhostFill rowH={46} row={(i) => <GhostCat key={i} i={i} />} title="Фильтр по разделу" text="Нажмите на раздел — в ленте останутся только его записи" icon={<Icon name="audit" size={16} />} />
+          </div>
         </aside>
 
-        {/* Лента */}
+        {/* Лента и панель активности */}
         <section className="au-feed">
           <div className="au-feed-head">
+            <span style={mix("width:38px;height:38px;border-radius:12px;flex:none;display:grid;place-items:center", { background: head.bg, color: head.fg })}>{head.icon}</span>
             <span style={css("min-width:0;margin-right:auto")}>
-              <span style={css("display:block;font-size:15px;font-weight:500;color:var(--text)")}>{cat ? CAT[cat].label : "Все действия"}</span>
+              <span style={css("display:block;font-size:15px;font-weight:500;color:var(--text)")}>{head.label}</span>
               <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-4)")}>
                 {rows ? `${total} ${plural(total, "запись", "записи", "записей")} за период${filtered ? " по фильтру" : ""}` : "загружаем…"}
               </span>
             </span>
-            {users.length > 1 && (
-              <div className="au-who" role="group" aria-label="Сотрудник">
-                <button type="button" className={"au-who-btn" + (userId ? "" : " on")} onClick={() => setUserId("")}>
-                  Все
-                </button>
-                {users.map((u) => {
-                  const on = userId === String(u.id);
-                  const name = u.full_name || u.login;
-                  return (
-                    <button key={u.id} type="button" className={"au-who-btn" + (on ? " on" : "")} onClick={() => setUserId(on ? "" : String(u.id))} title={`${name} · @${u.login}`}>
-                      <Avatar name={name} size={22} />
-                      <span style={css("max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")}>{name.split(/[\s(]/)[0]}</span>
-                    </button>
-                  );
-                })}
-              </div>
+            {filtered && (
+              <HButton onClick={reset} className="au-reset" s="" hover="">
+                Сбросить фильтры
+              </HButton>
             )}
+            <label className="au-search">
+              <span style={css("display:flex;color:var(--text-4)")}>
+                <Svg paths={I_SEARCH} size={15} />
+              </span>
+              <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setQuery("")} placeholder="Товар, клиент, код…" aria-label="Поиск по журналу" />
+            </label>
           </div>
 
-          {error && (
-            <div style={css("padding:0 18px 12px")}>
-              <ModalError text={error} />
-            </div>
-          )}
-
-          {!rows ? (
-            <div style={css("padding:16px 18px")}>
-              <SkeletonRows rows={6} />
-            </div>
-          ) : rows.length === 0 ? (
-            <Empty icon="audit" title="За этот период записей нет" text={filtered ? "Измените фильтры или период" : "Здесь появляются заказы, приёмы, выдачи, оплаты, импорты и удаления"} />
-          ) : (
-            <>
-              {days.map(([day, groups]) => (
-                <div key={day}>
-                  <div className="au-day">
-                    <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{dayTitle(day).title}</span>
-                    <span style={css("font-size:12px;color:var(--text-4)")}>{dayTitle(day).sub}</span>
-                    <span style={css("flex:1;min-width:12px;border-bottom:1px solid var(--border-2);transform:translateY(-4px)")} />
-                    <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
-                      {groups.reduce((s, g) => s + g.length, 0)} {plural(groups.reduce((s, g) => s + g.length, 0), "запись", "записи", "записей")}
-                    </span>
-                  </div>
-                  {groups.map((g, i) => (
-                    <FeedItem key={g[0].id} group={g} first={i === 0} last={i === groups.length - 1} />
-                  ))}
+          <div className="au-body">
+            <div className="au-list">
+              {error && (
+                <div style={css("padding:12px 18px 0")}>
+                  <ModalError text={error} />
                 </div>
-              ))}
-              <div className="au-more">
-                <span style={css(NUM)}>
-                  Показано {rows.length} из {total}
-                </span>
-                {rows.length < total && (
-                  <HButton onClick={more} disabled={loadingMore} className="au-more-btn" s="" hover="">
-                    {loadingMore ? "Загрузка…" : `Показать ещё ${Math.min(PAGE, total - rows.length)}`}
-                  </HButton>
-                )}
-              </div>
-            </>
-          )}
+              )}
+
+              {!rows ? (
+                <GhostFill min={420} rowH={64} row={(i) => <GhostItem key={i} i={i} />} />
+              ) : rows.length === 0 ? (
+                <GhostFill
+                  min={420}
+                  rowH={64}
+                  row={(i) => <GhostItem key={i} i={i} />}
+                  title="За этот период записей нет"
+                  text={filtered ? "Измените фильтры или период" : "Здесь появляются заказы, приёмы, выдачи, оплаты, импорты и удаления"}
+                  icon={<Icon name="audit" size={16} />}
+                />
+              ) : (
+                <>
+                  {days.map(([day, groups]) => {
+                    const n = groups.reduce((s, g) => s + g.length, 0);
+                    return (
+                      <div key={day}>
+                        <div className="au-day">
+                          <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{dayTitle(day).title}</span>
+                          <span style={css("font-size:12px;color:var(--text-4)")}>{dayTitle(day).sub}</span>
+                          <span style={css("flex:1;min-width:12px;border-bottom:1px solid var(--border-2);transform:translateY(-4px)")} />
+                          <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
+                            {n} {plural(n, "запись", "записи", "записей")}
+                          </span>
+                        </div>
+                        {groups.map((g, i) => (
+                          <FeedItem key={g[0].id} group={g} first={i === 0} last={i === groups.length - 1} />
+                        ))}
+                      </div>
+                    );
+                  })}
+                  <GhostFill
+                    rowH={64}
+                    row={(i) => <GhostItem key={i} i={i} />}
+                    title={rows.length < total ? `Ещё ${total - rows.length} ${plural(total - rows.length, "запись", "записи", "записей")} — ниже` : "Это все записи за период"}
+                    text={rows.length < total ? "Нажмите «Показать ещё»" : "Другие — в другом периоде или разделе"}
+                    icon={<Icon name="audit" size={16} />}
+                  />
+                  <div className="au-more">
+                    <span style={css(NUM)}>
+                      Показано {rows.length} из {total}
+                    </span>
+                    {rows.length < total && (
+                      <HButton onClick={more} disabled={loadingMore} className="au-more-btn" s="" hover="">
+                        {loadingMore ? "Загрузка…" : `Показать ещё ${Math.min(PAGE, total - rows.length)}`}
+                      </HButton>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <Activity
+              summary={summary}
+              stale={!rows}
+              period={period}
+              users={users}
+              userId={userId}
+              onUser={setUserId}
+              onRange={(from, to) => setPeriod({ key: "custom", date_from: from, date_to: to })}
+            />
+          </div>
         </section>
       </div>
     </Page>
+  );
+}
+
+// --- Панель активности --------------------------------------------------------------------------
+
+type Summary = Required<Pick<AuditPage, "by_day" | "by_hour" | "by_user">>;
+
+/**
+ * Правая часть ленты: сколько действий по дням (клик по столбику — открыть этот день), в какие часы
+ * идёт работа и кто сколько сделал (клик — показать только его действия).
+ */
+function Activity({
+  summary,
+  stale,
+  period,
+  users,
+  userId,
+  onUser,
+  onRange,
+}: {
+  summary: Summary | null;
+  stale: boolean;
+  period: Period;
+  users: User[];
+  userId: string;
+  onUser: (id: string) => void;
+  onRange: (from: string, to: string) => void;
+}) {
+  const [dayHov, setDayHov] = useState<number | null>(null);
+  const [hourHov, setHourHov] = useState<number | null>(null);
+  if (!summary)
+    return (
+      <aside className="au-side" aria-hidden>
+        <div className="au-side-in">
+          {[88, 56, 120].map((h, i) => (
+            <div key={i} className="au-sec">
+              <span className="sk" style={css("display:block;width:90px;height:10px")} />
+              <span className="sk" style={mix("display:block;margin-top:14px;border-radius:10px", { height: h })} />
+            </div>
+          ))}
+        </div>
+        <GhostFill rowH={50} row={(i) => <GhostPerson key={i} i={i} />} />
+      </aside>
+    );
+
+  const buckets = dayBuckets(period.date_from, period.date_to, summary.by_day);
+  const total = buckets.reduce((s, b) => s + b.n, 0);
+  const dayCount = buckets.reduce((s, b) => s + b.days, 0);
+  const avg = dayCount ? total / dayCount : 0;
+  const peak = buckets.reduce<Bucket | null>((m, b) => (b.n > (m?.n ?? 0) ? b : m), null);
+
+  const hours = Array.from({ length: 24 }, (_, h) => summary.by_hour.find((x) => x.hour === h)?.n ?? 0);
+  const peakHour = hours.indexOf(Math.max(...hours));
+
+  const dayTip = dayHov !== null ? buckets[dayHov] : null;
+
+  const people = summary.by_user.map((r) => {
+    const u = users.find((x) => x.id === r.user_id);
+    return { id: r.user_id === null ? "" : String(r.user_id), name: u?.full_name || u?.login || (r.user_id === null ? "Система" : `#${r.user_id}`), login: u?.login, n: r.n };
+  });
+  const maxPerson = Math.max(1, ...people.map((p) => p.n));
+  const sumPeople = people.reduce((s, p) => s + p.n, 0);
+
+  return (
+    <aside className={"au-side" + (stale ? " stale" : "")}>
+      <div className="au-side-in">
+        <div className="au-sec">
+          <div className="au-sec-title">Активность</div>
+          <div style={css("display:flex;align-items:baseline;gap:7px;margin-top:6px")}>
+            <span style={css(NUM + ";font-size:26px;font-weight:500;color:var(--text);line-height:1.1")}>
+              <CountUp text={String(total)} />
+            </span>
+            <span style={css("font-size:12.5px;color:var(--text-3)")}>{plural(total, "запись", "записи", "записей")}</span>
+            <span style={css(NUM + ";margin-left:auto;font-size:12px;color:var(--text-4);white-space:nowrap")}>≈ {avg < 10 ? avg.toFixed(1).replace(".", ",") : Math.round(avg)} в день</span>
+          </div>
+          {buckets.length > 0 && (
+            <>
+              <Bars height={84} data={buckets.map((b) => ({ n: b.n, strong: b.today }))} hov={dayHov} onHov={setDayHov} onPick={(i) => onRange(buckets[i].from, buckets[i].to)} />
+              <div className="au-axis">
+                <span>{buckets[0].label}</span>
+                {buckets.length > 2 && <span>{buckets[Math.floor((buckets.length - 1) / 2)].label}</span>}
+                <span>{buckets[buckets.length - 1].label}</span>
+              </div>
+            </>
+          )}
+          <div className="au-note">
+            {dayTip ? (
+              <>
+                <b>{dayTip.tip}</b>
+                <span style={css("color:var(--accent)")}> · открыть</span>
+              </>
+            ) : peak ? (
+              <>
+                Больше всего — <b>{peak.long}</b>: {peak.n} {plural(peak.n, "запись", "записи", "записей")}
+              </>
+            ) : (
+              "За период действий нет"
+            )}
+          </div>
+        </div>
+  
+        <div className="au-sec">
+          <div className="au-sec-title">По часам</div>
+          <Bars height={52} data={hours.map((n) => ({ n }))} hov={hourHov} onHov={setHourHov} />
+          <div className="au-axis">
+            <span>0:00</span>
+            <span>6:00</span>
+            <span>12:00</span>
+            <span>18:00</span>
+            <span>24:00</span>
+          </div>
+          {total > 0 && (
+            <div className="au-note">
+              {hourHov !== null ? (
+                <b>
+                  {hourHov}:00–{hourHov + 1}:00 · {hours[hourHov]} {plural(hours[hourHov], "запись", "записи", "записей")}
+                </b>
+              ) : (
+                <>
+                  Чаще всего — <b>с {peakHour}:00 до {peakHour + 1}:00</b>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+  
+        <div className="au-sec">
+          <div style={css("display:flex;align-items:baseline;justify-content:space-between")}>
+            <span className="au-sec-title">Сотрудники</span>
+            {userId && (
+              <HButton onClick={() => onUser("")} className="au-reset" s="" hover="">
+                все
+              </HButton>
+            )}
+          </div>
+          <div style={css("display:flex;flex-direction:column;gap:2px;margin-top:8px")}>
+            {people.length === 0 && <span style={css("font-size:12.5px;color:var(--text-4)")}>Нет действий</span>}
+            {people.map((p) => {
+              const on = !!p.id && userId === p.id;
+              return (
+                <button key={p.id || "sys"} type="button" className={"au-person" + (on ? " on" : "")} disabled={!p.id} onClick={() => onUser(on ? "" : p.id)} title={p.login ? "@" + p.login : undefined}>
+                  <Avatar name={p.name} size={26} />
+                  <span style={css("min-width:0")}>
+                    <span style={css("display:flex;align-items:baseline;gap:8px")}>
+                      <span style={css("flex:1;min-width:0;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{p.name}</span>
+                      <span style={css(NUM + ";font-size:12px;color:var(--text-3)")}>
+                        {p.n}
+                        <span style={css("color:var(--text-5)")}> · {Math.round((p.n / Math.max(1, sumPeople)) * 100)}%</span>
+                      </span>
+                    </span>
+                    <span className="au-person-bar">
+                      <span style={{ width: `${Math.max(3, (p.n / maxPerson) * 100)}%` }} />
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <GhostFill rowH={50} row={(i) => <GhostPerson key={i} i={i} />} title="Нажмите на день или сотрудника" text="Лента покажет только их действия" icon={<Icon name="staff" size={16} />} />
+    </aside>
+  );
+}
+
+/** Столбики; высота — доля от максимума. Наведённый подсвечивается, его значение пишется под графиком. */
+function Bars({ data, height, hov, onHov, onPick }: { data: { n: number; strong?: boolean }[]; height: number; hov: number | null; onHov: (i: number | null) => void; onPick?: (i: number) => void }) {
+  const max = Math.max(1, ...data.map((d) => d.n));
+  return (
+    <div className="au-bars" style={{ height, gap: data.length > 40 ? 1 : 3 }} onMouseLeave={() => onHov(null)}>
+      {data.map((d, i) => (
+        <button
+          key={i}
+          type="button"
+          tabIndex={onPick ? 0 : -1}
+          className={"au-bar" + (d.strong ? " strong" : "") + (hov === i ? " hov" : "") + (onPick ? " pick" : "")}
+          onMouseEnter={() => onHov(i)}
+          onFocus={() => onHov(i)}
+          onBlur={() => onHov(null)}
+          onClick={onPick ? () => onPick(i) : undefined}
+          style={{ ["--i" as string]: i }}
+        >
+          <span className={d.n ? "" : "zero"} style={{ height: d.n ? `${Math.max(6, (d.n / max) * 100)}%` : 2 }} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+type Bucket = { from: string; to: string; days: number; n: number; label: string; long: string; tip: string; today: boolean };
+
+/** Дни периода (до сегодня) с числом записей; длинный период — по неделям. */
+function dayBuckets(from: string, to: string, byDay: { day: string; n: number }[]): Bucket[] {
+  const map = new Map(byDay.map((d) => [d.day, d.n]));
+  const today = localDay(new Date().toISOString());
+  const end = to < today ? to : today;
+  const list: string[] = [];
+  for (const d = new Date(`${from}T12:00:00`); list.length < 400; d.setDate(d.getDate() + 1)) {
+    const k = localDay(d.toISOString());
+    if (k > end) break;
+    list.push(k);
+  }
+  const short = (k: string) => new Date(`${k}T12:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "short" }).replace(".", "");
+  const long = (k: string) => new Date(`${k}T12:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  const rec = (n: number) => `${n} ${plural(n, "запись", "записи", "записей")}`;
+  if (list.length <= 62)
+    return list.map((k) => {
+      const n = map.get(k) ?? 0;
+      const wd = new Date(`${k}T12:00:00`).toLocaleDateString("ru-RU", { weekday: "short" });
+      return { from: k, to: k, days: 1, n, label: short(k), long: long(k), tip: `${wd}, ${short(k)} · ${rec(n)}`, today: k === today };
+    });
+  const out: Bucket[] = [];
+  for (let i = 0; i < list.length; i += 7) {
+    const part = list.slice(i, i + 7);
+    const a = part[0];
+    const b = part[part.length - 1];
+    const n = part.reduce((s, k) => s + (map.get(k) ?? 0), 0);
+    out.push({ from: a, to: b, days: part.length, n, label: short(a), long: `неделя с ${long(a)}`, tip: `${short(a)} – ${short(b)} · ${rec(n)}`, today: part.includes(today) });
+  }
+  return out;
+}
+
+// --- Заполнители пустого места -------------------------------------------------------------------
+
+/**
+ * Пустое место колонки — бледными строками-заготовками на всю высоту (сколько влезет) и подсказкой
+ * по центру, как на других страницах. Высоту берёт у раскладки, сам её не раздвигает.
+ */
+function GhostFill({ rowH, row, title, text, icon, min }: { rowH: number; row: (i: number) => ReactNode; title?: string; text?: string; icon?: ReactNode; min?: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [h, setH] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setH(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div ref={ref} className="ghost-fill au-ghost" style={min ? { minHeight: min } : undefined}>
+      <div className="ghost-rows" aria-hidden>
+        {h > 0 && Array.from({ length: Math.ceil(h / rowH) }, (_, i) => row(i))}
+      </div>
+      {title && h >= 150 && (
+        <div className="ghost-msg">
+          {icon && <span style={css("width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent-strong)")}>{icon}</span>}
+          <span style={css("min-width:0")}>
+            <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text)")}>{title}</span>
+            {text && <span style={css("display:block;margin-top:2px;font-size:12px;line-height:1.4;color:var(--text-3)")}>{text}</span>}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Ширины полосок — разные, чтобы заготовки не выглядели одинаковой решёткой. */
+const GW = [62, 48, 70, 55, 66, 44];
+
+/** Заготовка записи ленты: время, значок на линии, что сделано и кто. */
+function GhostItem({ i }: { i: number }) {
+  return (
+    <div className="au-gi">
+      <span className="sk" style={css("width:36px;height:8px;margin-top:8px")} />
+      <span className="sk" style={css("width:30px;height:30px;border-radius:10px")} />
+      <span style={css("display:flex;flex-direction:column;gap:10px;padding-top:5px")}>
+        <span className="sk" style={mix("height:9px", { width: `${GW[i % 6]}%` })} />
+        <span style={css("display:flex;align-items:center;gap:7px")}>
+          <span className="sk" style={css("width:16px;height:16px;border-radius:50%;flex:none")} />
+          <span className="sk" style={mix("height:7px", { width: `${GW[(i + 3) % 6] / 2}%` })} />
+        </span>
+      </span>
+    </div>
+  );
+}
+
+/** Заготовка строки сотрудника: аватар, имя с числом и полоска доли. */
+function GhostPerson({ i }: { i: number }) {
+  return (
+    <div className="au-gp">
+      <span className="sk" style={css("width:26px;height:26px;border-radius:50%")} />
+      <span style={css("display:flex;flex-direction:column;gap:8px;min-width:0")}>
+        <span style={css("display:flex;justify-content:space-between;gap:10px")}>
+          <span className="sk" style={mix("height:8px", { width: `${GW[i % 6]}%` })} />
+          <span className="sk" style={css("width:30px;height:8px")} />
+        </span>
+        <span className="sk" style={mix("height:3px", { width: `${GW[(i + 2) % 6] + 20}%` })} />
+      </span>
+    </div>
+  );
+}
+
+/** Заготовка строки раздела: значок, название с полоской и число. */
+function GhostCat({ i }: { i: number }) {
+  return (
+    <div className="au-gc">
+      <span className="sk" style={css("width:28px;height:28px;border-radius:9px")} />
+      <span style={css("display:flex;flex-direction:column;gap:8px;min-width:0")}>
+        <span className="sk" style={mix("height:8px", { width: `${GW[(i + 1) % 6]}%` })} />
+        <span className="sk" style={mix("height:3px", { width: `${GW[(i + 4) % 6] + 25}%` })} />
+      </span>
+      <span className="sk" style={css("width:18px;height:8px")} />
+    </div>
   );
 }
 
@@ -251,11 +587,11 @@ function collapse(list: AuditEntry[]): AuditEntry[][] {
   return out;
 }
 
-/** Действие и объект записи — без имени сотрудника. */
+/** Что сделано: действие с заглавной буквы и объект; уточнение (клиент товара и т. п.) — приглушённо. */
 function Phrase({ a, d }: { a: AuditEntry; d: Described }) {
   return (
     <>
-      {d.verb}
+      {d.verb.charAt(0).toUpperCase() + d.verb.slice(1)}
       {d.obj && (
         <>
           {a.entity === "order" ? " — " : " "}
@@ -267,6 +603,10 @@ function Phrase({ a, d }: { a: AuditEntry; d: Described }) {
   );
 }
 
+/**
+ * Запись ленты в две строки: сверху — что сделано, ниже мелко — кто и подробности.
+ * Свёрнутая группа — кнопкой «ещё N» у правого края.
+ */
 function FeedItem({ group, first, last }: { group: AuditEntry[]; first: boolean; last: boolean }) {
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
@@ -281,33 +621,39 @@ function FeedItem({ group, first, last }: { group: AuditEntry[]; first: boolean;
   const same = group.every((x) => x.entity_id === a.entity_id && x.new_value === a.new_value);
   const rest = group.length - 1;
   return (
-    <div className={"au-item" + (first ? " first" : "") + (last ? " last" : "")}>
-      <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);padding-top:6px;white-space:nowrap")}>{span}</span>
+    <div className={"au-item" + (first ? " first" : "") + (last ? " last" : "") + (open ? " open" : "")}>
+      <span className="au-time" title={span}>
+        {times[0]}
+        {times[times.length - 1] !== times[0] && <small>с {times[times.length - 1]}</small>}
+      </span>
       <span className="au-node">
         <span style={mix("position:relative;z-index:1;width:30px;height:30px;border-radius:10px;display:grid;place-items:center;box-shadow:0 0 0 4px var(--surface)", { background: c.bg, color: c.fg })}>{c.icon}</span>
       </span>
-      <div style={css("min-width:0;padding-top:4px")}>
-        <div style={css("font-size:13.5px;line-height:1.55;color:var(--text-2)")}>
-          <span style={css("display:inline-flex;vertical-align:middle;margin:-3px 6px 0 0")}>
-            <Avatar name={who} size={20} />
-          </span>
-          <b style={css("font-weight:500;color:var(--text);margin-right:4px")} title={a.user_login ? "@" + a.user_login : undefined}>
-            {who}
-          </b>
+      <div className="au-main">
+        <div className="au-title">
           <Phrase a={a} d={d} />
-          {rest > 0 && (
-            <HButton onClick={() => setOpen((v) => !v)} className={"au-times" + (open ? " on" : "")} s="" hover="" aria-expanded={open}>
-              {same ? `×${group.length}` : `и ещё ${rest}`}
-              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden style={css("margin-left:5px;transition:transform .2s")}>
-                <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </HButton>
-          )}
         </div>
-        {d.details && <div style={css("display:flex;flex-wrap:wrap;gap:6px;margin-top:5px")}>{d.details}</div>}
-        {open && rest > 0 &&
-          (same ? (
-            <div className="au-open" style={css("display:flex;flex-wrap:wrap;gap:5px;margin-top:8px")}>
+        <div className="au-meta">
+          <span className="au-by" title={a.user_login ? "@" + a.user_login : undefined}>
+            <Avatar name={who} size={18} />
+            {who}
+          </span>
+          <span className="au-meta-time">{span}</span>
+          {d.details && <span className="au-details">{d.details}</span>}
+        </div>
+      </div>
+      {rest > 0 && (
+        <HButton onClick={() => setOpen((v) => !v)} className={"au-times" + (open ? " on" : "")} s="" hover="" aria-expanded={open} title={same ? "То же действие повторялось" : "Похожие действия подряд"}>
+          {same ? `×${group.length}` : `ещё ${rest}`}
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden style={css("margin-left:6px;transition:transform .2s")}>
+            <path d="M2 3.5 5 6.5 8 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </HButton>
+      )}
+      {open && (
+        <div className="au-expand">
+          {same ? (
+            <div className="au-open" style={css("display:flex;flex-wrap:wrap;gap:5px;margin-top:10px")}>
               {times.map((t, i) => (
                 <span key={i} className="au-time-chip">
                   {t}
@@ -325,22 +671,25 @@ function FeedItem({ group, first, last }: { group: AuditEntry[]; first: boolean;
                 </HButton>
               )}
             </div>
-          ))}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-/** Строка раскрытой группы: время, действие, объект и подробности. */
+/** Строка раскрытой группы: время, что сделано и подробности. */
 function SubRow({ a }: { a: AuditEntry }) {
   const nav = useNavigate();
   const d = describe(a, nav);
   return (
     <div className="au-sub">
       <span style={css(NUM + ";font-size:12px;color:var(--text-4);white-space:nowrap")}>{hhmm(a.created_at)}</span>
-      <span style={css("min-width:0;font-size:13px;line-height:1.5;color:var(--text-2)")}>
-        <Phrase a={a} d={d} />
-        {d.details && <span style={css("display:inline-flex;flex-wrap:wrap;gap:6px;margin-left:8px;vertical-align:middle")}>{d.details}</span>}
+      <span className="au-sub-line">
+        <span>
+          <Phrase a={a} d={d} />
+        </span>
+        {d.details && <span className="au-details">{d.details}</span>}
       </span>
     </div>
   );
@@ -576,6 +925,25 @@ function describe(a: AuditEntry, nav: (to: string) => void): Described {
       };
     case "import_undo":
       return { verb: `отменил импорт №${a.entity_id ?? ""}` };
+
+    // Накладные из Китая: товары из них — «В пути».
+    case "import_waybill":
+    case "import_waybill_update": {
+      const transit = Number(obj.transit_items ?? 0);
+      const missing = Number(obj.not_found ?? 0);
+      return {
+        verb: a.action === "import_waybill" ? "загрузил накладную" : "обновил накладную",
+        obj: <Obj onClick={() => nav("/import?mode=waybill")}>{String(obj.waybill ?? "")}</Obj>,
+        details: (
+          <>
+            <Chip>в пути: {n(transit)}</Chip>
+            {missing > 0 && <Chip>кодов без товара: {missing}</Chip>}
+          </>
+        ),
+      };
+    }
+    case "import_waybill_undo":
+      return { verb: "скрыл накладную", obj: <Obj>{String(oldV ?? "")}</Obj> };
   }
   return { verb: a.action, obj: <Obj>{a.entity}</Obj> };
 }

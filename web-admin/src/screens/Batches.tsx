@@ -38,7 +38,7 @@ import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_MINUS, I_PLUS, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { HButton, ModalError, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary } from "../design/ui";
+import { HButton, ModalError, ModalCancel, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary } from "../design/ui";
 import { num, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
 
@@ -698,14 +698,22 @@ function AddItems({ batchId, onClose, onAdded }: { batchId: number; onClose: () 
   return (
     <ModalShell
       title="Добавить принятые товары"
-      icon={<Icon name="batches" size={16} />}
+      subtitle={
+        picked.size && rows ? (
+          <span style={css(NUM)}>
+            выбрано {picked.size} на {som(rows.filter((i) => picked.has(i.id)).reduce((s, i) => s + i.sale, 0))}
+          </span>
+        ) : (
+          "Отметьте товары со склада, которых ещё нет в партиях"
+        )
+      }
+      icon={<Icon name="batches" size={18} />}
+      tone="violet"
       onClose={onClose}
       width={640}
       footer={
         <>
-          <HButton onClick={onClose} s={btnGhost} hover="background:var(--hover)">
-            Отмена
-          </HButton>
+          <ModalCancel>Отмена</ModalCancel>
           <HButton disabled={!picked.size} onClick={add} s={btnPrimary + ";opacity:" + (picked.size ? 1 : 0.5)} hover="background:var(--accent-hover)">
             Добавить ({picked.size})
           </HButton>
@@ -724,7 +732,18 @@ function AddItems({ batchId, onClose, onAdded }: { batchId: number; onClose: () 
         {!rows ? (
           <SkeletonRows rows={3} />
         ) : rows.length === 0 ? (
-          <div style={css("padding:24px;text-align:center;font-size:12.5px;color:var(--text-3)")}>Нет принятых товаров без партии за этот день</div>
+          <div style={css("display:flex;flex-direction:column;align-items:center;gap:6px;padding:26px 16px;border-radius:14px;border:1px dashed var(--border-strong);text-align:center")}>
+            <span style={css("width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--violet-tint);color:var(--violet)")}>
+              <Icon name="batches" size={18} />
+            </span>
+            <span style={css("margin-top:4px;font-size:13.5px;font-weight:500;color:var(--text)")}>{allDays ? "Все принятые товары уже в партиях" : "За этот день нечего добавлять"}</span>
+            <span style={css("font-size:12.5px;color:var(--text-3)")}>{allDays ? "Новые появятся после приёма на складе" : "Все товары, принятые в этот день, уже распределены по партиям"}</span>
+            {!allDays && (
+              <HButton onClick={() => setAllDays(true)} className="mf-chip" s="margin-top:6px" hover="">
+                Показать за все дни
+              </HButton>
+            )}
+          </div>
         ) : (
           <div className="thin-scroll" style={css("border:1px solid var(--border);border-radius:12px;overflow:hidden;max-height:380px;overflow-y:auto")}>
             <div style={css("display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-2);border-bottom:1px solid var(--border-2);font-size:12px;color:var(--text-3)")}>

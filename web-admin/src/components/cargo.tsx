@@ -9,13 +9,13 @@ import { MONO, css, mix } from "../design/css";
 import { I_ALERT, Icon, Svg } from "../design/icons";
 import { EMPTY_ICON } from "../design/table";
 import DatePicker from "./DatePicker";
-import { HButton, ModalError, ModalShell, StatusBadge, btnDanger, btnGhost, btnPrimary, inputStyle } from "../design/ui";
+import { HButton, ModalError, ModalCancel, ModalShell, StatusBadge, btnDanger, btnPrimary, inputStyle } from "../design/ui";
 import { monthStartIso, profitOf, som, todayIso } from "../lib/cargo";
 
 // --- Статус и оплата -------------------------------------------------------------------
 
-export function ItemStatusBadge({ item, size = "md" }: { item: Pick<Item, "status">; size?: "sm" | "md" }) {
-  return <StatusBadge status={item.status} size={size} />;
+export function ItemStatusBadge({ item, size = "md" }: { item: Pick<Item, "status" | "stage">; size?: "sm" | "md" }) {
+  return <StatusBadge status={item.stage ?? item.status} size={size} />;
 }
 
 /** Оплата: бейдж + долг под ним, если есть. */
@@ -114,7 +114,7 @@ export function Tabs<K extends string>({
               {
                 background: active ? "var(--surface)" : "transparent",
                 color: active ? "var(--text)" : "var(--text-2)",
-                fontWeight: active ? 600 : 500,
+                fontWeight: 500,
                 boxShadow: active ? "0 1px 2px rgba(0,0,0,.08)" : "none",
               }
             )}
@@ -240,9 +240,7 @@ export function Confirm({
       width={420}
       footer={
         <>
-          <HButton onClick={onClose} s={btnGhost} hover="background:var(--hover)">
-            Отмена
-          </HButton>
+          <ModalCancel>Отмена</ModalCancel>
           <HButton
             disabled={busy}
             onClick={async () => {
@@ -258,13 +256,13 @@ export function Confirm({
             s={danger ? btnDanger : btnPrimary}
             hover={danger ? "background:var(--danger-solid-hover)" : "background:var(--accent-hover)"}
           >
-            {busy ? "…" : confirmLabel}
+            {busy ? "Секунду…" : confirmLabel}
           </HButton>
         </>
       }
     >
-      <div style={css("padding:18px;display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.55;color:var(--text-2)")}>
-        {text}
+      <div style={css("padding:18px 20px;display:flex;flex-direction:column;gap:12px;font-size:13.5px;line-height:1.6;color:var(--text-2)")}>
+        <div>{text}</div>
         <ModalError text={error} />
       </div>
     </ModalShell>

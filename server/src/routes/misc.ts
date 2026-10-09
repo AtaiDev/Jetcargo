@@ -92,13 +92,9 @@ miscRouter.get("/audit", (req, res) => {
      LEFT JOIN customers oc ON oc.id = o.customer_id`;
 
   // Общие условия (без раздела) — по ним же считаются счётчики разделов. Скрытые записи не показываем.
+  // Фильтр по сотруднику добавляется последним: сводка «по сотрудникам» считается без него.
   const w: string[] = ["a.deleted_at IS NULL"];
   const p: Param[] = [];
-  const userId = optInt(req.query.user_id);
-  if (userId) {
-    w.push("a.user_id = ?");
-    p.push(userId);
-  }
   const since = str(req.query.since, 40);
   if (since) {
     w.push("a.created_at >= ?");
@@ -117,15 +113,38 @@ miscRouter.get("/audit", (req, res) => {
            OR norm(COALESCE(a.new_value, '')) LIKE ? OR COALESCE(oi.code_norm, '') LIKE ?)`);
     p.push(t, t, t, t, t, t, t, `%${normCode(q)}%`);
   }
-  const base = w.length ? `WHERE ${w.join(" AND ")}` : "";
+  const cat = str(req.query.cat, 20);
+  // Без сотрудника, но с разделом — для сводки «кто сколько сделал».
+  const byUserWhere = `WHERE ${[...w, ...(cat ? [`${AUDIT_CAT} = ?`] : [])].join(" AND ")}`;
+  const byUserParams = cat ? [...p, cat] : [...p];
+  const userId = optInt(req.query.user_id);
+  if (userId) {
+    w.push("a.user_id = ?");
+    p.push(userId);
+  }
+  const base = `WHERE ${w.join(" AND ")}`;
 
   const counts = Object.fromEntries(
     all<{ cat: string; n: number }>(`SELECT ${AUDIT_CAT} AS cat, COUNT(*) AS n ${from} ${base} GROUP BY cat`, ...p).map((r) => [r.cat, r.n])
   );
-  const cat = str(req.query.cat, 20);
-  const where = cat ? `${base ? base + " AND" : "WHERE"} ${AUDIT_CAT} = ?` : base;
+  const where = cat ? `${base} AND ${AUDIT_CAT} = ?` : base;
   const params = cat ? [...p, cat] : p;
   const total = cat ? (counts[cat] ?? 0) : Object.values(counts).reduce((s, n) => s + (n as number), 0);
+
+  // Сводки для боковой панели — только на первой странице. Дни и часы — в поясе клиента (tz — минуты к UTC).
+  let summary = {};
+  if (offset === 0) {
+    const tz = Math.max(-840, Math.min(840, optInt(req.query.tz) ?? 0));
+    const shift = `${tz >= 0 ? "+" : ""}${tz} minutes`;
+    summary = {
+      by_day: all<{ day: string; n: number }>(`SELECT date(a.created_at, ?) AS day, COUNT(*) AS n ${from} ${where} GROUP BY day ORDER BY day`, shift, ...params),
+      by_hour: all<{ hour: number; n: number }>(
+        `SELECT CAST(strftime('%H', a.created_at, ?) AS INTEGER) AS hour, COUNT(*) AS n ${from} ${where} GROUP BY hour ORDER BY hour`,
+        shift, ...params
+      ),
+      by_user: all<{ user_id: number | null; n: number }>(`SELECT a.user_id, COUNT(*) AS n ${from} ${byUserWhere} GROUP BY a.user_id ORDER BY n DESC`, ...byUserParams),
+    };
+  }
   const rows = all(
     `SELECT a.id, a.user_id, u.login AS user_login, u.full_name AS user_name, a.action, a.entity, a.entity_id,
             a.old_value, a.new_value, a.created_at, ${AUDIT_CAT} AS cat,
@@ -135,5 +154,5 @@ miscRouter.get("/audit", (req, res) => {
        ${from} ${where} ORDER BY a.id DESC LIMIT ? OFFSET ?`,
     ...params, limit, offset
   );
-  res.json({ rows, total, counts });
+  res.json({ rows, total, counts, ...summary });
 });

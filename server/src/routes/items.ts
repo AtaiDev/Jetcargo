@@ -25,12 +25,19 @@ export const itemsRouter = Router();
 
 // --- Список -----------------------------------------------------------------------
 
+const NO_CODE_SQL = "(status <> 'issued' AND TRIM(COALESCE(code, '')) = '')";
+
 /** Фильтры списка товаров из query — общие для «Заказов» и «Склада». */
 function itemFilters(query: Request["query"], ignoreStatus = false): { where: string; params: Param[] } {
   const w: string[] = [];
   const p: Param[] = [];
   const status = ignoreStatus ? "" : str(query.status);
   if (status === "active") w.push("status IN ('ordered','in_stock')");
+  // Без кода — ещё не выданные товары с пустым кодом: их не найти сканером на приёме.
+  else if (status === "no_code") w.push(NO_CODE_SQL);
+  // В пути — заказанные товары из загруженной накладной; «not_shipped» — заказанные, ещё не отправленные.
+  else if (status === "in_transit") w.push("stage = 'in_transit'");
+  else if (status === "not_shipped") w.push("stage = 'ordered'");
   else if (["ordered", "in_stock", "issued"].includes(status)) {
     w.push("status = ?");
     p.push(status);
@@ -97,9 +104,11 @@ itemsRouter.get("/items", (req, res) => {
   const all_ = items(where, params, sort);
   // Счётчики по статусам для вкладок — без учёта самого фильтра статуса.
   const noStatus = itemFilters(req.query, true);
-  const counts = get<{ all: number; ordered: number; in_stock: number; issued: number }>(
+  const counts = get<{ all: number; ordered: number; in_stock: number; issued: number; no_code: number; in_transit: number; not_shipped: number }>(
     `SELECT COUNT(*) AS "all", COALESCE(SUM(status='ordered'),0) AS ordered,
-            COALESCE(SUM(status='in_stock'),0) AS in_stock, COALESCE(SUM(status='issued'),0) AS issued
+            COALESCE(SUM(status='in_stock'),0) AS in_stock, COALESCE(SUM(status='issued'),0) AS issued,
+            COALESCE(SUM(${NO_CODE_SQL}),0) AS no_code,
+            COALESCE(SUM(stage='in_transit'),0) AS in_transit, COALESCE(SUM(stage='ordered'),0) AS not_shipped
        FROM v_items WHERE ${noStatus.where}`,
     ...noStatus.params
   );
@@ -195,6 +204,10 @@ itemsRouter.patch("/items/:id", (req, res) => {
     const name = b.name !== undefined ? str(b.name, 300) : old.name;
     if (!name) throw badRequest("Укажите название товара");
     const code = b.code !== undefined ? str(b.code, 100) : old.code;
+    // Сумма не может стать меньше уже оплаченного — иначе переплата нигде не видна («утечка»).
+    if (b.price !== undefined && (money(b.price, "Сумма") ?? 0) < old.paid - 0.001) {
+      throw conflict(`Сумма меньше уже оплаченного (${old.paid} с) — сначала отмените лишнюю оплату в карточке товара`);
+    }
     run(
       `UPDATE order_items SET name = ?, code = ?, code_norm = ?, qty = ?, price = ?, price_cny = ?, real_price = ?,
               split_with = ?, comment = ?, updated_at = ? WHERE id = ?`,

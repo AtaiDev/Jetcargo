@@ -967,16 +967,8 @@ function OrderDetails({ saved, onClose, onAgain, onOpen }: { saved: Saved; onClo
   const line = "display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:13px;padding:3px 0";
 
   return (
-    <div
-      onClick={onClose}
-      style={css("position:fixed;inset:0;z-index:80;background:rgba(15,18,25,.42);display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow:auto;animation:fadeIn .15s ease")}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label="Детали заказа"
-        style={css("width:560px;max-width:100%;margin:auto 0;background:var(--surface);border-radius:18px;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.28);animation:pop .2s ease")}
-      >
+    <div className="md-overlay" style={css("z-index:80")} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="md-dialog thin-scroll" role="dialog" aria-modal="true" aria-label="Детали заказа" style={css("width:560px;overflow:auto")}>
         {/* Шапка-чек */}
         <div style={css("position:relative;padding:20px 22px 22px;color:#fff;background:radial-gradient(circle at 100% 0,rgba(255,255,255,.22),transparent 46%),linear-gradient(135deg,var(--accent),var(--violet-dot))")}>
           <div style={css("display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;opacity:.92;padding-right:38px")}>
