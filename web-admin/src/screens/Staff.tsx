@@ -13,7 +13,7 @@ import CountUp from "../design/CountUp";
 import { css, mix } from "../design/css";
 import { I_CHECK, I_EYE, I_EYE_OFF, I_PLUS, I_SEARCH, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { FieldLabel, HButton, ModalError, ModalShell, btnGhost, btnPrimary, inputStyle } from "../design/ui";
+import { FieldLabel, HButton, ModalError, ModalCancel, ModalShell, btnPrimary, inputStyle } from "../design/ui";
 import { date } from "../lib/cargo";
 
 type Toast = (k: "success" | "error", t: string) => void;
@@ -441,11 +441,14 @@ function StaffForm({
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const strength = pwStrength(password);
 
   async function save() {
     setError("");
     if (!user && !login.trim()) return setError("Укажите логин");
     if ((!user || password) && password.length < 6) return setError("Пароль — минимум 6 символов");
+    setBusy(true);
     try {
       if (user) {
         await updateUser(user.id, { full_name: fullName, role, ...(password ? { password } : {}) });
@@ -456,27 +459,28 @@ function StaffForm({
       }
     } catch (e) {
       setError(apiError(e));
+      setBusy(false);
     }
   }
 
   return (
     <ModalShell
-      title={user ? `Сотрудник ${user.login}` : "Новый сотрудник"}
-      icon={<Icon name="staff" size={16} />}
+      title={user ? user.full_name || user.login : "Новый сотрудник"}
+      subtitle={user ? <>@{user.login} · {ROLE[user.role].label}</> : "Логин и пароль — для входа в панель"}
+      icon={<Icon name="staff" size={18} />}
+      tone={role === "admin" ? "violet" : "accent"}
       onClose={onClose}
-      width={480}
+      width={500}
       footer={
         <>
-          <HButton onClick={onClose} s={btnGhost} hover="background:var(--hover)">
-            Отмена
-          </HButton>
-          <HButton onClick={save} s={btnPrimary} hover="background:var(--accent-hover)">
-            {user ? "Сохранить" : "Создать"}
+          <ModalCancel>Отмена</ModalCancel>
+          <HButton onClick={save} disabled={busy} s={btnPrimary + ";min-width:130px"} hover="background:var(--accent-hover)">
+            {busy ? "Сохраняю…" : user ? "Сохранить" : "Создать сотрудника"}
           </HButton>
         </>
       }
     >
-      <div style={css("padding:18px;display:flex;flex-direction:column;gap:14px")} onKeyDown={(e) => e.key === "Enter" && save()}>
+      <div className="mf-body" onKeyDown={(e) => e.key === "Enter" && !busy && save()}>
         <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:12px")}>
           <label>
             <FieldLabel>Логин</FieldLabel>
@@ -532,9 +536,23 @@ function StaffForm({
         </div>
 
         <label>
-          <FieldLabel>
-            Пароль {user && <span style={css("color:var(--text-5);font-weight:400")}>— оставьте пустым, чтобы не менять</span>}
-          </FieldLabel>
+          <span style={css("display:flex;align-items:baseline;justify-content:space-between;gap:10px")}>
+            <FieldLabel>
+              Пароль {user && <span style={css("color:var(--text-4);font-weight:400")}>— пусто, чтобы не менять</span>}
+            </FieldLabel>
+            <HButton
+              onClick={(e) => {
+                e.preventDefault();
+                setPassword(makePassword());
+                setShowPw(true);
+              }}
+              className="au-reset"
+              s="margin-bottom:5px"
+              hover=""
+            >
+              придумать
+            </HButton>
+          </span>
           <div style={css("position:relative")}>
             <input
               type={showPw ? "text" : "password"}
@@ -553,9 +571,38 @@ function StaffForm({
               <Svg paths={showPw ? I_EYE_OFF : I_EYE} size={16} />
             </HButton>
           </div>
+          {password && (
+            <span className="sf-pw" style={{ ["--c" as string]: strength.color }}>
+              {[0, 1, 2, 3].map((i) => (
+                <span key={i} className={i < strength.score ? "on" : ""} />
+              ))}
+              <span style={css("margin-left:6px;font-size:11.5px;color:var(--text-3);white-space:nowrap")}>{strength.label}</span>
+            </span>
+          )}
         </label>
         <ModalError text={error} />
       </div>
     </ModalShell>
   );
+}
+
+/** Надёжность пароля: длина и разнообразие символов. */
+function pwStrength(p: string): { score: number; label: string; color: string } {
+  if (p.length < 6) return { score: 1, label: "слишком короткий", color: "var(--danger-dot)" };
+  const kinds = [/[a-zа-я]/, /[A-ZА-Я]/, /\d/, /[^\p{L}\d]/u].filter((r) => r.test(p)).length;
+  const score = Math.min(4, (p.length >= 10 ? 2 : 1) + (kinds >= 3 ? 2 : kinds >= 2 ? 1 : 0));
+  return [
+    { score: 1, label: "слабый", color: "var(--danger-dot)" },
+    { score: 2, label: "средний", color: "var(--amber-dot)" },
+    { score: 3, label: "хороший", color: "var(--green-dot)" },
+    { score: 4, label: "надёжный", color: "var(--green-dot)" },
+  ][score - 1];
+}
+
+/** Случайный пароль без похожих символов (0/O, 1/l) — удобно продиктовать. */
+function makePassword(): string {
+  const abc = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const buf = new Uint32Array(10);
+  crypto.getRandomValues(buf);
+  return [...buf].map((n) => abc[n % abc.length]).join("");
 }

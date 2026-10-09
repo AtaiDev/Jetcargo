@@ -29,7 +29,7 @@ import { useDebounced, useRefresh } from "../lib/events";
 type Toast = (kind: "success" | "error", text: string) => void;
 type PathDef = [string, Record<string, unknown>][];
 type Stage = "in_stock" | "ordered";
-type Sub = "all" | "ready" | "debt" | "old" | "paid";
+type Sub = "all" | "ready" | "debt" | "old" | "paid" | "transit" | "waiting";
 
 const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 const CODE = MONO + ";letter-spacing:.02em";
@@ -83,6 +83,9 @@ function matches(sub: Sub, it: Item, old: number): boolean {
   if (sub === "ready" || sub === "paid") return it.debt <= 0;
   if (sub === "debt") return it.debt > 0;
   if (sub === "old") return ageOf(it) >= old;
+  // «В пути» — из загруженной накладной; «Ещё не отправлены» — остальные ожидаемые.
+  if (sub === "transit") return it.stage === "in_transit";
+  if (sub === "waiting") return it.stage !== "in_transit";
   return true;
 }
 
@@ -149,6 +152,8 @@ function Items({ isDesktop, toast }: { isDesktop: boolean; toast: Toast }) {
         ]
       : [
           { key: "all", label: "Все ожидаемые" },
+          { key: "transit", label: "В пути", dot: "var(--sky-dot)" },
+          { key: "waiting", label: "Ещё не отправлены", dot: "var(--amber-dot)" },
           { key: "paid", label: "Оплачены заранее", dot: "var(--green-dot)" },
           { key: "debt", label: "С долгом", dot: "var(--danger-dot)" },
           { key: "old", label: `Ждём ${OLD_ORDER}+ дней`, dot: "var(--amber-dot)" },
@@ -259,7 +264,26 @@ function Flow({ flow, stage, onStage }: { flow: { ordered: ItemList; stock: Item
         active={stage === "ordered"}
         onClick={() => onStage("ordered")}
       >
-        {flow ? (flow.ordered.totals.debt > 0 ? <>долг по ним <b style={css("font-weight:500;color:var(--danger)")}>{som(flow.ordered.totals.debt)}</b></> : "всё оплачено") : " "}
+        {flow ? (
+          <span style={css("display:flex;flex-wrap:wrap;gap:4px 12px")}>
+            {(flow.ordered.counts.in_transit ?? 0) > 0 && (
+              <span style={css("white-space:nowrap")}>
+                <span style={css("color:var(--sky)")}>{flow.ordered.counts.in_transit}</span> в пути
+              </span>
+            )}
+            <span style={css("white-space:nowrap")}>
+              {flow.ordered.totals.debt > 0 ? (
+                <>
+                  долг <b style={css("font-weight:500;color:var(--danger)")}>{som(flow.ordered.totals.debt)}</b>
+                </>
+              ) : (
+                "всё оплачено"
+              )}
+            </span>
+          </span>
+        ) : (
+          " "
+        )}
       </FlowStage>
       <span className="wh-arrow" aria-hidden>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -476,10 +500,17 @@ function Shelf({ items, old, onOpen }: { items: Item[]; old: number; onOpen: (id
             Выдать
           </HButton>
         ) : (
-          <span style={mix("display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap", { color: ST.ordered.fg })}>
-            <span style={mix("width:7px;height:7px;border-radius:50%", { background: ST.ordered.dot })} />
-            ещё в пути
-          </span>
+          // Ожидаемые: сколько уже в пути по накладной из Китая, а сколько ещё не отправлено.
+          (() => {
+            const transit = items.filter((i) => i.stage === "in_transit").length;
+            const k = transit === items.length ? "in_transit" : "ordered";
+            return (
+              <span style={mix("display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap", { color: ST[k].fg })}>
+                <span style={mix("width:7px;height:7px;border-radius:50%", { background: ST[k].dot })} />
+                {transit === items.length ? "в пути" : transit ? `в пути ${transit} из ${items.length}` : "ещё не отправлены"}
+              </span>
+            );
+          })()
         )}
       </div>
     </section>

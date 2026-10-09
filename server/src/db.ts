@@ -356,6 +356,64 @@ const MIGRATIONS: string[] = [
   `
   ALTER TABLE audit_log ADD COLUMN deleted_at TEXT;
   `,
+  // 10. Накладные из Китая: какие коды (трек-номера) отправлены, когда и в какой коробке.
+  //     «В пути» — не новый статус, а этап, который вычисляется: заказанный товар, чей код есть
+  //     в загруженной (не скрытой) накладной. Только новые таблицы и пересоздание VIEW —
+  //     существующие данные не меняются; скрыли накладную — товары снова просто «Заказан».
+  `
+  CREATE TABLE IF NOT EXISTS shipments (
+    id INTEGER PRIMARY KEY,
+    waybill TEXT NOT NULL,                   -- номер накладной (运单号)
+    shipped_at TEXT,                         -- дата отправки из Китая (发货时间), YYYY-MM-DD
+    arrives_at TEXT,                         -- дата прибытия (到达时间), если указана
+    filename TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT ${NOW},
+    updated_at TEXT NOT NULL DEFAULT ${NOW},
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_shipments_waybill ON shipments(waybill);
+
+  CREATE TABLE IF NOT EXISTS shipment_codes (
+    id INTEGER PRIMARY KEY,
+    shipment_id INTEGER NOT NULL REFERENCES shipments(id),
+    code TEXT NOT NULL,                      -- номер заказа (订单号) как в файле
+    code_norm TEXT NOT NULL,                 -- для сопоставления с кодом товара
+    box TEXT NOT NULL DEFAULT '',            -- номер коробки (箱子编号)
+    client_code TEXT NOT NULL DEFAULT '',    -- код клиента у китайцев (客户代码)
+    china_in_at TEXT,                        -- поступил на склад в Китае (入库时间)
+    row_no INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS ix_shipment_codes_code ON shipment_codes(code_norm);
+  CREATE INDEX IF NOT EXISTS ix_shipment_codes_ship ON shipment_codes(shipment_id);
+
+  DROP VIEW IF EXISTS v_items;
+  CREATE VIEW v_items AS
+  SELECT i.id, i.order_id, i.name, i.code, i.code_norm, i.qty, i.price, i.price_cny, i.real_price,
+         COALESCE(i.real_price, i.cost) AS cost,
+         i.split_with, i.comment, i.status, i.arrived_at, i.issued_at, i.issue_id, i.import_id, i.import_row,
+         i.batch_id, i.created_by, i.created_at, i.updated_at,
+         o.order_date, o.customer_id,
+         c.name AS customer_name, c.phone AS customer_phone, c.code AS customer_code,
+         i.price AS sale,
+         COALESCE(p.paid, 0) AS paid,
+         MAX(i.price - COALESCE(p.paid, 0), 0) AS debt,
+         CASE WHEN COALESCE(p.paid, 0) <= 0 AND i.price > 0 THEN 'unpaid'
+              WHEN COALESCE(p.paid, 0) < i.price THEN 'partial'
+              ELSE 'paid' END AS pay_status,
+         ts.id AS transit_id, ts.waybill AS transit_waybill, ts.shipped_at AS transit_shipped_at,
+         CASE WHEN i.status = 'ordered' AND ts.id IS NOT NULL THEN 'in_transit' ELSE i.status END AS stage
+    FROM order_items i
+    JOIN orders o ON o.id = i.order_id
+    JOIN customers c ON c.id = o.customer_id
+    LEFT JOIN (SELECT order_item_id, SUM(amount) AS paid FROM payments
+                WHERE deleted_at IS NULL GROUP BY order_item_id) p ON p.order_item_id = i.id
+    LEFT JOIN (SELECT sc.code_norm, MAX(sc.shipment_id) AS sid FROM shipment_codes sc
+                 JOIN shipments s ON s.id = sc.shipment_id AND s.deleted_at IS NULL
+                GROUP BY sc.code_norm) t ON t.code_norm = i.code_norm AND i.code_norm <> ''
+    LEFT JOIN shipments ts ON ts.id = t.sid
+   WHERE i.deleted_at IS NULL AND o.deleted_at IS NULL AND c.deleted_at IS NULL;
+  `,
 ];
 
 function migrate() {

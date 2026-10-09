@@ -90,14 +90,14 @@ export default function Finance({ isDesktop, toast }: { isDesktop: boolean; toas
                 ]}
               />
               <Split
-                title="Прибыль за период"
+                title="Наценка на товары"
                 total={t.with_cost ? t.cost + t.profit : 0}
                 value={t.with_cost ? `${t.profit > 0 ? "+" : ""}${som(t.profit)}` : "—"}
                 valueColor={t.with_cost ? (t.profit < 0 ? "var(--danger)" : "var(--green)") : undefined}
-                hint={t.with_cost ? `наценка ${pct(t.profit, t.cost)}%${t.with_cost < t.items ? ` · по ${t.with_cost} из ${t.items} с выкупом` : ""}` : "нет цен выкупа"}
+                hint={t.with_cost ? `${pct(t.profit, t.cost)}% к выкупу${t.with_cost < t.items ? ` · по ${t.with_cost} из ${t.items} с выкупом` : ""} · без веса и доставки` : "нет цен выкупа"}
                 parts={[
                   { label: "Выкуп", value: t.cost, grad: "linear-gradient(90deg,#C4B5FD,#8B5CF6)", color: "var(--violet)" },
-                  { label: "Прибыль", value: t.profit, grad: "linear-gradient(90deg,#34D399,#0EA5E9)", color: t.profit < 0 ? "var(--danger)" : "var(--green)" },
+                  { label: "Наценка", value: t.profit, grad: "linear-gradient(90deg,#34D399,#0EA5E9)", color: t.profit < 0 ? "var(--danger)" : "var(--green)" },
                 ]}
               />
               <DebtNote total={t.debts_total} count={data.debtors.length} />
@@ -514,7 +514,7 @@ function MonthDetail({ m, prev, best }: { m: MonthRow; prev: MonthRow | null; be
       good: "none",
     },
     {
-      label: "Прибыль",
+      label: "Наценка",
       value: m.with_cost ? `${m.profit > 0 ? "+" : ""}${som(m.profit)}` : "—",
       color: m.profit < 0 ? "var(--danger)" : "var(--green)",
       share: m.with_cost ? Math.max(0, pct(m.profit, m.sale)) : 0,

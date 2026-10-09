@@ -19,6 +19,7 @@ import { batchesRouter } from "./routes/batches";
 import { customersRouter } from "./routes/customers";
 import { dashboardRouter } from "./routes/dashboard";
 import { importsRouter } from "./routes/imports";
+import { shipmentsRouter } from "./routes/shipments";
 import { itemsRouter } from "./routes/items";
 import { miscRouter } from "./routes/misc";
 import { ordersRouter } from "./routes/orders";
@@ -75,7 +76,7 @@ api.get("/env", (_req, res) => {
   res.json({ env: isTestDb() ? "test" : "prod" });
 });
 api.use(requireAuth);
-api.use(dashboardRouter, customersRouter, itemsRouter, warehouseRouter, importsRouter, batchesRouter, ordersRouter, miscRouter);
+api.use(dashboardRouter, customersRouter, itemsRouter, warehouseRouter, importsRouter, shipmentsRouter, batchesRouter, ordersRouter, miscRouter);
 app.use("/api/v1", api);
 
 app.use((_req, res) => {

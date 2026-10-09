@@ -368,12 +368,20 @@ dashboardRouter.get("/finance", (req, res) => {
             SUM(debt) AS debt, COUNT(*) AS items, MIN(order_date) AS oldest
        FROM v_items WHERE ${openDebtSql()} GROUP BY customer_id ORDER BY debt DESC LIMIT 50`
   );
-  const payments = all<{ paid_at: string }>(
+  // Последние оплаты периода — период фильтруется в самой выборке (раньше брались 300 последних
+  // за всё время и уже потом период, и для старых периодов список выходил пустым).
+  const payments = all(
     `SELECT p.id, p.amount, p.method, p.paid_at, p.comment, v.id AS item_id, v.name AS item_name,
             v.customer_id, v.customer_name, u.login AS user_login
        FROM payments p JOIN v_items v ON v.id = p.order_item_id LEFT JOIN users u ON u.id = p.user_id
-      WHERE p.deleted_at IS NULL ORDER BY p.paid_at DESC, p.id DESC LIMIT 300`
-  ).filter((p) => localDay(p.paid_at) >= from && localDay(p.paid_at) <= to).slice(0, 50);
+      WHERE p.deleted_at IS NULL AND p.paid_at >= ? AND p.paid_at < ?
+      ORDER BY p.paid_at DESC, p.id DESC LIMIT 50`,
+    new Date(`${from}T00:00:00`).toISOString(),
+    new Date(`${addDays(to, 1)}T00:00:00`).toISOString()
+  );
+  // Дни для графика поступлений: с первой оплаты периода (не раньше), не больше 400 последних дней.
+  const firstPay = cash.reduce<string | null>((a, p) => (a === null || localDay(p.paid_at) < a ? localDay(p.paid_at) : a), null);
+  const dayFrom = [from, firstPay ?? to, addDays(to, -399)].reduce((a, b) => (b > a ? b : a));
 
   res.json({
     period: { date_from: from, date_to: to },
@@ -390,7 +398,7 @@ dashboardRouter.get("/finance", (req, res) => {
           return acc;
         }, {})
       ).sort((a, b) => b.amount - a.amount),
-      by_day: dayList(from, to).map((day) => ({ day, amount: cash.filter((p) => localDay(p.paid_at) === day).reduce((a, p) => a + p.amount, 0) })),
+      by_day: dayList(dayFrom, to).map((day) => ({ day, amount: cash.filter((p) => localDay(p.paid_at) === day).reduce((a, p) => a + p.amount, 0) })),
     },
     months: byMonth(list, lastMonths(12, to)),
     debtors,

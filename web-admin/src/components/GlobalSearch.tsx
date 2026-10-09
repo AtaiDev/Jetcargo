@@ -142,7 +142,7 @@ export default function GlobalSearch() {
                           {i.customer_name} · <span style={css(MONO)}>{i.code || "без кода"}</span>
                         </span>
                       </span>
-                      <StatusBadge status={i.status} size="sm" dot={false} />
+                      <StatusBadge status={i.stage ?? i.status} size="sm" dot={false} />
                     </Row>
                   ))}
                 </Group>

@@ -29,12 +29,11 @@ import BulkBar, { useSelection } from "../components/BulkBar";
 import ItemModal from "../components/ItemModal";
 import ItemTable from "../components/ItemTable";
 import PhoneInput from "../components/PhoneInput";
-import Select from "../components/Select";
 import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_BACK, I_CLOSE, I_PLUS, I_SEARCH, I_USER, Icon, Svg } from "../design/icons";
 import { PANEL, Page } from "../design/table";
-import { FieldLabel, HButton, LoadError, ModalError, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary, inputStyle } from "../design/ui";
+import { FieldLabel, HButton, LoadError, ModalCancel, ModalError, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary, inputStyle } from "../design/ui";
 import { METHOD_OPTIONS, date, parseMoney, som, todayIso } from "../lib/cargo";
 import { emit, useDebounced, useRefresh } from "../lib/events";
 
@@ -649,57 +648,83 @@ function CustomerForm({
     comment: customer?.comment ?? "",
   });
   const [error, setError] = useState("");
-  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setF((x) => ({ ...x, [k]: e.target.value }));
 
   async function save() {
     setError("");
-    if (!f.name.trim()) return setError("Укажите имя");
+    if (!f.name.trim()) return setError("Укажите имя клиента");
+    setBusy(true);
     try {
       onSaved(customer ? await updateCustomer(customer.id, f) : await createCustomer(f));
     } catch (e) {
       setError(apiError(e));
+      setBusy(false);
     }
   }
 
   return (
     <ModalShell
       title={customer ? "Изменить клиента" : "Новый клиент"}
-      icon={<Svg paths={I_USER} size={16} />}
+      subtitle={customer ? "Имя, телефон и заметки — видны во всех заказах клиента" : "Достаточно имени — остальное можно добавить позже"}
+      icon={<Svg paths={I_USER} size={18} />}
       onClose={onClose}
-      width={440}
+      width={480}
       footer={
         <>
-          <HButton onClick={onClose} s={btnGhost} hover="background:var(--hover)">
-            Отмена
-          </HButton>
-          <HButton onClick={save} s={btnPrimary} hover="background:var(--accent-hover)">
-            Сохранить
+          <ModalCancel>Отмена</ModalCancel>
+          <HButton onClick={save} disabled={busy} s={btnPrimary + ";min-width:130px"} hover="background:var(--accent-hover)">
+            {busy ? "Сохраняю…" : customer ? "Сохранить" : "Создать клиента"}
           </HButton>
         </>
       }
     >
-      <div style={css("padding:18px;display:flex;flex-direction:column;gap:12px")} onKeyDown={(e) => e.key === "Enter" && save()}>
+      <form
+        className="mf-body"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!busy) save();
+        }}
+      >
+        {/* Как клиент будет выглядеть в списках — меняется по мере ввода */}
+        <div className="mf-card">
+          <Avatar name={f.name.trim() || "?"} size={44} />
+          <span style={css("min-width:0")}>
+            <span style={mix("display:block;font-size:14.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: f.name.trim() ? "var(--text)" : "var(--text-4)" })}>
+              {f.name.trim() || "Имя клиента"}
+            </span>
+            <span style={css("display:block;font-size:12.5px;color:var(--text-3);font-variant-numeric:tabular-nums")}>
+              {f.phone || "телефон не указан"}
+              {f.code.trim() && <> · код {f.code.trim()}</>}
+            </span>
+          </span>
+        </div>
         <label>
           <FieldLabel>Имя</FieldLabel>
-          <input autoFocus value={f.name} onChange={set("name")} style={css(inputStyle)} />
+          <input autoFocus value={f.name} onChange={set("name")} placeholder="например, Айгерим Садыкова" style={css(inputStyle)} />
         </label>
-        <label>
-          <FieldLabel>Телефон</FieldLabel>
-          <PhoneInput value={f.phone} onChange={(phone) => setF((x) => ({ ...x, phone }))} />
-        </label>
-        <label>
-          <FieldLabel>Код клиента (необязательно)</FieldLabel>
-          <input value={f.code} onChange={set("code")} style={css(inputStyle + ";" + MONO)} />
-        </label>
+        <div className="mf-grid2">
+          <label>
+            <FieldLabel>Телефон</FieldLabel>
+            <PhoneInput value={f.phone} onChange={(phone) => setF((x) => ({ ...x, phone }))} />
+          </label>
+          <label>
+            <FieldLabel>Код клиента</FieldLabel>
+            <input value={f.code} onChange={set("code")} placeholder="необязательно" style={css(inputStyle + ";" + MONO)} />
+          </label>
+        </div>
         <label>
           <FieldLabel>Комментарий</FieldLabel>
-          <input value={f.comment} onChange={set("comment")} style={css(inputStyle)} />
+          <textarea value={f.comment} onChange={set("comment")} rows={2} placeholder="заметка: город, как связаться, особенности" style={css(inputStyle + ";height:auto;padding:9px 12px;resize:vertical;line-height:1.45")} />
         </label>
         <ModalError text={error} />
-      </div>
+        <button type="submit" hidden />
+      </form>
     </ModalShell>
   );
 }
+
+const PAY_METHODS = METHOD_OPTIONS;
 
 /** Оплата одной суммой: сервер распределит её по неоплаченным товарам, начиная со старых. */
 function PayModal({
@@ -716,43 +741,88 @@ function PayModal({
   const [amount, setAmount] = useState(String(debt));
   const [method, setMethod] = useState("cash");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const a = parseMoney(amount);
+  const valid = a !== null && !Number.isNaN(a) && a > 0;
+  const left = valid ? debt - a : debt;
+  // Сервер не принимает сумму больше долга — предупреждаем сразу.
+  const over = valid && a > debt + 0.001;
+  const half = Math.round(debt / 2);
 
   async function pay() {
     setError("");
-    const a = parseMoney(amount);
-    if (!a || Number.isNaN(a)) return setError("Укажите сумму");
+    if (!valid) return setError("Укажите сумму");
+    if (over) return setError(`Сумма больше долга (${som(debt)})`);
+    setBusy(true);
     try {
       await payCustomer(customer.id, { amount: a, method });
       onPaid(a);
     } catch (e) {
       setError(apiError(e));
+      setBusy(false);
     }
   }
 
   return (
     <ModalShell
-      title={`Оплата — ${customer.name}`}
-      icon={<span style={css(MONO + ";font-weight:700")}>с</span>}
+      title="Принять оплату"
+      subtitle={
+        <>
+          <span style={css("color:var(--text-2)")}>{customer.name}</span>
+          {customer.phone && <span style={css("font-variant-numeric:tabular-nums")}>{customer.phone}</span>}
+        </>
+      }
+      icon={<span style={css("font-size:17px;font-weight:500")}>с</span>}
+      tone="green"
       onClose={onClose}
-      width={420}
+      width={460}
       footer={
         <>
-          <HButton onClick={onClose} s={btnGhost} hover="background:var(--hover)">
-            Отмена
-          </HButton>
-          <HButton onClick={pay} s={btnPrimary} hover="background:var(--accent-hover)">
-            Принять
+          <ModalCancel>Отмена</ModalCancel>
+          <HButton onClick={pay} disabled={busy || !valid || over} s={btnPrimary + ";min-width:150px"} hover="background:var(--accent-hover)">
+            {busy ? "Принимаю…" : valid ? `Принять ${som(a)}` : "Принять"}
           </HButton>
         </>
       }
     >
-      <div style={css("padding:18px;display:flex;flex-direction:column;gap:12px")}>
-        <div style={css("font-size:12.5px;color:var(--text-2)")}>
-          Долг клиента: <b style={css(MONO + ";color:var(--danger)")}>{som(debt)}</b>. Сумма распределится по неоплаченным товарам, начиная с самых
-          старых.
+      <div className="mf-body">
+        <div className="mf-card" style={css("justify-content:space-between")}>
+          <span style={css("font-size:12.5px;color:var(--text-3)")}>Долг клиента</span>
+          <span style={mix("font-size:20px;font-weight:500;font-variant-numeric:tabular-nums", { color: debt > 0 ? "var(--amber)" : "var(--green)" })}>{som(debt)}</span>
         </div>
-        <MoneyInput value={amount} onChange={setAmount} big autoFocus onEnter={pay} />
-        <Select value={method} onChange={setMethod} ariaLabel="Способ оплаты" options={METHOD_OPTIONS} />
+        <label>
+          <FieldLabel>Сумма оплаты</FieldLabel>
+          <MoneyInput value={amount} onChange={setAmount} big autoFocus onEnter={pay} />
+        </label>
+        {debt > 0 && (
+          <div className="mf-chips">
+            <HButton onClick={() => setAmount(String(debt))} className={"mf-chip" + (a === debt ? " on" : "")} s="" hover="">
+              весь долг · {som(debt)}
+            </HButton>
+            {half > 0 && half !== debt && (
+              <HButton onClick={() => setAmount(String(half))} className={"mf-chip" + (a === half ? " on" : "")} s="" hover="">
+                половина · {som(half)}
+              </HButton>
+            )}
+          </div>
+        )}
+        <div>
+          <FieldLabel>Способ оплаты</FieldLabel>
+          <div className="mf-seg" role="radiogroup" aria-label="Способ оплаты">
+            {PAY_METHODS.map((m) => (
+              <button key={m.value} type="button" role="radio" aria-checked={method === m.value} className={method === m.value ? "on" : ""} onClick={() => setMethod(m.value)}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mf-total">
+          <span>{over ? "Больше долга на" : left > 0 ? "Останется долг" : "Долг будет закрыт"}</span>
+          <b style={mix("font-weight:500;font-variant-numeric:tabular-nums", { color: over ? "var(--danger)" : left > 0 ? "var(--amber)" : "var(--green)" })}>{over || left > 0 ? som(Math.abs(left)) : "✓"}</b>
+        </div>
+        <div className="mf-hint" style={css("margin-top:-6px")}>
+          Сумма распределится по неоплаченным товарам, начиная с самых старых.
+        </div>
         <ModalError text={error} />
       </div>
     </ModalShell>

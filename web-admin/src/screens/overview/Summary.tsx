@@ -143,8 +143,9 @@ function plural(n: number, one: string, few: string, many: string): string {
 function AllTimeCard({ a, isDesktop }: { a: Dashboard["profit_all"]; isDesktop: boolean }) {
   const neg = a.total < 0;
   const since = a.since ? `${a.since.slice(8, 10)}.${a.since.slice(5, 7)}.${a.since.slice(0, 4)}` : null;
-  const parts = [
-    { label: "Наценка на товары", value: a.goods },
+  // Наценка считается только по товарам с реальной ценой (выкупом) — показываем, по скольким.
+  const parts: { label: string; value: number; sub?: string }[] = [
+    { label: "Наценка на товары", value: a.goods, sub: a.goods_items < a.items ? `по ${a.goods_items} из ${a.items} — у остальных нет выкупа` : undefined },
     { label: "Вес клиентам", value: a.client },
     { label: "Выкуп веса", value: -a.buy },
     { label: "Доставка", value: -a.delivery },
@@ -186,6 +187,7 @@ function AllTimeCard({ a, isDesktop }: { a: Dashboard["profit_all"]; isDesktop: 
               {p.value < 0 ? "−" : p.value > 0 ? "+" : ""}
               <CountUp text={som(Math.abs(p.value))} />
             </div>
+            {p.sub && <div style={css("margin-top:2px;font-size:11px;line-height:1.35;color:var(--text-4)")}>{p.sub}</div>}
           </div>
         ))}
       </div>

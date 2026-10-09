@@ -8,6 +8,7 @@
  * Превью ничего не пишет. Существующие записи по умолчанию не меняются. Любой импорт можно отменить.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
 import {
@@ -31,6 +32,7 @@ import { Page } from "../design/table";
 import { HButton, ModalError, ST, StatusBadge } from "../design/ui";
 import { STATUS_LABEL, date, dateTime, som } from "../lib/cargo";
 import { emit } from "../lib/events";
+import ImportWaybill from "./ImportWaybill";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 type RowFilter = "all" | ImportRow["action"] | "warn";
@@ -49,6 +51,16 @@ const ACTION: Record<ImportRow["action"], { label: string; fg: string; dot: stri
 const KNOWN = ["Имя клиента *", "Телефон", "Название товара *", "Код товара", "Количество", "Сумма", "Цена, ¥", "Реальная цена", "Статус", "Оплата", "Оплачено", "Дата заказа", "Разделить с", "Комментарий"];
 
 export default function Import({ toast }: { toast: Toast }) {
+  // Режим: заказы из таблицы или накладная из Китая (отмечает товары «В пути»). Запоминается в адресе.
+  const [params, setParams] = useSearchParams();
+  const mode = params.get("mode") === "waybill" ? "waybill" : "orders";
+  const [handoff, setHandoff] = useState<File | null>(null);
+  const setMode = (m: "orders" | "waybill") => {
+    const next = new URLSearchParams(params);
+    if (m === "waybill") next.set("mode", "waybill");
+    else next.delete("mode");
+    setParams(next, { replace: true });
+  };
   const [file, setFile] = useState<File | null>(null);
   const [opts, setOpts] = useState<ImportOptions>({ on_duplicate: "skip" });
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -116,239 +128,288 @@ export default function Import({ toast }: { toast: Toast }) {
   const toWrite = (cnt?.new ?? 0) + (cnt?.update ?? 0);
   const missing = preview?.missing_required.length ?? 0;
   const step = done ? 4 : !preview ? 1 : missing ? 2 : 3;
+  const looksWaybill = !!preview && preview.headers.some((h) => /订单号|运单号|накладн/i.test(h));
+
+  function openAsWaybill() {
+    setHandoff(file);
+    setPreview(null);
+    setFile(null);
+    setMode("waybill");
+  }
 
   return (
     <Page size="wide">
-      <input ref={inputRef} type="file" accept=".xlsx" style={css("display:none")} onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
-      <Stepper step={step} />
+      <div className="im-modes" role="tablist" aria-label="Что загружаем">
+        <button type="button" role="tab" aria-selected={mode === "orders"} className={"im-mode" + (mode === "orders" ? " on" : "")} onClick={() => setMode("orders")}>
+          <span className="im-mode-i" style={css("background:var(--green-tint);color:var(--green)")}>
+            <Svg paths={I_EXCEL} size={20} sw={1.7} />
+          </span>
+          <span style={css("min-width:0")}>
+            <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Заказы из таблицы</span>
+            <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>клиенты, товары, суммы и оплаты</span>
+          </span>
+        </button>
+        <button type="button" role="tab" aria-selected={mode === "waybill"} className={"im-mode sky" + (mode === "waybill" ? " on" : "")} onClick={() => setMode("waybill")}>
+          <span className="im-mode-i" style={css("background:var(--sky-tint);color:var(--sky)")}>
+            <Icon name="batches" size={20} />
+          </span>
+          <span style={css("min-width:0")}>
+            <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Накладная из Китая</span>
+            <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>найдёт товары по коду и отметит «В пути»</span>
+          </span>
+        </button>
+      </div>
 
-      {!preview ? (
-        <Start busy={busy} fileName={file?.name} onPick={() => inputRef.current?.click()} onDrop={pickFile} />
+      {mode === "waybill" ? (
+        <ImportWaybill toast={toast} initialFile={handoff} />
       ) : (
-        cnt && (
-          <>
-            {/* Файл */}
-            <section className="im-file">
-              <span className="im-file-icon">
-                <Svg paths={I_EXCEL} size={22} sw={1.7} />
+        <>
+          <input ref={inputRef} type="file" accept=".xlsx" style={css("display:none")} onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
+          <Stepper step={step} />
+          {looksWaybill && (
+            <section className="im-waybill-hint">
+              <span className="im-mode-i" style={css("background:var(--sky-tint);color:var(--sky)")}>
+                <Icon name="batches" size={18} />
               </span>
-              <div style={css("flex:1 1 240px;min-width:0")}>
-                <div style={css("font-size:15px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{file?.name ?? preview.filename}</div>
-                <div style={css(NUM + ";font-size:12.5px;color:var(--text-3);margin-top:2px")}>
-                  {cnt.total} {plural(cnt.total, "строка", "строки", "строк")} с данными · заголовки в строке {preview.header_row}
-                  {busy ? " · пересчитываю…" : ""}
-                </div>
-              </div>
-              {preview.sheets.length > 1 && (
-                <span style={css("display:flex;align-items:center;gap:8px")}>
-                  <span style={css("font-size:12.5px;color:var(--text-3)")}>Лист</span>
-                  <Select
-                    value={preview.sheet}
-                    onChange={changeSheet}
-                    width={190}
-                    height={36}
-                    ariaLabel="Лист"
-                    menuMinWidth={220}
-                    options={preview.sheets.map((s) => ({ value: s.name, label: s.name, hint: `${s.rows} строк` }))}
-                  />
-                </span>
-              )}
-              {preview.sheets.length === 1 && <span className="im-chip">лист «{preview.sheet}»</span>}
-              <HButton onClick={() => inputRef.current?.click()} className="im-ghost" s="" hover="">
-                Другой файл
-              </HButton>
-              <HButton onClick={() => pickFile(null)} title="Убрать файл" aria-label="Убрать файл" className="im-x" s="" hover="">
-                <Svg paths={I_CLOSE} size={15} />
+              <span style={css("flex:1;min-width:0")}>
+                <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Похоже, это накладная из Китая</span>
+                <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>В ней номера заказов и накладной, а не клиенты и товары. Откройте её как накладную — найдём товары по коду и отметим «В пути».</span>
+              </span>
+              <HButton onClick={openAsWaybill} className="wb-go" s="" hover="">
+                Открыть как накладную
               </HButton>
             </section>
-
-            {error && <ModalError text={error} />}
-            {done && (
-              <div className="im-done">
-                <span style={css("width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#34D399,#16A34A)")}>
-                  <Svg paths={I_CHECK} size={17} sw={2.6} />
-                </span>
-                <span style={css("min-width:0")}>
-                  <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Импорт выполнен</span>
-                  <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-3)")}>
-                    новых {done.new} · обновлено {done.update} · пропущено дубликатов {done.duplicate} · с ошибками {done.error} — отменить можно в истории ниже
+          )}
+    
+          {!preview ? (
+            <Start busy={busy} fileName={file?.name} onPick={() => inputRef.current?.click()} onDrop={pickFile} />
+          ) : (
+            cnt && (
+              <>
+                {/* Файл */}
+                <section className="im-file">
+                  <span className="im-file-icon">
+                    <Svg paths={I_EXCEL} size={22} sw={1.7} />
                   </span>
-                </span>
-              </div>
-            )}
-
-            <div className="im-work">
-              {/* Колонки */}
-              <section className="im-card">
-                <CardHead n={2} title="Колонки" hint="какая колонка файла куда идёт — проверьте, всё ли угадано" />
-                <div className="im-map">
-                  {preview.fields.map((f) => {
-                    const v = preview.mapping[f.key];
-                    const mapped = v !== null && v !== undefined;
-                    const bad = f.required && !mapped;
-                    return (
-                      <div key={f.key} className={"im-map-row" + (bad ? " bad" : mapped ? " ok" : "")}>
-                        <span className="im-map-mark">{bad ? "!" : mapped ? <Svg paths={I_CHECK} size={11} sw={3} /> : null}</span>
-                        <span style={css("min-width:0")}>
-                          <span style={mix("display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: bad ? "var(--danger)" : "var(--text)" })}>
-                            {f.label}
-                            {f.required && <span style={css("color:var(--danger)")}> *</span>}
-                          </span>
-                        </span>
-                        <Select
-                          value={mapped ? String(v) : ""}
-                          onChange={(x) => setMapping(f.key, x)}
-                          height={34}
-                          fontSize={12.5}
-                          invalid={bad}
-                          ariaLabel={f.label}
-                          options={[{ value: "", label: "— не импортировать —" }, ...preview.headers.flatMap((h, i) => (h ? [{ value: String(i), label: h, hint: colName(i) }] : []))]}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="im-note">
-                  <b style={css("font-weight:500;color:var(--text-2)")}>Сумма</b> — цена для клиента, по ней считаются оплата и долг. <b style={css("font-weight:500;color:var(--text-2)")}>Реальная цена</b> — за
-                  сколько выкуплен товар; прибыль = Сумма − Реальная цена.
-                </div>
-              </section>
-
-              {/* Проверка */}
-              <aside className="im-card im-check">
-                <CardHead n={3} title="Проверка" hint="ничего не записано, пока не нажмёте «Импортировать»" />
-                <div style={css("display:flex;align-items:baseline;gap:10px;margin-top:18px")}>
-                  <span style={css(NUM + ";font-size:40px;font-weight:600;letter-spacing:-.03em;line-height:1;color:var(--text)")}>
-                    <CountUp text={String(toWrite)} />
-                  </span>
-                  <span style={css("font-size:13.5px;color:var(--text-3)")}>
-                    {plural(toWrite, "запись запишется", "записи запишутся", "записей запишется")} из {cnt.total}
-                  </span>
-                </div>
-                <div className="im-bar">
-                  {(["new", "update", "duplicate", "error"] as const).map((k) => (cnt[k] > 0 ? <span key={k} style={{ flexGrow: cnt[k], background: ACTION[k].grad }} /> : null))}
-                </div>
-                <div style={css("display:flex;flex-direction:column;gap:2px;margin-top:10px")}>
-                  {(
-                    [
-                      ["new", "Новые записи", "добавятся"],
-                      ["update", "Обновятся", "изменятся отличающиеся поля"],
-                      ["duplicate", "Дубликаты", "уже есть — пропустятся"],
-                      ["error", "С ошибками", "пропустятся"],
-                    ] as const
-                  ).map(([k, label, hint]) => (
-                    <button key={k} type="button" className={"im-leg" + (filter === k ? " on" : "")} onClick={() => setFilter(filter === k ? "all" : k)}>
-                      <span style={mix("width:9px;height:9px;border-radius:3px;flex:none", { background: ACTION[k].dot })} />
-                      <span style={css("font-size:13px;color:var(--text)")}>{label}</span>
-                      <span className="im-leg-hint" style={css("font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0")}>{hint}</span>
-                      <span style={mix(NUM + ";margin-left:auto;font-size:14px;font-weight:500", { color: cnt[k] ? ACTION[k].fg : "var(--text-5)" })}>{cnt[k]}</span>
-                    </button>
-                  ))}
-                </div>
-                <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px")}>
-                  <MiniStat label="Новых клиентов" value={cnt.new_customers} />
-                  <MiniStat label="Предупреждения" value={cnt.warnings} tone={cnt.warnings ? "var(--amber)" : undefined} onClick={cnt.warnings ? () => setFilter(filter === "warn" ? "all" : "warn") : undefined} />
-                </div>
-
-                <div style={css("display:flex;flex-direction:column;gap:12px;margin-top:16px;padding-top:16px;border-top:1px dashed var(--border-2)")}>
-                  <Field label="Статус, если в строке не указан">
-                    <Select<ItemStatus>
-                      value={preview.default_status}
-                      onChange={(v) => change({ ...opts, sheet: preview.sheet, mapping: preview.mapping, default_status: v })}
-                      width="100%"
-                      height={36}
-                      ariaLabel="Статус по умолчанию"
-                      options={(["ordered", "in_stock", "issued"] as ItemStatus[]).map((s) => ({ value: s, label: STATUS_LABEL[s], dot: ST[s].dot }))}
-                    />
-                  </Field>
-                  <Field label="Если запись уже есть в системе">
-                    <div className="im-seg">
+                  <div style={css("flex:1 1 240px;min-width:0")}>
+                    <div style={css("font-size:15px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{file?.name ?? preview.filename}</div>
+                    <div style={css(NUM + ";font-size:12.5px;color:var(--text-3);margin-top:2px")}>
+                      {cnt.total} {plural(cnt.total, "строка", "строки", "строк")} с данными · заголовки в строке {preview.header_row}
+                      {busy ? " · пересчитываю…" : ""}
+                    </div>
+                  </div>
+                  {preview.sheets.length > 1 && (
+                    <span style={css("display:flex;align-items:center;gap:8px")}>
+                      <span style={css("font-size:12.5px;color:var(--text-3)")}>Лист</span>
+                      <Select
+                        value={preview.sheet}
+                        onChange={changeSheet}
+                        width={190}
+                        height={36}
+                        ariaLabel="Лист"
+                        menuMinWidth={220}
+                        options={preview.sheets.map((s) => ({ value: s.name, label: s.name, hint: `${s.rows} строк` }))}
+                      />
+                    </span>
+                  )}
+                  {preview.sheets.length === 1 && <span className="im-chip">лист «{preview.sheet}»</span>}
+                  <HButton onClick={() => inputRef.current?.click()} className="im-ghost" s="" hover="">
+                    Другой файл
+                  </HButton>
+                  <HButton onClick={() => pickFile(null)} title="Убрать файл" aria-label="Убрать файл" className="im-x" s="" hover="">
+                    <Svg paths={I_CLOSE} size={15} />
+                  </HButton>
+                </section>
+    
+                {error && <ModalError text={error} />}
+                {done && (
+                  <div className="im-done">
+                    <span style={css("width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#34D399,#16A34A)")}>
+                      <Svg paths={I_CHECK} size={17} sw={2.6} />
+                    </span>
+                    <span style={css("min-width:0")}>
+                      <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Импорт выполнен</span>
+                      <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-3)")}>
+                        новых {done.new} · обновлено {done.update} · пропущено дубликатов {done.duplicate} · с ошибками {done.error} — отменить можно в истории ниже
+                      </span>
+                    </span>
+                  </div>
+                )}
+    
+                <div className="im-work">
+                  {/* Колонки */}
+                  <section className="im-card">
+                    <CardHead n={2} title="Колонки" hint="какая колонка файла куда идёт — проверьте, всё ли угадано" />
+                    <div className="im-map">
+                      {preview.fields.map((f) => {
+                        const v = preview.mapping[f.key];
+                        const mapped = v !== null && v !== undefined;
+                        const bad = f.required && !mapped;
+                        return (
+                          <div key={f.key} className={"im-map-row" + (bad ? " bad" : mapped ? " ok" : "")}>
+                            <span className="im-map-mark">{bad ? "!" : mapped ? <Svg paths={I_CHECK} size={11} sw={3} /> : null}</span>
+                            <span style={css("min-width:0")}>
+                              <span style={mix("display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: bad ? "var(--danger)" : "var(--text)" })}>
+                                {f.label}
+                                {f.required && <span style={css("color:var(--danger)")}> *</span>}
+                              </span>
+                            </span>
+                            <Select
+                              value={mapped ? String(v) : ""}
+                              onChange={(x) => setMapping(f.key, x)}
+                              height={34}
+                              fontSize={12.5}
+                              invalid={bad}
+                              ariaLabel={f.label}
+                              options={[{ value: "", label: "— не импортировать —" }, ...preview.headers.flatMap((h, i) => (h ? [{ value: String(i), label: h, hint: colName(i) }] : []))]}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="im-note">
+                      <b style={css("font-weight:500;color:var(--text-2)")}>Сумма</b> — цена для клиента, по ней считаются оплата и долг. <b style={css("font-weight:500;color:var(--text-2)")}>Реальная цена</b> — за
+                      сколько выкуплен товар; прибыль = Сумма − Реальная цена.
+                    </div>
+                  </section>
+    
+                  {/* Проверка */}
+                  <aside className="im-card im-check">
+                    <CardHead n={3} title="Проверка" hint="ничего не записано, пока не нажмёте «Импортировать»" />
+                    <div style={css("display:flex;align-items:baseline;gap:10px;margin-top:18px")}>
+                      <span style={css(NUM + ";font-size:40px;font-weight:600;letter-spacing:-.03em;line-height:1;color:var(--text)")}>
+                        <CountUp text={String(toWrite)} />
+                      </span>
+                      <span style={css("font-size:13.5px;color:var(--text-3)")}>
+                        {plural(toWrite, "запись запишется", "записи запишутся", "записей запишется")} из {cnt.total}
+                      </span>
+                    </div>
+                    <div className="im-bar">
+                      {(["new", "update", "duplicate", "error"] as const).map((k) => (cnt[k] > 0 ? <span key={k} style={{ flexGrow: cnt[k], background: ACTION[k].grad }} /> : null))}
+                    </div>
+                    <div style={css("display:flex;flex-direction:column;gap:2px;margin-top:10px")}>
                       {(
                         [
-                          ["skip", "Пропустить"],
-                          ["update", "Обновить поля"],
+                          ["new", "Новые записи", "добавятся"],
+                          ["update", "Обновятся", "изменятся отличающиеся поля"],
+                          ["duplicate", "Дубликаты", "уже есть — пропустятся"],
+                          ["error", "С ошибками", "пропустятся"],
                         ] as const
-                      ).map(([k, label]) => (
-                        <button
-                          key={k}
-                          type="button"
-                          className={(opts.on_duplicate ?? "skip") === k ? "on" : ""}
-                          onClick={() => (opts.on_duplicate ?? "skip") !== k && change({ ...opts, sheet: preview.sheet, mapping: preview.mapping, on_duplicate: k })}
-                        >
-                          {label}
+                      ).map(([k, label, hint]) => (
+                        <button key={k} type="button" className={"im-leg" + (filter === k ? " on" : "")} onClick={() => setFilter(filter === k ? "all" : k)}>
+                          <span style={mix("width:9px;height:9px;border-radius:3px;flex:none", { background: ACTION[k].dot })} />
+                          <span style={css("font-size:13px;color:var(--text)")}>{label}</span>
+                          <span className="im-leg-hint" style={css("font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0")}>{hint}</span>
+                          <span style={mix(NUM + ";margin-left:auto;font-size:14px;font-weight:500", { color: cnt[k] ? ACTION[k].fg : "var(--text-5)" })}>{cnt[k]}</span>
                         </button>
                       ))}
                     </div>
-                  </Field>
+                    <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px")}>
+                      <MiniStat label="Новых клиентов" value={cnt.new_customers} />
+                      <MiniStat label="Предупреждения" value={cnt.warnings} tone={cnt.warnings ? "var(--amber)" : undefined} onClick={cnt.warnings ? () => setFilter(filter === "warn" ? "all" : "warn") : undefined} />
+                    </div>
+    
+                    <div style={css("display:flex;flex-direction:column;gap:12px;margin-top:16px;padding-top:16px;border-top:1px dashed var(--border-2)")}>
+                      <Field label="Статус, если в строке не указан">
+                        <Select<ItemStatus>
+                          value={preview.default_status}
+                          onChange={(v) => change({ ...opts, sheet: preview.sheet, mapping: preview.mapping, default_status: v })}
+                          width="100%"
+                          height={36}
+                          ariaLabel="Статус по умолчанию"
+                          options={(["ordered", "in_stock", "issued"] as ItemStatus[]).map((s) => ({ value: s, label: STATUS_LABEL[s], dot: ST[s].dot }))}
+                        />
+                      </Field>
+                      <Field label="Если запись уже есть в системе">
+                        <div className="im-seg">
+                          {(
+                            [
+                              ["skip", "Пропустить"],
+                              ["update", "Обновить поля"],
+                            ] as const
+                          ).map(([k, label]) => (
+                            <button
+                              key={k}
+                              type="button"
+                              className={(opts.on_duplicate ?? "skip") === k ? "on" : ""}
+                              onClick={() => (opts.on_duplicate ?? "skip") !== k && change({ ...opts, sheet: preview.sheet, mapping: preview.mapping, on_duplicate: k })}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </Field>
+                    </div>
+    
+                    {missing > 0 && <div className="im-warn">Сопоставьте обязательные колонки: {preview.missing_required.join(", ")}</div>}
+                    <HButton
+                      disabled={!toWrite || missing > 0 || busy}
+                      onClick={() => setConfirm(true)}
+                      className={"im-go" + (toWrite && !missing && !busy ? " on" : "")}
+                      s=""
+                      hover=""
+                    >
+                      <Icon name="import" size={17} />
+                      {toWrite ? `Импортировать ${toWrite} ${plural(toWrite, "запись", "записи", "записей")}` : "Нечего импортировать"}
+                    </HButton>
+                  </aside>
                 </div>
-
-                {missing > 0 && <div className="im-warn">Сопоставьте обязательные колонки: {preview.missing_required.join(", ")}</div>}
-                <HButton
-                  disabled={!toWrite || missing > 0 || busy}
-                  onClick={() => setConfirm(true)}
-                  className={"im-go" + (toWrite && !missing && !busy ? " on" : "")}
-                  s=""
-                  hover=""
-                >
-                  <Icon name="import" size={17} />
-                  {toWrite ? `Импортировать ${toWrite} ${plural(toWrite, "запись", "записи", "записей")}` : "Нечего импортировать"}
-                </HButton>
-              </aside>
+    
+                {/* Строки файла */}
+                <section className="im-card" style={css("padding:0;overflow:hidden")}>
+                  <div style={css("display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:16px 18px")}>
+                    <div style={css("min-width:0;margin-right:auto")}>
+                      <div style={css("font-size:15px;font-weight:500;color:var(--text)")}>Строки файла</div>
+                      <div style={css("font-size:12.5px;color:var(--text-4)")}>что произойдёт с каждой строкой — ошибки и предупреждения подписаны прямо под ней</div>
+                    </div>
+                    <Tabs<RowFilter>
+                      value={filter}
+                      onChange={setFilter}
+                      tabs={[
+                        { key: "all", label: "Все", count: cnt.total },
+                        { key: "new", label: "Новые", count: cnt.new, dot: ACTION.new.dot },
+                        { key: "update", label: "Обновятся", count: cnt.update, dot: ACTION.update.dot },
+                        { key: "duplicate", label: "Дубликаты", count: cnt.duplicate, dot: ACTION.duplicate.dot },
+                        { key: "error", label: "Ошибки", count: cnt.error, dot: ACTION.error.dot },
+                        { key: "warn", label: "Предупреждения", count: cnt.warnings, dot: "var(--amber-dot)" },
+                      ]}
+                    />
+                  </div>
+                  <PreviewTable rows={rows} />
+                </section>
+              </>
+            )
+          )}
+    
+          {!preview && error && (
+            <div style={css("margin-top:12px")}>
+              <ModalError text={error} />
             </div>
-
-            {/* Строки файла */}
-            <section className="im-card" style={css("padding:0;overflow:hidden")}>
-              <div style={css("display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:16px 18px")}>
-                <div style={css("min-width:0;margin-right:auto")}>
-                  <div style={css("font-size:15px;font-weight:500;color:var(--text)")}>Строки файла</div>
-                  <div style={css("font-size:12.5px;color:var(--text-4)")}>что произойдёт с каждой строкой — ошибки и предупреждения подписаны прямо под ней</div>
-                </div>
-                <Tabs<RowFilter>
-                  value={filter}
-                  onChange={setFilter}
-                  tabs={[
-                    { key: "all", label: "Все", count: cnt.total },
-                    { key: "new", label: "Новые", count: cnt.new, dot: ACTION.new.dot },
-                    { key: "update", label: "Обновятся", count: cnt.update, dot: ACTION.update.dot },
-                    { key: "duplicate", label: "Дубликаты", count: cnt.duplicate, dot: ACTION.duplicate.dot },
-                    { key: "error", label: "Ошибки", count: cnt.error, dot: ACTION.error.dot },
-                    { key: "warn", label: "Предупреждения", count: cnt.warnings, dot: "var(--amber-dot)" },
-                  ]}
-                />
-              </div>
-              <PreviewTable rows={rows} />
-            </section>
-          </>
-        )
-      )}
-
-      {!preview && error && (
-        <div style={css("margin-top:12px")}>
-          <ModalError text={error} />
-        </div>
-      )}
-
-      <History key={historyKey} toast={toast} />
-
-      {confirm && cnt && (
-        <Confirm
-          title="Подтвердите импорт"
-          danger={false}
-          confirmLabel="Импортировать"
-          text={
-            <>
-              Будет создано записей: <b>{cnt.new}</b>
-              {cnt.update ? (
+          )}
+    
+          <History key={historyKey} toast={toast} />
+    
+          {confirm && cnt && (
+            <Confirm
+              title="Подтвердите импорт"
+              danger={false}
+              confirmLabel="Импортировать"
+              text={
                 <>
-                  , обновлено: <b>{cnt.update}</b>
+                  Будет создано записей: <b>{cnt.new}</b>
+                  {cnt.update ? (
+                    <>
+                      , обновлено: <b>{cnt.update}</b>
+                    </>
+                  ) : null}
+                  . Дубликаты ({cnt.duplicate}) и строки с ошибками ({cnt.error}) будут пропущены. Существующие данные не удаляются; импорт можно отменить в истории ниже.
                 </>
-              ) : null}
-              . Дубликаты ({cnt.duplicate}) и строки с ошибками ({cnt.error}) будут пропущены. Существующие данные не удаляются; импорт можно отменить в истории ниже.
-            </>
-          }
-          onClose={() => setConfirm(false)}
-          onConfirm={doImport}
-        />
+              }
+              onClose={() => setConfirm(false)}
+              onConfirm={doImport}
+            />
+          )}
+        </>
       )}
     </Page>
   );

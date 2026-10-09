@@ -1,5 +1,5 @@
 /** Примитивы дизайна: кнопка с ховером, статусы, модалка, тост, скелетон. */
-import type { CSSProperties, ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { MONO, css, hoverClass, mix } from "./css";
 import { I_ALERT, I_CHECK, I_CLOSE, Svg } from "./icons";
 
@@ -47,10 +47,11 @@ export function HDiv({
 }
 
 // ---- Статусы товара и оплаты (ненавязчивые тона из токенов темы) ----
-export type StatusKey = "ordered" | "in_stock" | "issued" | "paid" | "partial" | "unpaid";
+export type StatusKey = "ordered" | "in_transit" | "in_stock" | "issued" | "paid" | "partial" | "unpaid";
 
 export const ST: Record<StatusKey, { label: string; bg: string; fg: string; dot: string }> = {
   ordered: { label: "Заказан", bg: "var(--amber-tint)", fg: "var(--amber)", dot: "var(--amber-dot)" },
+  in_transit: { label: "В пути", bg: "var(--sky-tint)", fg: "var(--sky)", dot: "var(--sky-dot)" },
   in_stock: { label: "На складе", bg: "var(--accent-tint)", fg: "var(--accent-strong)", dot: "var(--accent)" },
   issued: { label: "Выдан", bg: "var(--green-tint)", fg: "var(--green)", dot: "var(--green-dot)" },
   paid: { label: "Оплачено", bg: "var(--green-tint)", fg: "var(--green)", dot: "var(--green-dot)" },
@@ -112,10 +113,44 @@ export function tabStyle(active: boolean): CSSProperties {
   );
 }
 
-// ---- Модальное окно (структура 1:1 из макета) ----
+// ---- Модальное окно ----
 
+export type ModalTone = "accent" | "danger" | "green" | "amber" | "violet" | "sky";
+const MODAL_TONE: Record<ModalTone, { bg: string; fg: string }> = {
+  accent: { bg: "var(--accent-tint)", fg: "var(--accent-strong)" },
+  danger: { bg: "var(--danger-tint)", fg: "var(--danger)" },
+  green: { bg: "var(--green-tint)", fg: "var(--green)" },
+  amber: { bg: "var(--amber-tint)", fg: "var(--amber)" },
+  violet: { bg: "var(--violet-tint)", fg: "var(--violet)" },
+  sky: { bg: "var(--sky-tint)", fg: "var(--sky)" },
+};
+
+/** Открытые окна по порядку — Esc закрывает только верхнее (подтверждение поверх карточки и т. п.). */
+const modalStack: number[] = [];
+let modalSeq = 0;
+
+/** Закрыть окно с анимацией — для кнопок «Отмена»/«Закрыть» внутри окна. */
+const ModalCloseCtx = createContext<() => void>(() => {});
+export const useModalClose = () => useContext(ModalCloseCtx);
+
+/** Кнопка «Закрыть»/«Отмена» в подвале окна: закрывает с той же анимацией, что крестик и Esc. */
+export function ModalCancel({ children = "Закрыть" }: { children?: ReactNode }) {
+  const close = useModalClose();
+  return (
+    <HButton onClick={close} s={btnGhost} hover="background:var(--hover)">
+      {children}
+    </HButton>
+  );
+}
+
+/**
+ * Окно поверх страницы: затемнение с лёгким размытием, окно выезжает снизу и уезжает вниз
+ * при закрытии. Закрывается крестиком, Esc и кликом мимо окна. Шапка и подвал на месте,
+ * длинное содержимое прокручивается внутри. На телефоне — шторкой снизу.
+ */
 export function ModalShell({
   title,
+  subtitle,
   icon,
   tone = "accent",
   onClose,
@@ -123,57 +158,65 @@ export function ModalShell({
   footer,
   width = 440,
 }: {
-  title: string;
+  title: ReactNode;
+  subtitle?: ReactNode;
   icon: ReactNode;
-  tone?: "accent" | "danger";
+  tone?: ModalTone;
   onClose: () => void;
   children: ReactNode;
-  footer: ReactNode;
+  footer?: ReactNode;
   width?: number;
 }) {
-  const badge =
-    tone === "danger"
-      ? "width:30px;height:30px;border-radius:8px;background:var(--danger-tint);color:var(--danger);display:flex;align-items:center;justify-content:center"
-      : "width:30px;height:30px;border-radius:8px;background:var(--accent-tint);color:var(--accent);display:flex;align-items:center;justify-content:center";
+  const [leaving, setLeaving] = useState(false);
+  const leavingRef = useRef(false);
+  const id = useRef(0);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  const close = useCallback(() => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    setLeaving(true);
+    setTimeout(() => closeRef.current(), 190);
+  }, []);
+
+  useEffect(() => {
+    id.current = ++modalSeq;
+    modalStack.push(id.current);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || modalStack[modalStack.length - 1] !== id.current) return;
+      e.preventDefault();
+      close();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      modalStack.splice(modalStack.indexOf(id.current), 1);
+    };
+  }, [close]);
+
+  const t = MODAL_TONE[tone];
   return (
-    <div
-      onClick={onClose}
-      style={css(
-        "position:fixed;inset:0;background:rgba(15,18,25,.36);z-index:70;display:flex;align-items:flex-start;justify-content:center;padding:28px 18px;overflow:auto;animation:fadeIn .15s ease"
-      )}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={mix(
-          "background:var(--surface);border-radius:12px;max-width:100%;box-shadow:0 16px 48px rgba(0,0,0,.2);animation:pop .2s ease;margin:auto 0",
-          { width: width + "px" }
-        )}
-      >
-        <div
-          style={css(
-            "display:flex;align-items:center;gap:9px;padding:16px 18px;border-bottom:1px solid var(--border-2)"
-          )}
-        >
-          <span style={css(badge)}>{icon}</span>
-          <h3 style={css("margin:0;font-size:15px;font-weight:600;flex:1")}>{title}</h3>
-          <HButton
-            onClick={onClose}
-            s="width:30px;height:30px;border:none;background:transparent;border-radius:6px;cursor:pointer;color:var(--text-3);display:flex;align-items:center;justify-content:center"
-            hover="background:var(--hover)"
-          >
-            <Svg paths={I_CLOSE} size={17} sw={1.8} />
-          </HButton>
-        </div>
-        {children}
-        <div
-          style={css(
-            "display:flex;gap:9px;justify-content:flex-end;padding:14px 18px;border-top:1px solid var(--border-2)"
-          )}
-        >
-          {footer}
+    <ModalCloseCtx.Provider value={close}>
+      <div className={"md-overlay" + (leaving ? " out" : "")} onMouseDown={(e) => e.target === e.currentTarget && close()}>
+        <div className={"md-dialog" + (leaving ? " out" : "")} role="dialog" aria-modal="true" style={{ width }}>
+          <div className="md-head">
+            <span className="md-icon" style={{ background: t.bg, color: t.fg }}>
+              {icon}
+            </span>
+            <div style={css("flex:1;min-width:0")}>
+              <h3 className="md-title">{title}</h3>
+              {subtitle && <div className="md-sub">{subtitle}</div>}
+            </div>
+            <button type="button" className="md-x" onClick={close} aria-label="Закрыть">
+              <Svg paths={I_CLOSE} size={17} sw={1.8} />
+            </button>
+          </div>
+          <div className="md-body">{children}</div>
+          {footer && <div className="md-foot">{footer}</div>}
         </div>
       </div>
-    </div>
+    </ModalCloseCtx.Provider>
   );
 }
 

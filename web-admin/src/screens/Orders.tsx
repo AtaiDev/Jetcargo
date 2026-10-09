@@ -11,7 +11,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
-import { listItems, type Item, type ItemList, type ItemQuery, type Totals } from "../api/domain";
+import { listItems, type Item,
+  type ItemStage, type ItemList, type ItemQuery, type Totals } from "../api/domain";
 import { Empty, Pager, Tabs } from "../components/cargo";
 import BulkBar, { useSelection } from "../components/BulkBar";
 import ItemModal from "../components/ItemModal";
@@ -21,11 +22,11 @@ import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_MINUS, Svg } from "../design/icons";
 import { Page, PrimaryAction, SearchInput } from "../design/table";
 import { HButton, ModalError, ST, SkeletonRows } from "../design/ui";
-import { monthStartIso, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
+import { date, monthStartIso, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
 import { useDebounced, useRefresh } from "../lib/events";
 
 type Toast = (kind: "success" | "error", text: string) => void;
-type StatusTab = "" | "ordered" | "in_stock" | "issued";
+type StatusTab = "" | "ordered" | "in_transit" | "in_stock" | "issued" | "no_code";
 type PayFilter = "" | "unpaid" | "partial" | "paid" | "debt";
 type DateFilter = "" | "today" | "7" | "month";
 type PathDef = [string, Record<string, unknown>][];
@@ -58,7 +59,7 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
   };
 
   const load = useCallback(() => {
-    const p: ItemQuery = { status, pay, q, limit: LIMIT, offset };
+    const p: ItemQuery = { status: status === "ordered" ? "not_shipped" : status, pay, q, limit: LIMIT, offset };
     if (dateF === "today") p.date_from = todayIso();
     if (dateF === "7") p.date_from = todayIso(-6);
     if (dateF === "month") p.date_from = monthStartIso();
@@ -98,14 +99,16 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
           onChange={(v) => setParam("status", v)}
           tabs={[
             { key: "", label: "Все", count: data?.counts.all },
-            { key: "ordered", label: "Заказаны", count: data?.counts.ordered, dot: ST.ordered.dot },
+            { key: "ordered", label: "Заказаны", count: data?.counts.not_shipped ?? data?.counts.ordered, dot: ST.ordered.dot },
+            { key: "in_transit", label: "В пути", count: data?.counts.in_transit, dot: ST.in_transit.dot },
             { key: "in_stock", label: "На складе", count: data?.counts.in_stock, dot: ST.in_stock.dot },
             { key: "issued", label: "Выданы", count: data?.counts.issued, dot: ST.issued.dot },
+            { key: "no_code", label: "Без кода", count: data?.counts.no_code, dot: "var(--danger-dot)" },
           ]}
         />
         <div className="ord-tools">
           <span className="ord-f-search">
-            <SearchInput value={query} onChange={setQuery} placeholder="Имя, телефон, код, товар…" width={250} />
+            <SearchInput value={query} onChange={setQuery} placeholder="Имя, телефон, код…" width={250} />
           </span>
           <span className="ord-f-sel" style={css("width:150px")}>
             <Select
@@ -155,15 +158,32 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
         </div>
       ) : data && orders.length === 0 ? (
         <div style={css(CARD)}>
-          <Empty
-            icon="orders"
-            title={filtered ? "Ничего не найдено" : "Заказов пока нет"}
-            text={filtered ? "Измените фильтры или поиск" : "Нажмите «Новый заказ» или загрузите Excel в разделе «Импорт»"}
-          />
+          {status === "no_code" && !q && !pay && !dateF ? (
+            <Empty icon="orders" title="У всех товаров есть код" text="Невыданных товаров без кода нет — сканер на приёме найдёт каждый." />
+          ) : (
+            <Empty
+              icon="orders"
+              title={filtered ? "Ничего не найдено" : "Заказов пока нет"}
+              text={filtered ? "Измените фильтры или поиск" : "Нажмите «Новый заказ» или загрузите Excel в разделе «Импорт»"}
+            />
+          )}
         </div>
       ) : (
         data && (
           <>
+            {status === "no_code" && orders.length > 0 && (
+              <div className="ord-nocode">
+                <span className="ord-nocode-i">!</span>
+                <span style={css("min-width:0")}>
+                  <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text)")}>
+                    {data.total} {data.total % 10 === 1 && data.total % 100 !== 11 ? "товар" : [2, 3, 4].includes(data.total % 10) && ![12, 13, 14].includes(data.total % 100) ? "товара" : "товаров"} без кода
+                  </span>
+                  <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>
+                    Их не найти сканером на приёме. Откройте товар — курсор сразу встанет в поле кода, можно сканировать.
+                  </span>
+                </span>
+              </div>
+            )}
             {orders.length > 0 && (
               <div style={css("display:flex;align-items:center;gap:10px;margin:0 2px 8px;font-size:12px;color:var(--text-4)")}>
                 <Check
@@ -319,7 +339,8 @@ function orderDay(d: string): string {
   return `${x.getDate()} ${MONTHS[x.getMonth()]}${year}, ${WEEKDAYS[x.getDay()]}`;
 }
 
-const STATUS_TEXT: Record<Item["status"], string> = { ordered: "Заказан", in_stock: "На складе", issued: "Выдан" };
+const STATUS_TEXT: Record<ItemStage, string> = { ordered: "Заказан", in_transit: "В пути", in_stock: "На складе", issued: "Выдан" };
+const stageOf = (i: Item): ItemStage => i.stage ?? i.status;
 
 function OrderCard({
   items,
@@ -342,7 +363,7 @@ function OrderCard({
   const profit = withCost.reduce((s, i) => s + i.sale - (i.cost ?? 0), 0);
   const share = sale > 0 ? Math.round((paid / sale) * 100) : 100;
   const tone = debt <= 0 ? "var(--green-dot)" : paid > 0 ? "var(--amber-dot)" : "var(--danger-dot)";
-  const counts = (["ordered", "in_stock", "issued"] as const).map((s) => [s, items.filter((i) => i.status === s).length] as const).filter(([, n]) => n > 0);
+  const counts = (["ordered", "in_transit", "in_stock", "issued"] as const).map((s) => [s, items.filter((i) => stageOf(i) === s).length] as const).filter(([, n]) => n > 0);
   const allOn = items.every((i) => selected.has(i.id));
   const someOn = items.some((i) => selected.has(i.id));
 
@@ -456,10 +477,14 @@ function ItemRow({ it, on, onToggle, onOpen }: { it: Item; on: boolean; onToggle
       </span>
       <span className="ord-hide" style={css("min-width:0")}>
         <span style={css("display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);white-space:nowrap")}>
-          <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: ST[it.status].dot })} />
-          {STATUS_TEXT[it.status]}
+          <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: ST[stageOf(it)].dot })} />
+          {STATUS_TEXT[stageOf(it)]}
         </span>
-        {arrivedToday ? (
+        {stageOf(it) === "in_transit" && it.transit_shipped_at ? (
+          <span style={css(NUM + ";display:block;font-size:11px;color:var(--sky);margin:2px 0 0 13px;white-space:nowrap")} title={it.transit_waybill ? `Накладная ${it.transit_waybill}` : undefined}>
+            отправлен {date(it.transit_shipped_at).slice(0, 5)}
+          </span>
+        ) : arrivedToday ? (
           <span style={css(NUM + ";display:block;font-size:11px;color:var(--accent-strong);margin:2px 0 0 13px;white-space:nowrap")}>принят сегодня {shortDateTime(it.arrived_at).slice(6)}</span>
         ) : it.status === "issued" && it.issued_at ? (
           <span style={css(NUM + ";display:block;font-size:11px;color:var(--text-4);margin:2px 0 0 13px;white-space:nowrap")}>{shortDateTime(it.issued_at)}</span>
