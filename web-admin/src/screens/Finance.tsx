@@ -649,7 +649,7 @@ function Payments({ data, onOpen, isDesktop }: { data: FinanceData; onOpen: (id:
               {g.rows.map((p) => {
                 const at = new Date(p.paid_at);
                 return (
-                  <div key={p.id} onClick={() => onOpen(p.item_id)} className="fn-pay">
+                  <div key={p.id} onClick={() => p.item_id && onOpen(p.item_id)} className="fn-pay" style={p.item_id ? undefined : { cursor: "default" }}>
                     <span style={css(NUM + ";font-size:12.5px;color:var(--text-3)")}>
                       {p2(at.getHours())}:{p2(at.getMinutes())}
                     </span>

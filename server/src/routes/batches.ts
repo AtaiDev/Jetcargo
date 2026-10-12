@@ -38,6 +38,9 @@ interface BatchRow {
 const COLS = "id, name, status, weight_buy_kg, rate_buy_usd, delivery_usd, weight_client_kg, rate_client_usd, usd_rate, buy_amount, buy_cur, delivery_cur, client_amount, client_cur, comment, created_at";
 
 /** Расчёт партии по её параметрам и товарам. Все итоги — в сомах. */
+/** До копеек: $ × курс бывает дробным. */
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
 export function calc(b: BatchRow, list: ItemView[]) {
   const toSom = (amount: number, cur: Cur) => (cur === "usd" ? amount * b.usd_rate : amount);
   const buySom = toSom(b.buy_amount, b.buy_cur);
@@ -52,13 +55,13 @@ export function calc(b: BatchRow, list: ItemView[]) {
     sale: list.reduce((s, i) => s + i.sale, 0),
     goods_cost: withCost.reduce((s, i) => s + (i.cost ?? 0), 0),
     with_cost: withCost.length,
-    buy_som: Math.round(buySom),
-    delivery_som: Math.round(deliverySom),
-    client_som: Math.round(clientSom),
-    markup_som: Math.round(markup),
-    expenses_som: Math.round(buySom + deliverySom),
-    income_som: Math.round(clientSom + markup),
-    profit_som: Math.round(clientSom + markup - buySom - deliverySom),
+    buy_som: r2(buySom),
+    delivery_som: r2(deliverySom),
+    client_som: r2(clientSom),
+    markup_som: r2(markup),
+    expenses_som: r2(buySom + deliverySom),
+    income_som: r2(clientSom + markup),
+    profit_som: r2(clientSom + markup - buySom - deliverySom),
     in_stock: list.filter((i) => i.status === "in_stock").length,
     issued: list.filter((i) => i.status === "issued").length,
   };
@@ -152,9 +155,6 @@ batchesRouter.patch("/batches/:id", (req, res) => {
     p.push(b.status);
   }
   if (sets.length) run(`UPDATE batches SET ${sets.join(", ")} WHERE id = ?`, ...p, id);
-  if (b.usd_rate !== undefined) {
-    run("INSERT INTO app_settings (key, value) VALUES ('usd_rate', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", String(b.usd_rate));
-  }
   audit(req, "update", "batch", id, old.name, Object.keys(b).join(", "));
   const nb = batchOr404(id);
   res.json({ batch: nb, calc: calc(nb, batchItems(id)) });

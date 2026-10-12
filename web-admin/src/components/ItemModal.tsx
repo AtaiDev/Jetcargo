@@ -17,6 +17,7 @@ import {
   deleteItem,
   getItem,
   lookupCode,
+  setItemPaid,
   setItemStatus,
   updateItem,
   type Item,
@@ -220,15 +221,7 @@ export default function ItemModal({ id, onClose, toast }: { id: number; onClose:
               color={profit === null ? "var(--text-4)" : profit < 0 ? "var(--danger)" : "var(--green)"}
               hint={profit === null ? "укажите выкуп" : undefined}
             />
-            <div className="itm-pay">
-              <span className="itm-paybar">
-                <span style={{ width: `${paidPct}%`, background: it.pay_status === "paid" ? "var(--green-dot)" : "var(--amber-dot)" }} />
-              </span>
-              <span style={mix("display:inline-flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap", { color: ST[it.pay_status].fg })}>
-                <span style={mix("width:7px;height:7px;border-radius:50%", { background: ST[it.pay_status].dot })} />
-                {ST[it.pay_status].label} · {paidPct}%
-              </span>
-            </div>
+            <PayStatus it={it} pct={paidPct} isAdmin={isAdmin} toast={toast} onChanged={changed} />
           </div>
 
           <ModalError text={error} />
@@ -278,6 +271,167 @@ export default function ItemModal({ id, onClose, toast }: { id: number; onClose:
         />
       )}
     </ModalShell>
+  );
+}
+
+// --- Оплата: быстрый переключатель ----------------------------------------------------------------
+
+type PayKey = "unpaid" | "partial" | "paid";
+const PAY_KEYS: { key: PayKey; label: string }[] = [
+  { key: "unpaid", label: "Не оплачено" },
+  { key: "partial", label: "Частично" },
+  { key: "paid", label: "Оплачено" },
+];
+
+/**
+ * Статус оплаты одним кликом: «Оплачено» — принять остаток, «Частично» — указать, сколько всего оплачено,
+ * «Не оплачено» — отменить оплаты (администратор). Сервер пересчитывает сам (set-paid), отменённые оплаты
+ * остаются в истории. Полоска показывает, какая часть суммы уже оплачена.
+ */
+function PayStatus({ it, pct, isAdmin, toast, onChanged }: { it: ItemDetail["item"]; pct: number; isAdmin: boolean; toast: Toast; onChanged: () => void }) {
+  const [mode, setMode] = useState<PayKey | null>(null);
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState("cash");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const cur: PayKey = it.pay_status;
+  const nothing = it.sale <= 0;
+
+  function open(k: PayKey) {
+    setError("");
+    if (k === cur && k !== "partial") {
+      setMode(null);
+      return;
+    }
+    setMode(k);
+    setAmount(k === "partial" ? (it.paid > 0 && it.paid < it.sale ? String(it.paid) : "") : "");
+  }
+
+  const target = mode === "paid" ? it.sale : mode === "unpaid" ? 0 : parseMoney(amount);
+  const bad = target === null || Number.isNaN(target) || target < 0 || target > it.sale + 0.001;
+  const diff = !bad && target !== null ? Math.round((target - it.paid) * 100) / 100 : 0;
+  const needsAdmin = diff < -0.004 && !isAdmin;
+
+  async function apply() {
+    if (bad || target === null || busy) return;
+    if (Math.abs(diff) < 0.005) {
+      setMode(null);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await setItemPaid(it.id, target, method);
+      toast("success", target >= it.sale ? "Отмечено оплаченным" : target <= 0 ? "Оплаты отменены" : `Оплачено ${som(target)} из ${som(it.sale)}`);
+      setMode(null);
+      onChanged();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="itm-pay">
+      <div className="itm-pay-top">
+        <div className="itm-payseg" role="radiogroup" aria-label="Оплата">
+          {PAY_KEYS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              role="radio"
+              aria-checked={cur === p.key}
+              disabled={nothing}
+              className={(cur === p.key ? "on " : "") + (mode === p.key ? "pick " : "") + p.key}
+              onClick={() => open(p.key)}
+            >
+              <span className="itm-payseg-dot" />
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <span className="itm-paybar">
+          <span style={{ width: `${pct}%`, background: cur === "paid" ? "var(--green-dot)" : "var(--amber-dot)" }} />
+        </span>
+        <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);white-space:nowrap")}>{pct}%</span>
+      </div>
+
+      {mode && (
+        <div className={"itm-payedit " + mode}>
+          {mode === "paid" && (
+            <span className="itm-payedit-text">
+              Принять остаток <b>{som(it.debt)}</b> — товар станет оплаченным полностью
+            </span>
+          )}
+          {mode === "unpaid" && (
+            <span className="itm-payedit-text">
+              {it.paid > 0 ? (
+                <>
+                  Отменить все оплаты по товару — <b>{som(it.paid)}</b>. Они останутся в истории с пометкой «отменена».
+                </>
+              ) : (
+                "Оплат по товару нет."
+              )}
+            </span>
+          )}
+          {mode === "partial" && (
+            <label className="itm-payedit-in">
+              <span style={css("font-size:12.5px;color:var(--text-3);white-space:nowrap")}>Оплачено всего</span>
+              <input
+                value={amount}
+                onChange={(e) => setAmount(e.target.value.replace(/[^\d.,\s]/g, ""))}
+                onKeyDown={(e) => e.key === "Enter" && apply()}
+                inputMode="decimal"
+                placeholder={`из ${som(it.sale)}`}
+                autoFocus
+                aria-label="Сколько всего оплачено"
+              />
+              <span style={css("font-size:13px;color:var(--text-4)")}>с</span>
+            </label>
+          )}
+
+          {diff > 0.004 && (
+            <span className="itm-payedit-methods">
+              {METHOD_OPTIONS.map((m) => (
+                <button key={m.value} type="button" className={method === m.value ? "on" : ""} onClick={() => setMethod(m.value)}>
+                  {m.label}
+                </button>
+              ))}
+            </span>
+          )}
+
+          <span className="itm-payedit-foot">
+            <span style={mix(NUM + ";font-size:12.5px;flex:1;min-width:0", { color: bad && amount ? "var(--danger)" : "var(--text-3)" })}>
+              {bad
+                ? amount
+                  ? `от 0 до ${som(it.sale)}`
+                  : "введите сумму"
+                : needsAdmin
+                  ? "Уменьшить оплату может только администратор"
+                  : diff > 0
+                    ? `примем ${som(diff)} · долг станет ${som(Math.max(0, it.sale - (target ?? 0)))}`
+                    : diff < 0
+                      ? `отменим ${som(-diff)} · долг станет ${som(it.sale - (target ?? 0))}`
+                      : "без изменений"}
+            </span>
+            <HButton onClick={() => setMode(null)} className="au-reset" s="color:var(--text-3)" hover="">
+              отмена
+            </HButton>
+            <HButton
+              onClick={apply}
+              disabled={bad || busy || needsAdmin || Math.abs(diff) < 0.005}
+              className={"itm-payedit-go " + (diff < 0 ? "minus" : "")}
+              s=""
+              hover=""
+            >
+              {busy ? "Сохраняю…" : diff < 0 ? "Отменить оплату" : mode === "paid" ? `Принять ${som(it.debt)}` : "Сохранить"}
+            </HButton>
+          </span>
+          {error && <ModalError text={error} />}
+        </div>
+      )}
+    </div>
   );
 }
 

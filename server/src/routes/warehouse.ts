@@ -8,7 +8,7 @@
 import { Router } from "express";
 
 import { all, get, run, tx, type Param } from "../db";
-import { audit, itemOr404, items, normCode, setStatus, totals, type ItemView } from "../domain";
+import { audit, itemOr404, items, normCode, pendingNotices, setStatus, totals, type ItemView } from "../domain";
 import { badRequest, conflict, normText, nowIso, num, optInt, phoneDigits, str } from "../util";
 import { customerOr404, customerSearch } from "./customers";
 
@@ -62,8 +62,14 @@ function scansOf(itemId: number) {
 
 function customerBrief(customerId: number) {
   const c = customerOr404(customerId);
-  const t = totals(items("customer_id = ?", [customerId]));
-  return { id: c.id, name: c.name, phone: c.phone, code: c.code, debt: t.debt, in_stock: t.in_stock, ordered: t.ordered };
+  const list = items("customer_id = ?", [customerId]);
+  const t = totals(list);
+  const stock = totals(list.filter((i) => i.status === "in_stock"));
+  return {
+    id: c.id, name: c.name, phone: c.phone, code: c.code, debt: t.debt, in_stock: t.in_stock, ordered: t.ordered,
+    // Для выдачи: сколько стоит и сколько не оплачено именно из того, что лежит на складе.
+    stock_sale: stock.sale, stock_debt: stock.debt,
+  };
 }
 
 /** Только поиск по коду: ничего не меняет и не пишет в историю сканов. */
@@ -203,6 +209,14 @@ warehouseRouter.post("/issues", (req, res) => {
   const ids: number[] = Array.isArray(b.item_ids) ? b.item_ids.map(Number) : [];
   if (!ids.length) throw badRequest("Выберите товары для выдачи");
   let payment = num(b.payment_amount ?? 0, "Оплата при выдаче");
+  // Вес — из уведомлений клиенту (страница «Уведомления»), которые ещё не взяли: берётся сразу,
+  // целиком. Экран присылает сумму, которую видел кассир, — если она другая, уведомления поменялись.
+  const pend = pendingNotices(customerId);
+  const kg = pend.kg;
+  const weightSom = pend.som;
+  if (b.weight_som !== undefined && Math.abs(Number(b.weight_som) - weightSom) > 0.005) {
+    throw conflict("Сумма за вес по уведомлениям изменилась — обновите страницу и проверьте");
+  }
 
   const issueId = tx(() => {
     const list = ids.map((id) => itemOr404(id));
@@ -215,9 +229,12 @@ warehouseRouter.post("/issues", (req, res) => {
 
     const at = nowIso();
     const issueId = run(
-      "INSERT INTO issues (customer_id, issued_at, comment, user_id) VALUES (?, ?, ?, ?)",
-      customerId, at, str(b.comment, 500), req.user!.id
+      `INSERT INTO issues (customer_id, issued_at, comment, user_id, weight_kg, weight_rate_usd, weight_usd_rate, weight_som, weight_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      customerId, at, str(b.comment, 500), req.user!.id,
+      kg || null, weightSom ? pend.rate : null, weightSom ? pend.usd : null, weightSom, str(b.method, 20) || "cash"
     );
+    if (pend.ids.length) run(`UPDATE notifications SET issue_id = ? WHERE id IN (${pend.ids.map(() => "?").join(",")})`, issueId, ...pend.ids);
     for (const it of list) {
       if (payment > 0 && it.debt > 0) {
         const part = Math.min(it.debt, payment);
@@ -231,7 +248,7 @@ warehouseRouter.post("/issues", (req, res) => {
     }
     return issueId;
   });
-  audit(req, "issue", "customer", customerId, null, { issue_id: issueId, items: ids });
+  audit(req, "issue", "customer", customerId, null, { issue_id: issueId, items: ids, ...(kg ? { weight_kg: kg, weight_som: weightSom } : {}) });
   res.json({ issue_id: issueId, items: items(`issue_id = ?`, [issueId]) });
 });
 
@@ -278,6 +295,11 @@ warehouseRouter.get("/issues", (req, res) => {
       WHERE ${where}`,
     ...p
   )!.paid;
+  const weight = get<{ kg: number; som: number }>(
+    `SELECT COALESCE(SUM(s.weight_kg), 0) AS kg, COALESCE(SUM(s.weight_som), 0) AS som
+       FROM issues s JOIN customers c ON c.id = s.customer_id WHERE ${where}`,
+    ...p
+  )!;
   // По дням — для графика и итогов дня. Дни считаем в часовом поясе клиента (tz — минуты к UTC).
   const tz = Math.max(-840, Math.min(840, optInt(req.query.tz) ?? 0));
   const byDay = all<{ day: string; issues: number; items: number; sale: number }>(
@@ -286,8 +308,9 @@ warehouseRouter.get("/issues", (req, res) => {
       WHERE ${where} GROUP BY day ORDER BY day`,
     `${tz >= 0 ? "+" : ""}${tz} minutes`, ...p
   );
-  const rows = all<{ id: number; customer_id: number; issued_at: string; comment: string; customer_name: string; customer_phone: string; user_login: string | null; paid_now: number }>(
+  const rows = all<{ id: number; customer_id: number; issued_at: string; comment: string; customer_name: string; customer_phone: string; user_login: string | null; paid_now: number; weight_kg: number | null; weight_som: number }>(
     `SELECT s.id, s.customer_id, s.issued_at, s.comment, c.name AS customer_name, c.phone AS customer_phone, u.login AS user_login,
+            s.weight_kg, s.weight_som,
             (SELECT COALESCE(SUM(p.amount), 0) FROM order_items i JOIN payments p ON p.order_item_id = i.id AND ${PAID_NOW}
               WHERE i.issue_id = s.id AND i.deleted_at IS NULL) AS paid_now
        FROM issues s JOIN customers c ON c.id = s.customer_id LEFT JOIN users u ON u.id = s.user_id
@@ -297,7 +320,7 @@ warehouseRouter.get("/issues", (req, res) => {
   res.json({
     rows: rows.map((r) => ({ ...r, items: items("issue_id = ?", [r.id], "ORDER BY id") })),
     total,
-    summary: { ...summary, paid_now: paidNow },
+    summary: { ...summary, paid_now: paidNow, weight_kg: Math.round(weight.kg * 100) / 100, weight_som: Math.round(weight.som * 100) / 100 },
     by_day: byDay,
   });
 });

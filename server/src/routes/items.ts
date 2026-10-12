@@ -6,6 +6,7 @@ import { Router, type Request } from "express";
 
 import { all, get, run, tx, type Param } from "../db";
 import {
+  pendingNotices,
   audit,
   findOrCreateCustomer,
   findOrCreateOrder,
@@ -266,7 +267,10 @@ itemsRouter.post("/items-bulk/status", (req, res) => {
     return false;
   });
   const debt = eligible.reduce((s, i) => s + i.debt, 0);
-  const summary = { changed: eligible.length, skipped, debt, customers: new Set(eligible.map((i) => i.customer_id)).size };
+  const custIds = [...new Set(eligible.map((i) => i.customer_id))];
+  // При выдаче берётся и вес по уведомлениям этих клиентов.
+  const weight = to === "issued" ? Math.round(custIds.reduce((s, c) => s + pendingNotices(c).som, 0) * 100) / 100 : 0;
+  const summary = { changed: eligible.length, skipped, debt, customers: custIds.length, weight_som: weight };
   if (dryRun || !eligible.length) {
     res.json({ ...summary, dry_run: true });
     return;
@@ -280,10 +284,13 @@ itemsRouter.post("/items-bulk/status", (req, res) => {
       const byCustomer = new Map<number, typeof eligible>();
       for (const it of eligible) byCustomer.set(it.customer_id, [...(byCustomer.get(it.customer_id) ?? []), it]);
       for (const [customerId, group] of byCustomer) {
+        const pend = pendingNotices(customerId);
         const issueId = run(
-          "INSERT INTO issues (customer_id, issued_at, comment, user_id) VALUES (?, ?, ?, ?)",
-          customerId, at, comment || "массовая выдача", userId
+          `INSERT INTO issues (customer_id, issued_at, comment, user_id, weight_kg, weight_rate_usd, weight_usd_rate, weight_som)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          customerId, at, comment || "массовая выдача", userId, pend.kg || null, pend.som ? pend.rate : null, pend.som ? pend.usd : null, pend.som
         );
+        if (pend.ids.length) run(`UPDATE notifications SET issue_id = ? WHERE id IN (${pend.ids.map(() => "?").join(",")})`, issueId, ...pend.ids);
         issueIds.push(issueId);
         for (const it of group) setStatus(it.id, "issued", "issue", userId, { issueId, at });
       }
@@ -353,6 +360,58 @@ itemsRouter.post("/items/:id/payments", (req, res) => {
   );
   audit(req, "payment", "item", id, null, amount);
   res.json({ id: pid, item: itemOr404(id) });
+});
+
+/**
+ * Сколько всего оплачено за товар — одной операцией («Не оплачено / Частично / Оплачено» в карточке).
+ *  - больше, чем сейчас: записывается оплата на разницу (сегодня, выбранным способом);
+ *  - меньше (только администратор): отменяются последние оплаты, а если отменили лишнее —
+ *    остаток записывается заново с той же датой и способом, чтобы «Поступило» за прошлые дни
+ *    уменьшилось ровно на разницу, а не на всю отменённую оплату.
+ * Отменённые оплаты остаются в истории с пометкой.
+ */
+itemsRouter.post("/items/:id/set-paid", (req, res) => {
+  const id = Number(req.params.id);
+  const item = itemOr404(id);
+  const target = Math.round((money(req.body?.paid, "Оплачено") ?? 0) * 100) / 100;
+  const method = str(req.body?.method, 20) || "cash";
+  if (target < 0) throw badRequest("Сумма не может быть меньше нуля");
+  if (target > item.sale + 0.001) throw conflict(`Оплачено не может быть больше суммы товара (${item.sale} с)`);
+  const diff = Math.round((target - item.paid) * 100) / 100;
+  if (Math.abs(diff) < 0.005) {
+    res.json(item);
+    return;
+  }
+  if (diff < 0) requireAdmin(req);
+  const at = nowIso();
+  tx(() => {
+    if (diff > 0) {
+      run(
+        "INSERT INTO payments (order_item_id, amount, method, paid_at, comment, user_id) VALUES (?, ?, ?, ?, 'изменение оплаты', ?)",
+        id, diff, method, at, req.user!.id
+      );
+      return;
+    }
+    let excess = -diff;
+    const active = all<{ id: number; amount: number; method: string; paid_at: string; import_id: number | null }>(
+      "SELECT id, amount, method, paid_at, import_id FROM payments WHERE order_item_id = ? AND deleted_at IS NULL ORDER BY paid_at DESC, id DESC",
+      id
+    );
+    for (const p of active) {
+      if (excess <= 0.004) break;
+      run("UPDATE payments SET deleted_at = ? WHERE id = ?", at, p.id);
+      const keep = Math.round((p.amount - excess) * 100) / 100;
+      if (keep > 0.004) {
+        run(
+          "INSERT INTO payments (order_item_id, amount, method, paid_at, comment, import_id, user_id) VALUES (?, ?, ?, ?, 'исправление оплаты', ?, ?)",
+          id, keep, p.method, p.paid_at, p.import_id, req.user!.id
+        );
+      }
+      excess = Math.round((excess - p.amount) * 100) / 100;
+    }
+  });
+  audit(req, "payment_set", "item", id, item.paid, target);
+  res.json(itemOr404(id));
 });
 
 /** Отмена ошибочной оплаты: запись остаётся в истории с пометкой. */

@@ -29,7 +29,7 @@ import { Page } from "../design/table";
 import { HButton, ModalError, ST } from "../design/ui";
 import { date, shortDateTime, som, todayIso } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
-import { scanSound, type ScanSound } from "../lib/sound";
+import { scanSound, setSoundPrefs, soundLabel, useSoundPrefs, type ScanEvent } from "../lib/sound";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 type PathDef = [string, Record<string, unknown>][];
@@ -64,13 +64,13 @@ const TONE: Record<ScanResult | "lookup", { bg: string; fg: string; dot: string;
   lookup: { bg: "var(--violet-tint)", fg: "var(--violet)", dot: "var(--violet-dot)", title: "Найден", hint: "только просмотр — ничего не изменено", icon: I_SEARCH },
 };
 
-/** Какой звук на какой результат: принят — колокольчик, повтор — нейтральный, не найден — внимание. */
-const SOUND_OF: Record<ScanResult | "lookup", ScanSound> = {
+/** Какое событие звучит на результат скана — сами звуки выбираются в «Настройках». */
+const SOUND_OF: Record<ScanResult | "lookup", ScanEvent> = {
   lookup: "repeat",
-  arrived: "ok",
+  arrived: "arrived",
   already_in_stock: "repeat",
-  already_issued: "repeat",
-  not_found: "error",
+  already_issued: "issued",
+  not_found: "not_found",
 };
 
 /** Режим работы сканера: приём в партию, приём без партии или только поиск. */
@@ -124,7 +124,8 @@ export default function Receive({ toast }: { toast: Toast }) {
   const [today, setToday] = useState<ScanRow[]>([]);
   const [waiting, setWaiting] = useState<number | null>(null);
   const [open, setOpen] = useState<number | null>(null);
-  const [sound, setSound] = useState(true);
+  // Звук вкл/выкл — общий с «Настройками» и запоминается в этом браузере.
+  const sound = useSoundPrefs().on;
   const [flashId, setFlashId] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // Партия, в которую идёт приём. По умолчанию — «Партия от <сегодня>»: если её ещё нет,
@@ -226,13 +227,13 @@ export default function Receive({ toast }: { toast: Toast }) {
       setLast(res);
       setLastAt(new Date().toISOString());
       setFlashId(res.items[0]?.id ?? null);
-      if (sound) scanSound(SOUND_OF[res.result]);
+      scanSound(SOUND_OF[res.result]);
       if (res.result === "arrived") emit("cargo:changed");
       else if (mode !== "search") loadToday();
       setCode("");
     } catch (e) {
       setError(apiError(e, "Не удалось обработать код"));
-      if (sound) scanSound("error");
+      scanSound("not_found");
     } finally {
       setBusy(false);
       refocus();
@@ -276,11 +277,11 @@ export default function Receive({ toast }: { toast: Toast }) {
               </div>
               <HButton
                 onClick={() => {
-                  setSound(!sound);
-                  if (!sound) scanSound("ok"); // образец звука
+                  setSoundPrefs({ on: !sound });
+                  if (!sound) scanSound("arrived"); // образец звука
                   refocus();
                 }}
-                title={sound ? "Звук включён — выключить" : "Звук выключен — включить"}
+                title={sound ? "Звук включён — выключить (какие звуки — в Настройках)" : "Звук выключен — включить"}
                 aria-label={sound ? "Выключить звук" : "Включить звук"}
                 s={mix("width:34px;height:34px;flex:none;display:grid;place-items:center;padding:0;border-radius:10px;cursor:pointer;border:1px solid var(--border)", {
                   background: sound ? "var(--surface)" : "var(--surface-2)",
@@ -574,6 +575,7 @@ function LastScan({
   onUseCode: (code: string) => void;
 }) {
   const nav = useNavigate();
+  const snd = useSoundPrefs();
   if (!last) {
     return (
       <section style={css(CARD + ";padding:22px 24px;display:flex;align-items:center;gap:18px;flex:none")}>
@@ -586,9 +588,18 @@ function LastScan({
             Здесь сразу появится товар, чей он, оплачен ли и какой долг. Товар «Заказан» станет «На складе».
           </div>
           <div style={css("display:flex;flex-wrap:wrap;gap:6px;margin-top:10px")}>
-            <Tip dot="var(--green-dot)" text="принят — колокольчик" />
-            <Tip dot="var(--amber-dot)" text="повтор — короткий сигнал" />
-            <Tip dot="var(--danger-dot)" text="не найден — тревожный" />
+            {snd.on ? (
+              <>
+                <Tip dot="var(--green-dot)" text={`принят — ${soundLabel("arrived", snd.map.arrived).toLowerCase()}`} />
+                <Tip dot="var(--amber-dot)" text={`повтор — ${soundLabel("repeat", snd.map.repeat).toLowerCase()}`} />
+                <Tip dot="var(--danger-dot)" text={`не найден — ${soundLabel("not_found", snd.map.not_found).toLowerCase()}`} />
+              </>
+            ) : (
+              <Tip dot="var(--text-5)" text="звук выключен" />
+            )}
+            <HButton onClick={() => nav("/settings")} className="au-reset" s="font-size:12px;margin-left:4px" hover="">
+              настроить звуки →
+            </HButton>
           </div>
         </div>
       </section>

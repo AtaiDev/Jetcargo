@@ -944,6 +944,23 @@ function describe(a: AuditEntry, nav: (to: string) => void): Described {
     }
     case "import_waybill_undo":
       return { verb: "скрыл накладную", obj: <Obj>{String(oldV ?? "")}</Obj> };
+
+    // Уведомления клиентам (WhatsApp).
+    case "notify": {
+      const w = Number(obj.weight_som ?? 0);
+      return {
+        verb: "уведомил клиента",
+        obj: customer(a.customer_name, a.entity_id),
+        details: (
+          <>
+            {w > 0 && <Chip>вес {String(obj.weight_kg ?? "").replace(".", ",")} кг · {som(w)}</Chip>}
+            <Chip>к оплате {som(Number(obj.total ?? 0))}</Chip>
+          </>
+        ),
+      };
+    }
+    case "notify_cancel":
+      return { verb: "отменил уведомление клиенту", obj: customer(a.customer_name, a.entity_id) };
   }
   return { verb: a.action, obj: <Obj>{a.entity}</Obj> };
 }

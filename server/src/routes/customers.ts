@@ -2,7 +2,7 @@
 import { Router } from "express";
 
 import { all, get, run, tx, type Param } from "../db";
-import { audit, canonPhone, formatPhone, items, openDebtSql, requireAdmin, totals } from "../domain";
+import { audit, canonPhone, formatPhone, items, openDebtSql, pendingNotices, requireAdmin, totals } from "../domain";
 import { badRequest, conflict, normText, notFound, nowIso, num, optInt, phoneDigits, str } from "../util";
 
 export const customersRouter = Router();
@@ -88,6 +88,8 @@ customersRouter.get("/customers", (req, res) => {
            COALESCE(SUM(CASE WHEN v.status = 'issued' THEN 0 ELSE v.debt END), 0) AS debt,
            COALESCE(SUM(v.status = 'ordered'), 0) AS ordered,
            COALESCE(SUM(v.status = 'in_stock'), 0) AS in_stock,
+           COALESCE(SUM(CASE WHEN v.status = 'in_stock' THEN v.sale ELSE 0 END), 0) AS stock_sale,
+           COALESCE(SUM(CASE WHEN v.status = 'in_stock' THEN v.debt ELSE 0 END), 0) AS stock_debt,
            COALESCE(SUM(v.status = 'issued'), 0) AS issued,
            MAX(v.order_date) AS last_order_date
       FROM customers c LEFT JOIN v_items v ON v.customer_id = c.id
@@ -102,7 +104,7 @@ customersRouter.get("/customers", (req, res) => {
 customersRouter.get("/customers/:id", (req, res) => {
   const customer = customerOr404(Number(req.params.id));
   const list = items("customer_id = ?", [customer.id]);
-  res.json({ customer, totals: totals(list), items: list });
+  res.json({ customer, totals: totals(list), items: list, pending_weight: pendingNotices(customer.id) });
 });
 
 function uniqueCheck(phone: string, code: string, exceptId = 0) {

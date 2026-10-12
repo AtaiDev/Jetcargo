@@ -9,8 +9,9 @@
  *    поэтому рядом всегда отдаём with_cost (сколько товаров учтено);
  *  - партия: вес клиентам − выкуп веса − доставка относятся к дню, когда пришёл её последний товар
  *    (идущая партия — к сегодняшним приходам; партия без товаров — к дню создания);
- *    общая прибыль = наценка на товары + (вес клиентам − выкуп веса − доставка).
- *    Наценку партии отдельно не прибавляем — это та же наценка её товаров.
+ *    общая прибыль = наценка на товары + вес при выдаче + (вес клиентам − выкуп веса − доставка).
+ *    Наценку партии отдельно не прибавляем — это та же наценка её товаров;
+ *  - вес при выдаче: кг × $ за кг × курс, оплачивается сразу — доход и поступление в день выдачи.
  */
 import { Router } from "express";
 
@@ -22,6 +23,8 @@ import { batchesWithCalc } from "./batches";
 export const dashboardRouter = Router();
 
 const ddmm = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
+/** До копеек: суммы с весом и курсом бывают дробными (246,40 с). */
+const r2 = (n: number) => Math.round(n * 100) / 100;
 const MONTHS = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 const monthLabel = (m: string) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(2, 4)}`;
 
@@ -73,35 +76,55 @@ function batchMoney(bs: BatchCalc[], from: string, to: string) {
     const d = batchDay(b);
     return d >= from && d <= to;
   });
-  const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => inPeriod.reduce((a, b) => a + b.calc[k], 0);
+  const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => r2(inPeriod.reduce((a, b) => a + b.calc[k], 0));
   return { count: inPeriod.length, client: sumOf("client_som"), buy: sumOf("buy_som"), delivery: sumOf("delivery_som") };
 }
 
-/** Общая прибыль за период: наценка на товары (по дате заказа) + вес − выкуп веса − доставка (по партиям периода). */
-function profitFor(list: ItemView[], bs: BatchCalc[], from: string, to: string) {
+/** Вес, взятый при выдаче (кг и сомы), по дням выдачи; у удалённых клиентов не считаем. */
+function issueWeights() {
+  return all<{ issued_at: string; kg: number; som: number; method: string }>(
+    `SELECT s.issued_at, COALESCE(s.weight_kg, 0) AS kg, s.weight_som AS som, s.weight_method AS method
+       FROM issues s JOIN customers c ON c.id = s.customer_id
+      WHERE c.deleted_at IS NULL AND s.weight_som > 0`
+  );
+}
+type IssueWeight = ReturnType<typeof issueWeights>[number];
+const weightIn = (ws: IssueWeight[], from: string, to: string) => {
+  const list = ws.filter((w) => localDay(w.issued_at) >= from && localDay(w.issued_at) <= to);
+  return { som: r2(list.reduce((a, w) => a + w.som, 0)), kg: Math.round(list.reduce((a, w) => a + w.kg, 0) * 100) / 100, count: list.length };
+};
+
+/** Общая прибыль за период: наценка (по дате заказа) + вес при выдаче + вес − выкуп веса − доставка (по партиям периода). */
+function profitFor(list: ItemView[], bs: BatchCalc[], ws: IssueWeight[], from: string, to: string) {
   const t = totals(inRange(list, from, to));
   const b = batchMoney(bs, from, to);
+  const w = weightIn(ws, from, to);
   return {
-    goods: Math.round(t.profit),
+    goods: r2(t.profit),
     goods_items: t.with_cost,
     items: t.items,
     batches: b.count,
     client: b.client,
     buy: b.buy,
     delivery: b.delivery,
-    total: Math.round(t.profit + b.client - b.buy - b.delivery),
+    issue_weight: w.som,
+    issue_weight_kg: w.kg,
+    total: r2(t.profit + w.som + b.client - b.buy - b.delivery),
   };
 }
 
-/** Поступило денег за период — по дате оплаты, без отменённых. */
+/** Поступило денег за период — по дате оплаты, без отменённых; плюс вес, оплаченный при выдаче. */
 function cashIn(from: string, to: string) {
-  return all<{ amount: number; paid_at: string; method: string }>(
-    `SELECT p.amount, p.paid_at, p.method FROM payments p
-       JOIN v_items v ON v.id = p.order_item_id WHERE p.deleted_at IS NULL`
-  ).filter((p) => localDay(p.paid_at) >= from && localDay(p.paid_at) <= to);
+  return [
+    ...all<{ amount: number; paid_at: string; method: string }>(
+      `SELECT p.amount, p.paid_at, p.method FROM payments p
+         JOIN v_items v ON v.id = p.order_item_id WHERE p.deleted_at IS NULL`
+    ),
+    ...issueWeights().map((w) => ({ amount: w.som, paid_at: w.issued_at, method: w.method })),
+  ].filter((p) => localDay(p.paid_at) >= from && localDay(p.paid_at) <= to);
 }
 
-function widget(key: string, list: ItemView[], from: string, to: string, bs: BatchCalc[]) {
+function widget(key: string, list: ItemView[], from: string, to: string, bs: BatchCalc[], ws: IssueWeight[]) {
   const inPeriod = inRange(list, from, to);
   const days = dayList(from, to);
   switch (key) {
@@ -142,7 +165,8 @@ function widget(key: string, list: ItemView[], from: string, to: string, bs: Bat
       const rows = byMonth(list, lastMonths(12, to))
         .map((r) => {
           const b = batchMoney(bs, `${r.month}-01`, `${r.month}-31`);
-          return { ...r, profit: Math.round(r.profit + b.client - b.buy - b.delivery) };
+          const w = weightIn(ws, `${r.month}-01`, `${r.month}-31`);
+          return { ...r, profit: r2(r.profit + w.som + b.client - b.buy - b.delivery) };
         })
         .filter((r, i, a) => r.items > 0 || a.slice(0, i).some((x) => x.items > 0));
       return {
@@ -151,7 +175,7 @@ function widget(key: string, list: ItemView[], from: string, to: string, bs: Bat
           dimensions: [{ key: "month", label: "Месяц", kind: "category" }],
           measures: [
             { key: "sale", label: "Сумма заказов", format: "money" },
-            { key: "profit", label: "Прибыль (наценка + партии)", format: "money" },
+            { key: "profit", label: "Прибыль (наценка + вес + партии)", format: "money" },
           ],
           rows,
         },
@@ -246,14 +270,15 @@ dashboardRouter.get("/dashboard", (req, res) => {
 
   // Прибыль: за период и за такой же период перед ним (для сравнения).
   const bs = batchesWithCalc(list);
+  const ws = issueWeights();
   const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
   const prevFrom = addDays(from, -days);
   const prevTo = addDays(from, -1);
-  const prev = profitFor(list, bs, prevFrom, prevTo);
+  const prev = profitFor(list, bs, ws, prevFrom, prevTo);
 
   const widgets = all<WidgetRow>("SELECT * FROM cargo_widgets WHERE is_visible = 1 ORDER BY position, id").map((w) => {
     try {
-      return { id: w.id, key: w.key, title: w.title, chart: w.chart, span: w.span, is_builtin: !!w.is_builtin, error: null, ...widget(w.key, list, from, to, bs) };
+      return { id: w.id, key: w.key, title: w.title, chart: w.chart, span: w.span, is_builtin: !!w.is_builtin, error: null, ...widget(w.key, list, from, to, bs, ws) };
     } catch (e) {
       return { id: w.id, key: w.key, title: w.title, chart: w.chart, span: w.span, is_builtin: !!w.is_builtin, series: [], data: null, error: String(e) };
     }
@@ -262,26 +287,29 @@ dashboardRouter.get("/dashboard", (req, res) => {
   res.json({
     period: { date_from: from, date_to: to },
     profit: {
-      ...profitFor(list, bs, from, to),
-      // Сравнивать не с чем, если в прошлом периоде не было ни товаров, ни партий.
-      previous: prev.items || prev.batches ? prev.total : null,
+      ...profitFor(list, bs, ws, from, to),
+      // Сравнивать не с чем, если в прошлом периоде не было ни товаров, ни партий, ни веса.
+      previous: prev.items || prev.batches || prev.issue_weight ? prev.total : null,
     },
     // Общая прибыль за всё время — все товары и все партии, без фильтра периода.
     profit_all: (() => {
       const t = totals(list);
-      const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => bs.reduce((a, b) => a + b.calc[k], 0);
+      const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => r2(bs.reduce((a, b) => a + b.calc[k], 0));
       const client = sumOf("client_som");
       const buy = sumOf("buy_som");
       const delivery = sumOf("delivery_som");
+      const w = weightIn(ws, "0000-01-01", "9999-12-31");
       return {
-        goods: Math.round(t.profit),
+        issue_weight: w.som,
+        issue_weight_kg: w.kg,
+        goods: r2(t.profit),
         goods_items: t.with_cost,
         items: t.items,
         batches: bs.length,
         client,
         buy,
         delivery,
-        total: Math.round(t.profit + client - buy - delivery),
+        total: r2(t.profit + w.som + client - buy - delivery),
         since: list.reduce<string | null>((a, i) => (a === null || i.order_date < a ? i.order_date : a), null),
       };
     })(),
@@ -370,14 +398,23 @@ dashboardRouter.get("/finance", (req, res) => {
   );
   // Последние оплаты периода — период фильтруется в самой выборке (раньше брались 300 последних
   // за всё время и уже потом период, и для старых периодов список выходил пустым).
+  const since = new Date(`${from}T00:00:00`).toISOString();
+  const until = new Date(`${addDays(to, 1)}T00:00:00`).toISOString();
   const payments = all(
-    `SELECT p.id, p.amount, p.method, p.paid_at, p.comment, v.id AS item_id, v.name AS item_name,
-            v.customer_id, v.customer_name, u.login AS user_login
-       FROM payments p JOIN v_items v ON v.id = p.order_item_id LEFT JOIN users u ON u.id = p.user_id
-      WHERE p.deleted_at IS NULL AND p.paid_at >= ? AND p.paid_at < ?
-      ORDER BY p.paid_at DESC, p.id DESC LIMIT 50`,
-    new Date(`${from}T00:00:00`).toISOString(),
-    new Date(`${addDays(to, 1)}T00:00:00`).toISOString()
+    `SELECT * FROM (
+       SELECT p.id, p.amount, p.method, p.paid_at, p.comment, v.id AS item_id, v.name AS item_name,
+              v.customer_id, v.customer_name, u.login AS user_login
+         FROM payments p JOIN v_items v ON v.id = p.order_item_id LEFT JOIN users u ON u.id = p.user_id
+        WHERE p.deleted_at IS NULL AND p.paid_at >= ? AND p.paid_at < ?
+       UNION ALL
+       -- Вес, оплаченный при выдаче: id отрицательный, товара нет.
+       SELECT -s.id, s.weight_som, s.weight_method, s.issued_at, 'вес при выдаче', NULL,
+              'Вес ' || REPLACE(printf('%.2f', COALESCE(s.weight_kg, 0)), '.', ',') || ' кг',
+              c.id, c.name, u.login
+         FROM issues s JOIN customers c ON c.id = s.customer_id AND c.deleted_at IS NULL LEFT JOIN users u ON u.id = s.user_id
+        WHERE s.weight_som > 0 AND s.issued_at >= ? AND s.issued_at < ?
+     ) ORDER BY paid_at DESC, id DESC LIMIT 50`,
+    since, until, since, until
   );
   // Дни для графика поступлений: с первой оплаты периода (не раньше), не больше 400 последних дней.
   const firstPay = cash.reduce<string | null>((a, p) => (a === null || localDay(p.paid_at) < a ? localDay(p.paid_at) : a), null);

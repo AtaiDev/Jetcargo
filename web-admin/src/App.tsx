@@ -11,7 +11,7 @@ import {
   useNavigate,
   type Location as RouterLocation,
 } from "react-router-dom";
-import { listItems } from "./api/domain";
+import { listItems, listNotify } from "./api/domain";
 import { useAuth } from "./auth/AuthContext";
 import { APP_NAME, APP_TAGLINE } from "./config";
 import { MONO, css, mix } from "./design/css";
@@ -29,6 +29,7 @@ import Customers, { CustomerDetail } from "./screens/Customers";
 import Finance from "./screens/Finance";
 import Import from "./screens/Import";
 import Issue from "./screens/Issue";
+import Notify from "./screens/Notify";
 import Orders from "./screens/Orders";
 import Overview from "./screens/overview";
 import Batches from "./screens/Batches";
@@ -65,6 +66,7 @@ const NAV_MAIN: NavItem[] = [
   { key: "overview", path: "/", label: "Обзор" },
   { key: "new-order", path: "/new-order", label: "Новый заказ" },
   { key: "receive", path: "/receive", label: "Приём товара" },
+  { key: "notify", path: "/notify", label: "Уведомления" },
   { key: "issue", path: "/issue", label: "Выдача" },
   { key: "orders", path: "/orders", label: "Заказы" },
   { key: "warehouse", path: "/warehouse", label: "Склад" },
@@ -84,6 +86,7 @@ const TITLES: Record<string, string> = {
   overview: "Обзор",
   "new-order": "Новый заказ",
   receive: "Приём товара",
+  notify: "Уведомления",
   issue: "Выдача",
   orders: "Заказы",
   warehouse: "Склад",
@@ -100,6 +103,7 @@ const SUBTITLES: Record<string, string> = {
   overview: "Деньги, заказы, склад и клиенты",
   "new-order": "Клиент, товары, статус и оплата — одним заказом",
   receive: "Сканируйте код — товар встанет на склад",
+  notify: "Сообщите клиенту в WhatsApp: товар пришёл, вес и сколько оплатить",
   issue: "Найдите клиента и выдайте товары со склада",
   orders: "Все товары клиентов, оплаты и статусы",
   warehouse: "Ожидаемые и принятые товары, история сканирований",
@@ -141,6 +145,7 @@ function Shell() {
   const [toast, setToast] = useState<{ id: number; kind: "success" | "error"; text: string; leaving: boolean } | null>(null);
   const toastTimers = useRef<number[]>([]);
   const [inStock, setInStock] = useState(0);
+  const [toNotify, setToNotify] = useState(0);
   const [openItemId, setOpenItemId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -152,10 +157,15 @@ function Shell() {
   // Сколько товаров ждёт выдачи — бейдж у «Выдачи». Обновляется при любых изменениях.
   useEffect(() => {
     if (!user) return;
-    const load = () =>
+    const load = () => {
       listItems({ status: "in_stock", limit: 1 })
         .then((r) => setInStock(r.total))
         .catch(() => setInStock(0));
+      // Сколько клиентов с товаром на складе ещё не уведомлены — бейдж у «Уведомлений».
+      listNotify()
+        .then((r) => setToNotify(r.rows.filter((x) => x.status !== "sent").length))
+        .catch(() => setToNotify(0));
+    };
     load();
     return on("cargo:changed", load);
   }, [user, loc.pathname]);
@@ -184,7 +194,7 @@ function Shell() {
   const key = screenKey(loc);
   const isAdmin = user.role === "admin";
 
-  const badgeOf = (k: string) => (k === "issue" ? inStock || null : null);
+  const badgeOf = (k: string) => (k === "issue" ? inStock || null : k === "notify" ? toNotify || null : null);
 
   const navStyle = (active: boolean) =>
     mix(
@@ -401,6 +411,7 @@ function Shell() {
           <Routes>
             <Route path="/" element={<Overview isDesktop={isDesktop} isAdmin={isAdmin} />} />
             <Route path="/receive" element={<Receive toast={showToast} />} />
+            <Route path="/notify" element={<Notify isDesktop={isDesktop} toast={showToast} />} />
             <Route path="/issue" element={<Issue isDesktop={isDesktop} toast={showToast} />} />
             <Route path="/orders" element={<Orders isDesktop={isDesktop} toast={showToast} />} />
             <Route path="/new-order" element={<NewOrder isDesktop={isDesktop} toast={showToast} />} />

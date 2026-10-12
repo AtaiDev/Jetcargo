@@ -2,10 +2,13 @@
  * Настройки — во всю ширину:
  *  - сверху карточка профиля: кто вошёл, роль, на какой базе работает панель, «Выйти»;
  *  - слева «Оформление»: тема (светлая / тёмная — живые мини-превью) и масштаб интерфейса плитками;
- *  - справа курс юаня с быстрым пересчётом (меняет только администратор), ниже — быстрые клавиши.
+ *  - справа курс юаня с быстрым пересчётом (меняет только администратор);
+ *  - вес при выдаче: цена за кг в $ и курс доллара (меняет администратор);
+ *  - звуки приёма: у каждого события скана свои 15 звуков, громкость, вкл/выкл (в этом браузере);
+ *  - ниже — быстрые клавиши.
  * Тема и масштаб сохраняются в localStorage и применяются сразу (см. design/prefs).
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { apiError } from "../api/client";
 import { getEnvironment, getSettings, updateSettings } from "../api/domain";
@@ -14,7 +17,9 @@ import { css, mix } from "../design/css";
 import { ICONS, I_CHECK, Icon, Svg } from "../design/icons";
 import { SCALES, usePrefs, type Theme } from "../design/prefs";
 import { HButton } from "../design/ui";
+import { SCAN_EVENTS, SOUND_SETS, isDefaultSounds, previewSound, resetSoundPrefs, setSoundPrefs, soundLabel, useSoundPrefs, type Note, type ScanEvent } from "../lib/sound";
 import { Page } from "../design/table";
+import { som } from "../lib/cargo";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 
@@ -31,6 +36,8 @@ export default function Settings({ toast }: { toast: Toast }) {
         <Appearance />
         <RateCard toast={toast} canEdit={isAdmin} />
       </div>
+      <WeightCard toast={toast} canEdit={isAdmin} />
+      <SoundsCard />
       <Hotkeys />
     </Page>
   );
@@ -184,6 +191,332 @@ function CardHead({ icon, grad, title, hint }: { icon: ReactNode; grad: string; 
         <span style={css("display:block;font-size:12.5px;color:var(--text-4)")}>{hint}</span>
       </span>
     </div>
+  );
+}
+
+// --- Звуки приёма -------------------------------------------------------------------------------
+
+const EV_TONE: Record<ScanEvent, { c: string; t: string; icon: ReactNode }> = {
+  arrived: { c: "var(--green-dot)", t: "var(--green-tint)", icon: <Svg paths={I_CHECK} size={15} sw={2.4} /> },
+  repeat: { c: "var(--accent)", t: "var(--accent-tint)", icon: <span style={css("font-size:15px;line-height:1")}>↻</span> },
+  issued: { c: "var(--violet-dot)", t: "var(--violet-tint)", icon: <Icon name="issue" size={15} /> },
+  not_found: { c: "var(--danger-dot)", t: "var(--danger-tint)", icon: <span style={css("font-size:15px;font-weight:500;line-height:1")}>!</span> },
+};
+
+/** Рисунок мелодии: ноты по времени (слева направо) и высоте (снизу вверх). */
+function Wave({ notes }: { notes: Note[] }) {
+  const y = (f: number) => 27 - ((Math.log(f) - Math.log(90)) / (Math.log(3200) - Math.log(90))) * 22;
+  const x = (t: number) => 4 + (t / 0.95) * 112;
+  return (
+    <svg viewBox="0 0 120 32" className="st-wave" aria-hidden>
+      {!notes.length ? (
+        <path d="M4 16H116" stroke="currentColor" strokeWidth="2" strokeDasharray="3 5" strokeLinecap="round" opacity=".35" />
+      ) : (
+        notes.map((m, i) =>
+          m.to ? (
+            <path key={i} d={`M${x(m.at)} ${y(m.freq)} L${x(m.at + m.len * 0.7)} ${y(m.to)}`} stroke="var(--c)" strokeWidth="4" strokeLinecap="round" fill="none" />
+          ) : (
+            <rect key={i} x={x(m.at)} y={y(m.freq) - 2.5} width={Math.max(6, x(m.at + m.len * 0.6) - x(m.at))} height="5" rx="2.5" fill="var(--c)" />
+          )
+        )
+      )}
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden>
+      <path d="M3 1.8v8.4L10 6 3 1.8Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+/**
+ * Звуки «Приёма товара»: у каждого события скана — свой набор из 15 звуков по смыслу,
+ * громкость и вкл/выкл. Хранится в этом браузере: звук нужен на компьютере со сканером (lib/sound).
+ */
+function SoundsCard() {
+  const p = useSoundPrefs();
+  const [ev, setEv] = useState<ScanEvent>("arrived");
+  const [playing, setPlaying] = useState<ScanEvent | null>(null);
+  const timers = useRef<number[]>([]);
+  const set = SOUND_SETS[ev];
+  const evInfo = SCAN_EVENTS.find((e) => e.key === ev)!;
+
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+
+  // Все четыре звука подряд — как будет звучать приём.
+  function playAll() {
+    timers.current.forEach(clearTimeout);
+    timers.current = SCAN_EVENTS.map((e, i) =>
+      window.setTimeout(() => {
+        setPlaying(e.key);
+        previewSound(e.key, p.map[e.key]);
+      }, i * 900)
+    );
+    timers.current.push(window.setTimeout(() => setPlaying(null), SCAN_EVENTS.length * 900));
+  }
+
+  return (
+    <section className="st-card st-snd" style={{ ["--c" as string]: EV_TONE[ev].c, ["--t" as string]: EV_TONE[ev].t }}>
+      <div className="st-snd-head">
+        <CardHead
+          icon={
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+              <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" />
+            </svg>
+          }
+          grad="linear-gradient(135deg,#38BDF8,#6366F1)"
+          title="Звуки приёма"
+          hint="При скане на «Приёме товара» · на этом устройстве"
+        />
+        <div className="st-snd-ctl">
+          {!isDefaultSounds(p) && (
+            <HButton onClick={resetSoundPrefs} className="au-reset" s="" hover="">
+              Вернуть как было
+            </HButton>
+          )}
+          <label className="st-snd-vol">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={p.volume}
+              disabled={!p.on}
+              onChange={(e) => setSoundPrefs({ volume: Number(e.target.value) })}
+              onPointerUp={() => previewSound(ev, p.map[ev])}
+              onKeyUp={() => previewSound(ev, p.map[ev])}
+              style={{ ["--v" as string]: `${p.volume}%` }}
+              aria-label="Громкость"
+            />
+            <span style={css(NUM + ";width:34px;text-align:right;font-size:12.5px;color:var(--text-2)")}>{p.volume}%</span>
+          </label>
+          <button type="button" className="st-snd-on" onClick={() => setSoundPrefs({ on: !p.on })} role="switch" aria-checked={p.on} title={p.on ? "Выключить звук приёма" : "Включить звук приёма"}>
+            <span className={"cz-sw" + (p.on ? " on" : "")} aria-hidden>
+              <span />
+            </span>
+            {p.on ? "Вкл" : "Выкл"}
+          </button>
+        </div>
+      </div>
+
+      <div className={"st-snd-body" + (p.on ? "" : " off")}>
+        {/* События скана */}
+        <div className="st-snd-side">
+          <div className="st-snd-evs" role="tablist" aria-label="Событие скана">
+            {SCAN_EVENTS.map((e) => {
+              const tone = EV_TONE[e.key];
+              return (
+                <div
+                  key={e.key}
+                  role="tab"
+                  tabIndex={0}
+                  aria-selected={e.key === ev}
+                  className={"st-snd-ev" + (e.key === ev ? " on" : "") + (playing === e.key ? " playing" : "")}
+                  style={{ ["--c" as string]: tone.c, ["--t" as string]: tone.t }}
+                  onClick={() => setEv(e.key)}
+                  onKeyDown={(k) => (k.key === "Enter" || k.key === " ") && (k.preventDefault(), setEv(e.key))}
+                >
+                  <span className="st-snd-ev-i">{tone.icon}</span>
+                  <span style={css("min-width:0")}>
+                    <span style={css("display:block;font-size:13.5px;font-weight:500;color:var(--text)")}>{e.label}</span>
+                    <span style={css("display:block;font-size:12px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>♪ {soundLabel(e.key, p.map[e.key])}</span>
+                  </span>
+                  <button
+                    type="button"
+                    className="st-snd-play"
+                    title="Прослушать"
+                    aria-label={`Прослушать звук «${e.label}»`}
+                    onClick={(m) => {
+                      m.stopPropagation();
+                      previewSound(e.key, p.map[e.key]);
+                    }}
+                  >
+                    <PlayIcon />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Как прозвучит приём — все звуки подряд; фон — бледные строки сканов */}
+          <div className="st-snd-demo">
+            <div className="st-snd-ghost" aria-hidden>
+              {SCAN_EVENTS.map((e, i) => (
+                <span key={e.key} className={"st-snd-ghost-row" + (playing === e.key ? " lit" : "")} style={{ ["--c" as string]: EV_TONE[e.key].c }}>
+                  <span className="st-snd-ghost-dot" />
+                  <span className="sk" style={mix("height:7px", { width: `${[58, 44, 66, 50][i]}%` })} />
+                  <span className="sk" style={css("width:30px;height:7px;margin-left:auto")} />
+                </span>
+              ))}
+            </div>
+            <HButton onClick={playAll} className="st-snd-all" s="" hover="">
+              <PlayIcon />
+              {playing ? "Звучит…" : "Прослушать все по очереди"}
+            </HButton>
+          </div>
+        </div>
+
+        {/* Выбор звука */}
+        <div className="st-snd-pick">
+          <div className="st-snd-pick-head">
+            <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>Звук для «{evInfo.label}»</span>
+            <span className="st-snd-pick-hint">{evInfo.hint} · нажмите — выберется и прозвучит</span>
+          </div>
+          <div className="st-snd-grid" key={ev}>
+            {set.map((s, i) => {
+              const on = s.id === p.map[ev];
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  title={s.hint}
+                  className={"st-snd-tile" + (on ? " on" : "")}
+                  style={{ ["--i" as string]: i }}
+                  onClick={() => {
+                    setSoundPrefs({ map: { [ev]: s.id } as Record<ScanEvent, string> });
+                    previewSound(ev, s.id);
+                  }}
+                  aria-pressed={on}
+                >
+                  <span className="st-snd-check" aria-hidden>
+                    {on && <Svg paths={I_CHECK} size={10} sw={3.2} />}
+                  </span>
+                  <Wave notes={s.notes} />
+                  <span className="st-snd-tile-name">{s.label}</span>
+                  <span className="st-snd-tile-hint">{s.hint}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// --- Вес при выдаче -----------------------------------------------------------------------------
+
+/**
+ * Тариф за вес: $ за кг и курс доллара. На «Выдаче» вес посылки × тариф × курс = сумма к оплате.
+ * Меняет только администратор; уже сделанные выдачи не пересчитываются (тариф хранится в выдаче).
+ */
+function WeightCard({ toast, canEdit }: { toast: Toast; canEdit: boolean }) {
+  const [perKg, setPerKg] = useState("");
+  const [usd, setUsd] = useState("");
+  const [saved, setSaved] = useState<{ kg: number; usd: number } | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getSettings()
+      .then((s) => {
+        setPerKg(String(s.weight_rate_usd ?? 2.8));
+        setUsd(String(s.usd_rate ?? 87.5));
+        setSaved({ kg: s.weight_rate_usd ?? 2.8, usd: s.usd_rate ?? 87.5 });
+      })
+      .catch((e) => setError(apiError(e)));
+  }, []);
+
+  const num = (v: string) => Number(v.replace(",", ".").replace(/\s/g, ""));
+  const k = num(perKg);
+  const u = num(usd);
+  const valid = Number.isFinite(k) && k > 0 && Number.isFinite(u) && u > 0;
+  const dirty = valid && saved !== null && (k !== saved.kg || u !== saved.usd);
+  // Цена 1 кг для клиента — как на сервере: $ × курс, вверх до целого сома.
+  const exactKg = valid ? Math.round(k * u * 100) / 100 : 0;
+  const rateSom = valid ? Math.ceil(exactKg - 1e-9) : 0;
+  const f = (n: number, d = 2) => n.toLocaleString("ru-RU", { maximumFractionDigits: d });
+
+  async function save() {
+    if (!valid) return setError("Цена за кг и курс должны быть больше нуля");
+    setError("");
+    setBusy(true);
+    try {
+      const s = await updateSettings({ weight_rate_usd: k, usd_rate: u });
+      setPerKg(String(s.weight_rate_usd));
+      setUsd(String(s.usd_rate));
+      setSaved({ kg: s.weight_rate_usd, usd: s.usd_rate });
+      toast("success", "Тариф за вес сохранён");
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (label: string, unit: string, value: string, set: (v: string) => void, aria: string) => (
+    <label className="st-wt-in">
+      <span style={css("font-size:13px;color:var(--text-3);white-space:nowrap")}>{label}</span>
+      <input
+        value={value}
+        onChange={(e) => set(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && canEdit && save()}
+        inputMode="decimal"
+        disabled={!canEdit}
+        aria-label={aria}
+      />
+      <span style={css("font-size:13px;color:var(--text-4)")}>{unit}</span>
+    </label>
+  );
+
+  return (
+    <section className="st-card st-wt">
+      <div className="st-wt-left">
+        <CardHead
+          icon={
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6.5 8h11l2.3 12H4.2L6.5 8Z" />
+              <path d="M9 8a3 3 0 0 1 6 0" />
+            </svg>
+          }
+          grad="linear-gradient(135deg,#A78BFA,#7C3AED)"
+          title="Вес при выдаче"
+          hint="Вес посылки × цена за кг × курс — оплачивается сразу на «Выдаче»"
+        />
+        <div className="st-wt-fields">
+          {field("1 кг =", "$", perKg, setPerKg, "Цена за килограмм, долларов")}
+          {field("1 $ =", "сом", usd, setUsd, "Курс доллара, сом")}
+        </div>
+        <div className="st-wt-foot">
+          <span style={css(NUM + ";font-size:12.5px;color:var(--text-3)")}>
+            {valid ? (
+              <>
+                1 кг = {f(k)} $ × {f(u)}
+                {exactKg !== rateSom ? ` = ${som(exactKg)}` : ""} → цена для клиента <b style={css("font-weight:500;color:var(--text)")}>{rateSom} с за кг</b>
+              </>
+            ) : (
+              "укажите цену и курс"
+            )}
+          </span>
+          {canEdit && (
+            <HButton onClick={save} disabled={!dirty || busy} className={"st-save" + (dirty ? " on" : "")} s="" hover="">
+              {busy ? "…" : dirty ? "Сохранить" : "Сохранено"}
+            </HButton>
+          )}
+        </div>
+        {error && <div style={css("color:var(--danger);font-size:12.5px")}>{error}</div>}
+        <div style={css("font-size:12px;line-height:1.45;color:var(--text-4)")}>
+          {canEdit ? "Цена 1 кг округляется вверх до целого сома, сумма за вес = вес × цену, тоже вверх до сома — клиент проверит на калькуляторе. Новый тариф — для следующих уведомлений." : "Изменить тариф может только администратор."}
+        </div>
+      </div>
+
+      <div className="st-wt-right">
+        <div style={css("font-size:12.5px;font-weight:500;color:var(--text-2);margin-bottom:10px")}>Сколько взять за вес</div>
+        <div className="st-wt-conv">
+          {[0.5, 1, 2, 3.4, 5, 10].map((kg) => (
+            <div key={kg} className="st-conv-cell">
+              <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-3)")}>{f(kg)} кг</span>
+              <span style={css(NUM + ";display:block;margin-top:3px;font-size:16px;font-weight:500;color:var(--text);white-space:nowrap")}>{valid ? som(Math.ceil(Math.round(kg * rateSom * 100) / 100 - 1e-9)) : "—"}</span>
+              <span style={css(NUM + ";display:block;font-size:11.5px;color:var(--text-4)")}>{valid ? `${f(kg)} × ${rateSom} = ${f(Math.round(kg * rateSom * 100) / 100)}` : ""}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 

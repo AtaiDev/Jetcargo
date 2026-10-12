@@ -230,6 +230,29 @@ export const openDebt = (i: Pick<ItemView, "status" | "debt">) => (i.status === 
 /** SQL-условие «товар с настоящим долгом» для v_items (алиас можно передать). */
 export const openDebtSql = (alias = "") => `(${alias}debt > 0 AND ${alias}status <> 'issued')`;
 
+/**
+ * Вес по уведомлениям клиента, который ещё не взяли (уведомление не отменено и не привязано к выдаче).
+ * Берётся целиком при следующей выдаче этому клиенту.
+ */
+export function pendingNotices(customerId: number) {
+  const list = all<{ id: number; weight_kg: number | null; weight_som: number; weight_rate_usd: number | null; weight_usd_rate: number | null; sent_at: string }>(
+    `SELECT id, weight_kg, weight_som, weight_rate_usd, weight_usd_rate, sent_at FROM notifications
+      WHERE customer_id = ? AND deleted_at IS NULL AND issue_id IS NULL ORDER BY sent_at, id`,
+    customerId
+  );
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  return {
+    ids: list.map((n) => n.id),
+    count: list.length,
+    kg: r2(list.reduce((s, n) => s + (n.weight_kg ?? 0), 0)),
+    som: r2(list.reduce((s, n) => s + n.weight_som, 0)),
+    // Тариф — если у всех уведомлений один и тот же (для записи в выдачу).
+    rate: list.length && list.every((n) => n.weight_rate_usd === list[0].weight_rate_usd) ? list[0].weight_rate_usd : null,
+    usd: list.length && list.every((n) => n.weight_usd_rate === list[0].weight_usd_rate) ? list[0].weight_usd_rate : null,
+    last_sent_at: list.length ? list[list.length - 1].sent_at : null,
+  };
+}
+
 /** Суммы по набору товаров — одна формула для клиента, склада, дашборда и финансов. */
 export function totals(list: ItemView[]) {
   const withCost = list.filter((i) => i.cost !== null);
