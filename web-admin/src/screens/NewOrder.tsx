@@ -657,17 +657,9 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
               </div>
 
               {rows.length === 0 ? (
-                <div style={css("flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px 16px 30px;text-align:center")}>
-                  <span style={css("width:56px;height:56px;border-radius:18px;display:grid;place-items:center;background:var(--surface-2);border:1px dashed var(--border-strong);color:var(--text-4)")}>
-                    <Svg paths={I_BOX} size={24} sw={1.6} />
-                  </span>
-                  <div style={css("font-size:14px;font-weight:600;color:var(--text-2)")}>Пока пусто</div>
-                  <div style={css("font-size:12.5px;color:var(--text-4);max-width:360px;line-height:1.5")}>
-                    Впишите товар в строку выше и нажмите <Kbd>Enter</Kbd> — он появится здесь. Можно вставить сразу весь список из Excel.
-                  </div>
-                </div>
+                <OrderFill compact={!isDesktop} empty />
               ) : (
-                <div style={css("display:flex;flex-direction:column")}>
+                <div style={css("display:flex;flex-direction:column;flex:none")}>
                   {rows.map((r, i) =>
                     editing?.key === r.key ? (
                       <EditRow
@@ -689,6 +681,8 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
                   )}
                 </div>
               )}
+              {/* Остаток панели — бледные строки, чтобы не было пустоты */}
+              {rows.length > 0 && <OrderFill compact={!isDesktop} />}
             </section>
           </div>
 
@@ -1158,6 +1152,53 @@ function Fact({ label, value, dot, danger }: { label: string; value: string; dot
       {label}
       <b style={mix(NUM, { color: danger ? "var(--danger)" : "var(--text)" })}>{value}</b>
     </span>
+  );
+}
+
+/**
+ * Пустое место под товарами заказа: бледные строки как у товара (номер, название, код,
+ * сумма, кнопки) и подсказка по центру.
+ */
+function OrderFill({ empty, compact }: { empty?: boolean; compact: boolean }) {
+  return (
+    <div className={"ghost-fill po-fill" + (empty ? " empty" : "")}>
+      <div className="ghost-rows" aria-hidden>
+        {Array.from({ length: 9 }, (_, i) => (
+          <div key={i} className="po-ghost" style={css(`gap:${compact ? 10 : 14}px;padding:11px ${compact ? 12 : 16}px`)}>
+            <span className="sk" style={css("width:30px;height:30px;border-radius:9px;flex:none")} />
+            <span style={css("flex:1;min-width:0;display:flex;flex-direction:column;gap:8px")}>
+              <span className="sk" style={mix("height:10px", { width: `${[34, 46, 28, 40, 52, 31][i % 6]}%` })} />
+              <span style={css("display:flex;align-items:center;gap:6px")}>
+                <span className="sk" style={mix("height:16px;border-radius:5px", { width: `${[112, 96, 124, 88][i % 4]}px` })} />
+                <span className="sk" style={css("width:30px;height:7px")} />
+                <span className="sk" style={css("width:64px;height:7px")} />
+              </span>
+            </span>
+            <span style={css("flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:8px")}>
+              <span className="sk" style={mix("height:11px", { width: `${[58, 46, 64, 50][i % 4]}px` })} />
+              <span className="sk" style={css("width:38px;height:8px")} />
+            </span>
+            {!compact && (
+              <span style={css("flex:none;display:flex;gap:4px")}>
+                <span className="sk sk-ring" style={css("width:32px;height:32px;border-radius:9px")} />
+                <span className="sk sk-ring" style={css("width:32px;height:32px;border-radius:9px")} />
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="ghost-msg">
+        <span style={css("width:38px;height:38px;border-radius:12px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
+          <Svg paths={empty ? I_BOX : I_PLUS} size={17} sw={1.9} />
+        </span>
+        <span style={css("min-width:0")}>
+          <span style={css("display:block;font-size:13.5px;font-weight:600;color:var(--text)")}>{empty ? "Пока пусто — добавьте первый товар" : "Добавьте ещё товар"}</span>
+          <span style={css("display:block;margin-top:2px;font-size:12px;color:var(--text-4)")}>
+            {empty ? "строка выше" : "впишите в строку выше"} → <Kbd>Enter</Kbd> · можно вставить список из Excel
+          </span>
+        </span>
+      </div>
+    </div>
   );
 }
 

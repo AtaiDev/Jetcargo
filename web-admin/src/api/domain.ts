@@ -299,7 +299,7 @@ export interface Batch {
   /** ② Доставка — сколько отдали водителю, в delivery_cur (имя поля историческое). */
   delivery_usd: number;
   delivery_cur: BatchCur;
-  /** ③ Вес клиентам — общая сумма, которую взяли с клиентов за вес, в client_cur. */
+  /** ③ Вес клиентам, вписанный вручную (сверх «Уведомлений»), в client_cur. */
   client_amount: number;
   client_cur: BatchCur;
   /** Устаревшие поля (вес × ставка) — больше не используются в расчёте. */
@@ -318,7 +318,17 @@ export interface BatchCalc {
   with_cost: number;
   buy_som: number;
   delivery_som: number;
+  /** ③ Вес клиентам всего, сом: из «Уведомлений» + вручную. */
   client_som: number;
+  /** Из «Уведомлений» по товарам партии (считается сам): сом и кг, уже взято и ждёт выдачи. */
+  client_auto_som: number;
+  client_auto_kg: number;
+  client_auto_issued_som: number;
+  client_auto_pending_som: number;
+  /** Вписано вручную, в сомах. */
+  client_manual_som: number;
+  /** Вес по клиентам партии (из «Уведомлений»): customer_id → сом и кг. */
+  client_weights: Record<number, { som: number; kg: number }>;
   markup_som: number;
   expenses_som: number;
   income_som: number;
@@ -448,7 +458,10 @@ export interface BatchProfitRow {
   last_arrival: string | null;
   items: number;
   customers: number;
+  /** Вес клиентам всего: из «Уведомлений» (client_auto) + вручную (client_manual). */
   client: number;
+  client_auto?: number;
+  client_manual?: number;
   markup: number;
   buy: number;
   delivery: number;
