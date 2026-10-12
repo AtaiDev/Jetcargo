@@ -3,7 +3,7 @@
  *
  *   ① Выкуп веса   — сколько отдали за вес ($ или сом)      расход
  *   ② Доставка     — сколько отдали водителю ($ или сом)   расход
- *   ③ Вес клиентам — общая сумма за вес ($ или сом)          доход
+ *   ③ Вес клиентам — из «Уведомлений» (сам) + вручную         доход
  *   ④ Наценка      — Σ (Сумма − Реальная цена) по товарам   доход
  *   Прибыль партии = ③ + ④ − ① − ②  (в сомах, $ — по курсу)
  *
@@ -184,6 +184,8 @@ const numOf = (s: string) => {
 function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: Toast; onChanged: () => void; onDeleted: () => void }) {
   const { user } = useAuth();
   const [batch, setBatch] = useState<Batch | null>(null);
+  // Расчёт сервера — нужен вес клиентам из «Уведомлений» (его считает сервер).
+  const [calcSrv, setCalcSrv] = useState<BatchCalc | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState("");
@@ -191,11 +193,26 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
   const [adding, setAdding] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // «+ вручную» у веса клиентам — маленькое окошко под суммой из «Уведомлений».
+  const [manualOpen, setManualOpen] = useState(false);
+  const manualRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!manualOpen) return;
+    const onDown = (e: MouseEvent) => manualRef.current && !manualRef.current.contains(e.target as Node) && setManualOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setManualOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [manualOpen]);
 
   const load = useCallback(() => {
     getBatch(id)
       .then((r) => {
         setBatch(r.batch);
+        setCalcSrv(r.calc);
         setItems(r.items);
         setDraft((d) => d ?? toDraft(r.batch));
         setError("");
@@ -212,13 +229,18 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
     const toSom = (n: number, cur: Batch["buy_cur"]) => (cur === "usd" ? n * rate : n);
     const buy = toSom(numOf(draft.buy_amount), batch.buy_cur);
     const delivery = toSom(numOf(draft.delivery_usd), batch.delivery_cur);
-    const client = toSom(numOf(draft.client_amount), batch.client_cur);
+    // Вес клиентам = из «Уведомлений» (сам) + вписанное вручную.
+    const auto = calcSrv?.client_auto_som ?? 0;
+    const manual = toSom(numOf(draft.client_amount), batch.client_cur);
+    const client = auto + manual;
     const withCost = items.filter((i) => i.cost !== null);
     const markup = withCost.reduce((s, i) => s + i.sale - (i.cost ?? 0), 0);
     return {
       rate,
       buy,
       delivery,
+      auto,
+      manual,
       client,
       markup,
       income: client + markup,
@@ -231,7 +253,7 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
       inStock: items.filter((i) => i.status === "in_stock").length,
       issued: items.filter((i) => i.status === "issued").length,
     };
-  }, [draft, batch, items]);
+  }, [draft, batch, calcSrv, items]);
 
   // Товары по клиентам — в порядке первого появления.
   const groups = useMemo(() => {
@@ -249,6 +271,7 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
     try {
       const r = await updateBatch(batch.id, body);
       setBatch(r.batch);
+      setCalcSrv(r.calc);
       onChanged();
     } catch (e) {
       toast("error", apiError(e));
@@ -304,7 +327,7 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
   }
 
   /** Сумма в поле: сохраняется при уходе из поля или Enter; справа — переключатель $ / с. */
-  const field = (k: NumField, label: string, cur?: CurField) => {
+  const field = (k: NumField, label: string, cur?: CurField, placeholder = "0") => {
     const usd = cur ? batch[cur] === "usd" : false;
     return (
       <div className="bt-field">
@@ -312,7 +335,7 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
         <input
           value={draft[k]}
           inputMode="decimal"
-          placeholder="0"
+          placeholder={placeholder}
           aria-label={label}
           onChange={(e) => setDraft({ ...draft, [k]: e.target.value })}
           onBlur={() => save(k)}
@@ -351,6 +374,12 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
 
   const needRate = batch.buy_cur === "usd" || batch.delivery_cur === "usd" || batch.client_cur === "usd";
   const rateNote = (cur: CurField, value: number) => (batch[cur] === "usd" && value > 0 ? `по курсу ${num(live.rate)}` : "");
+  // Под весом клиентам: сколько кг из «Уведомлений» и сколько ещё ждёт выдачи.
+  const weightNote = !calcSrv
+    ? ""
+    : live.auto > 0
+      ? `${num(calcSrv.client_auto_kg)} кг · ${calcSrv.client_auto_pending_som > 0 ? `ждёт выдачи ${som(calcSrv.client_auto_pending_som)}` : "всё взято"}`
+      : "из «Уведомлений» пока нет";
   const neg = live.profit < 0;
   const barMax = Math.max(live.income, live.expenses, 1);
   const allOn = items.length > 0 && items.every((i) => selected.has(i.id));
@@ -412,15 +441,77 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
           <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>Расчёт прибыли</span>
           <span style={css("font-size:12px;color:var(--text-4)")}>доходы минус расходы — впишите суммы, итог считается сразу</span>
           {needRate && (
-            <span style={css("margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-3)")}>
+            <span className="bt-rate" data-no-reveal style={css("margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-3)")}>
               курс <span style={css("color:var(--text-4)")}>$1 =</span>
               <span style={css("width:104px")}>{field("usd_rate", "Курс доллара")}</span>
             </span>
           )}
         </div>
         <div className="bt-formula">
-          <Term sign="+" tone="green" title="Вес клиентам" hint="если вес не брали на «Выдаче» — иначе задвоится" value={live.client} note={rateNote("client_cur", live.client)}>
-            {field("client_amount", "Вес клиентам", "client_cur")}
+          <Term sign="+" tone="green" title="Вес клиентам" hint="из «Уведомлений» + вручную" value={live.client} note={weightNote}>
+            <div ref={manualRef} className="bt-wfield-wrap">
+              <div className={"bt-field bt-wfield" + (live.auto > 0 ? " on" : "")} title="Сумма за вес из «Уведомлений» по товарам этой партии — считается сама">
+                <span className="bt-wfield-val">{calcSrv ? som(live.auto) : "…"}</span>
+                <span className="bt-wfield-side">
+                  <button
+                    type="button"
+                    onClick={() => setManualOpen((o) => !o)}
+                    className={"bt-manual" + (live.manual > 0 ? " set" : "") + (live.manual > 0 && live.auto > 0 ? " warn" : "") + (manualOpen ? " open" : "")}
+                    title={
+                      live.manual > 0
+                        ? `Вписано вручную: ${som(Math.round(live.manual))}${live.auto > 0 ? " — есть и вес из «Уведомлений», проверьте, не задвоено ли" : ""}`
+                        : "Добавить вес вручную — то, чего нет в «Уведомлениях»"
+                    }
+                  >
+                    {live.manual > 0 ? (
+                      <>
+                        <svg className="bt-manual-pen" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                        <span className="bt-manual-text">{Math.round(live.manual).toLocaleString("ru-RU")}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="bt-manual-plus" aria-hidden>
+                          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                            <path d="M6 1.5v9M1.5 6h9" />
+                          </svg>
+                        </span>
+                        <span className="bt-manual-text">вручную</span>
+                      </>
+                    )}
+                  </button>
+                </span>
+              </div>
+              {manualOpen && (
+                <div className="bt-pop" data-no-reveal>
+                  <div style={css("font-size:13px;font-weight:500;color:var(--text)")}>Вес клиентам вручную</div>
+                  <div style={css("margin:3px 0 10px;font-size:12px;line-height:1.45;color:var(--text-3)")}>
+                    Только то, чего нет в «Уведомлениях» — например, вес, взятый до них. Иначе задвоится.
+                  </div>
+                  {field("client_amount", "Вес клиентам вручную", "client_cur")}
+                  <div style={css("display:flex;justify-content:flex-end;gap:6px;margin-top:10px")}>
+                    {live.manual > 0 && (
+                      <button
+                        type="button"
+                        className="bt-pop-btn ghost"
+                        onClick={() => {
+                          setDraft({ ...draft, client_amount: "" });
+                          void patch({ client_amount: 0 });
+                          setManualOpen(false);
+                        }}
+                      >
+                        Убрать
+                      </button>
+                    )}
+                    <button type="button" className="bt-pop-btn" onClick={() => setManualOpen(false)}>
+                      Готово
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </Term>
           <Op>+</Op>
           <Term sign={live.markup < 0 ? "−" : "+"} tone="green" title="Наценка на товары" hint="сумма − реальная цена" value={live.markup} note={live.withCost < items.length ? `с выкупом ${live.withCost} из ${items.length}` : `${items.length} ${plural(items.length, "товар", "товара", "товаров")}`}>
@@ -485,7 +576,9 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
             text="Выберите эту партию на «Приёме товара» и сканируйте — товары попадут сюда. Или добавьте уже принятые кнопкой выше."
           />
         ) : (
-          groups.map((g) => <ClientBlock key={g[0].customer_id} items={g} selected={selected} onToggle={toggle} onOpen={setOpen} />)
+          groups.map((g) => (
+            <ClientBlock key={g[0].customer_id} items={g} weight={calcSrv?.client_weights[g[0].customer_id]} selected={selected} onToggle={toggle} onOpen={setOpen} />
+          ))
         )}
       </section>
 
@@ -572,7 +665,20 @@ function Bar({ label, value, max, grad, color }: { label: string; value: number;
 
 const STATUS_TEXT: Record<Item["status"], string> = { ordered: "Заказан", in_stock: "На складе", issued: "Выдан" };
 
-function ClientBlock({ items, selected, onToggle, onOpen }: { items: Item[]; selected: Set<number>; onToggle: (ids: number[], on: boolean) => void; onOpen: (id: number) => void }) {
+function ClientBlock({
+  items,
+  weight,
+  selected,
+  onToggle,
+  onOpen,
+}: {
+  items: Item[];
+  /** Вес клиента по этой партии из «Уведомлений». */
+  weight?: { som: number; kg: number };
+  selected: Set<number>;
+  onToggle: (ids: number[], on: boolean) => void;
+  onOpen: (id: number) => void;
+}) {
   const nav = useNavigate();
   const first = items[0];
   const sale = items.reduce((s, i) => s + i.sale, 0);
@@ -598,6 +704,11 @@ function ClientBlock({ items, selected, onToggle, onOpen }: { items: Item[]; sel
             </span>
             <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-3);white-space:nowrap")}>
               {first.customer_phone} · {items.length} {plural(items.length, "товар", "товара", "товаров")}
+              {weight && weight.som > 0 && (
+                <span className="bt-client-weight" title="Вес посылки из «Уведомлений» по товарам этой партии">
+                  {num(weight.kg)} кг · {som(weight.som)}
+                </span>
+              )}
             </span>
           </span>
         </HButton>

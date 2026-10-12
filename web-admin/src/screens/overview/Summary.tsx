@@ -147,7 +147,7 @@ function AllTimeCard({ a, isDesktop }: { a: Dashboard["profit_all"]; isDesktop: 
   const parts: { label: string; value: number; sub?: string }[] = [
     { label: "Наценка", value: a.goods, sub: a.goods_items < a.items ? `по ${a.goods_items} из ${a.items} тов. с выкупом` : undefined },
     { label: "Вес при выдаче", value: a.issue_weight ?? 0, sub: a.issue_weight_kg ? `${a.issue_weight_kg.toLocaleString("ru-RU")} кг` : undefined },
-    { label: "Вес в партиях", value: a.client },
+    { label: "Вес в партиях", value: a.client, sub: "вписан вручную — сверх уведомлений" },
     { label: "Выкуп веса", value: -a.buy },
     { label: "Доставка", value: -a.delivery },
   ];
@@ -230,14 +230,14 @@ function ProfitCard({ p, periodLabel, isDesktop }: { p: ProfitSummary; periodLab
       >
         <CountUp text={som(p.total)} />
       </div>
-      <div style={css("font-size:12px;color:var(--text-3);margin-top:2px")}>наценка на товары + вес при выдаче + вес в партиях − выкуп веса − доставка</div>
+      <div style={css("font-size:12px;color:var(--text-3);margin-top:2px")}>наценка на товары + вес при выдаче + вес, вписанный в партиях вручную − выкуп веса − доставка</div>
 
       <Waterfall
         compact={!isDesktop}
         steps={[
           { label: "Наценка", hint: "на товары", value: p.goods },
           { label: "Вес", hint: "при выдаче", value: p.issue_weight ?? 0 },
-          { label: "Вес", hint: "в партиях", value: p.client },
+          { label: "Вес", hint: "в партиях, вручную", value: p.client },
           { label: "Выкуп", hint: "веса", value: -p.buy },
           { label: "Доставка", hint: "водителю", value: -p.delivery },
         ]}

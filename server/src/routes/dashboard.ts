@@ -70,14 +70,17 @@ type BatchCalc = ReturnType<typeof batchesWithCalc>[number];
 /** День партии: приход последнего товара, а пока товаров нет — день создания. */
 const batchDay = (b: BatchCalc) => localDay(b.last_arrival ?? b.batch.created_at);
 
-/** Деньги партий периода (сом): вес клиентам, выкуп веса, доставка. */
+/**
+ * Деньги партий периода (сом): вес, вписанный в партиях вручную, выкуп веса, доставка.
+ * Вес из «Уведомлений» здесь не берём — он уже в «Вес при выдаче» (в день выдачи), иначе задвоится.
+ */
 function batchMoney(bs: BatchCalc[], from: string, to: string) {
   const inPeriod = bs.filter((b) => {
     const d = batchDay(b);
     return d >= from && d <= to;
   });
-  const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => r2(inPeriod.reduce((a, b) => a + b.calc[k], 0));
-  return { count: inPeriod.length, client: sumOf("client_som"), buy: sumOf("buy_som"), delivery: sumOf("delivery_som") };
+  const sumOf = (k: "client_manual_som" | "buy_som" | "delivery_som") => r2(inPeriod.reduce((a, b) => a + b.calc[k], 0));
+  return { count: inPeriod.length, client: sumOf("client_manual_som"), buy: sumOf("buy_som"), delivery: sumOf("delivery_som") };
 }
 
 /** Вес, взятый при выдаче (кг и сомы), по дням выдачи; у удалённых клиентов не считаем. */
@@ -85,7 +88,7 @@ function issueWeights() {
   return all<{ issued_at: string; kg: number; som: number; method: string }>(
     `SELECT s.issued_at, COALESCE(s.weight_kg, 0) AS kg, s.weight_som AS som, s.weight_method AS method
        FROM issues s JOIN customers c ON c.id = s.customer_id
-      WHERE c.deleted_at IS NULL AND s.weight_som > 0`
+      WHERE c.deleted_at IS NULL AND s.deleted_at IS NULL AND s.weight_som > 0`
   );
 }
 type IssueWeight = ReturnType<typeof issueWeights>[number];
@@ -294,8 +297,9 @@ dashboardRouter.get("/dashboard", (req, res) => {
     // Общая прибыль за всё время — все товары и все партии, без фильтра периода.
     profit_all: (() => {
       const t = totals(list);
-      const sumOf = (k: "client_som" | "buy_som" | "delivery_som") => r2(bs.reduce((a, b) => a + b.calc[k], 0));
-      const client = sumOf("client_som");
+      // Вес из партий — только вписанный вручную: вес из «Уведомлений» уже в issue_weight.
+      const sumOf = (k: "client_manual_som" | "buy_som" | "delivery_som") => r2(bs.reduce((a, b) => a + b.calc[k], 0));
+      const client = sumOf("client_manual_som");
       const buy = sumOf("buy_som");
       const delivery = sumOf("delivery_som");
       const w = weightIn(ws, "0000-01-01", "9999-12-31");
@@ -331,6 +335,8 @@ dashboardRouter.get("/dashboard", (req, res) => {
         items: c.items,
         customers: c.customers,
         client: c.client_som,
+        client_auto: c.client_auto_som,
+        client_manual: c.client_manual_som,
         markup: c.markup_som,
         buy: c.buy_som,
         delivery: c.delivery_som,

@@ -16,6 +16,7 @@ import { useAuth } from "./auth/AuthContext";
 import { APP_NAME, APP_TAGLINE } from "./config";
 import { MONO, css, mix } from "./design/css";
 import { I_CLOSE, Icon, Svg } from "./design/icons";
+import FloatingBg from "./design/FloatingBg";
 import { LogoMark } from "./design/Logo";
 import { PrefsProvider } from "./design/prefs";
 import { HButton, Toast } from "./design/ui";
@@ -23,6 +24,7 @@ import GlobalSearch from "./components/GlobalSearch";
 import ItemModal from "./components/ItemModal";
 import TestBanner from "./components/TestBanner";
 import { on, onOpenItem } from "./lib/events";
+import { useReveal } from "./lib/reveal";
 import LoginPage from "./pages/LoginPage";
 import Audit from "./screens/Audit";
 import Customers, { CustomerDetail } from "./screens/Customers";
@@ -183,6 +185,10 @@ function Shell() {
       window.setTimeout(() => setToast((t) => (t && t.id === id ? null : t)), 2900),
     ];
   }
+
+  // Блоки страницы появляются плавно: на широком экране — все при открытии, на телефоне — ещё и по прокрутке.
+  const mainRef = useRef<HTMLElement>(null);
+  useReveal(mainRef, `${!loading && !!user}|${loc.pathname}`, width < 860);
 
   // Пока проверяем вход, поверх страницы стоит заставка из index.html (src/lib/boot.ts).
   if (loading) return null;
@@ -352,13 +358,15 @@ function Shell() {
       {/* ---------- Контентная колонка ---------- */}
       <div
         style={css(
-          "flex:1;min-width:0;height:100%;display:flex;flex-direction:column;overflow:hidden"
+          "position:relative;flex:1;min-width:0;height:100%;display:flex;flex-direction:column;overflow:hidden"
         )}
       >
+        {/* Фон за всеми блоками: свечение и печать Jetcargo случайно плавают по всей области, на месте при прокрутке */}
+        <FloatingBg />
         {!isDesktop ? (
           <header
             style={css(
-              "height:54px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--surface);border-bottom:1px solid var(--border)"
+              "position:relative;z-index:2;height:54px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;background:var(--surface);border-bottom:1px solid var(--border)"
             )}
           >
             <HButton
@@ -379,7 +387,7 @@ function Shell() {
         ) : (
           <header
             style={css(
-              "height:56px;flex:none;display:flex;align-items:center;gap:16px;padding:0 22px;background:var(--surface);border-bottom:1px solid var(--border)"
+              "position:relative;z-index:2;height:56px;flex:none;display:flex;align-items:center;gap:16px;padding:0 22px;background:var(--surface);border-bottom:1px solid var(--border)"
             )}
           >
             <div style={css("min-width:0")}>
@@ -407,7 +415,7 @@ function Shell() {
         )}
 
         {/* scrollbar-gutter: место под полосу прокрутки занято заранее — при подгрузке данных страница не сдвигается вбок. */}
-        <main style={css("flex:1;min-height:0;overflow:auto;position:relative;scrollbar-gutter:stable")}>
+        <main ref={mainRef} style={css("flex:1;min-height:0;overflow:auto;position:relative;scrollbar-gutter:stable")}>
           <Routes>
             <Route path="/" element={<Overview isDesktop={isDesktop} isAdmin={isAdmin} />} />
             <Route path="/receive" element={<Receive toast={showToast} />} />
