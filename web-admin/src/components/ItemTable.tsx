@@ -65,6 +65,23 @@ function Check({ checked, partial, onChange, title }: { checked: boolean; partia
   );
 }
 
+/** Найденная поиском строка: мягкий маркер; выделенная — ярче и с пульсом. */
+const foundClass = (id: number, found?: Set<number>, focus?: number | null) =>
+  focus === id ? " row-found on" : found?.has(id) ? " row-found" : "";
+
+/** Совпадение с запросом — подсветить внутри текста. */
+function Hl({ text, q }: { text: string; q?: string }) {
+  const at = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (!q || at < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, at)}
+      <mark className="hl-mark">{text.slice(at, at + q.length)}</mark>
+      {text.slice(at + q.length)}
+    </>
+  );
+}
+
 const sameGroup = (a: Item | undefined, b: Item) => !!a && a.customer_id === b.customer_id && a.order_date === b.order_date;
 
 export default function ItemTable({
@@ -77,11 +94,20 @@ export default function ItemTable({
   footer,
   selected,
   onSelect,
+  found,
+  focus,
+  query,
 }: {
   rows: Item[];
   columns: Column[];
   onOpen: (id: number) => void;
   highlight?: number | null;
+  /** Найдены поиском — строки подсвечены маркером. */
+  found?: Set<number>;
+  /** Выделенная найденная строка (к ней прокрутили). */
+  focus?: number | null;
+  /** Что искали — совпадение в названии и коде выделяется. */
+  query?: string;
   empty: ReactNode;
   isDesktop: boolean;
   footer?: ReactNode;
@@ -90,7 +116,7 @@ export default function ItemTable({
   onSelect?: (ids: number[], on: boolean) => void;
 }) {
   if (!isDesktop)
-    return <MobileList rows={rows} onOpen={onOpen} highlight={highlight} empty={empty} footer={footer} selected={selected} onSelect={onSelect} />;
+    return <MobileList rows={rows} onOpen={onOpen} highlight={highlight} empty={empty} footer={footer} selected={selected} onSelect={onSelect} found={found} focus={focus} />;
   const selectable = !!onSelect && !!selected;
   const isSel = (id: number) => !!selected?.has(id);
 
@@ -115,8 +141,9 @@ export default function ItemTable({
   const itemRow = (it: Item, last: boolean) => (
     <div
       key={it.id}
+      data-item={it.id}
       onClick={() => onOpen(it.id)}
-      className={"row-click" + (highlight === it.id ? " scan-flash" : "")}
+      className={"row-click" + (highlight === it.id ? " scan-flash" : "") + foundClass(it.id, found, focus)}
       style={mix("display:grid;align-items:center;font-size:13px;min-height:48px", {
         gridTemplateColumns: grid,
         borderBottom: last ? "none" : "1px solid var(--border-2)",
@@ -126,7 +153,7 @@ export default function ItemTable({
       {selectable && <Check checked={isSel(it.id)} onChange={(on) => onSelect!([it.id], on)} />}
       {cols.map((c, ci) => (
         <div key={c} style={mix("padding:8px 14px;min-width:0", { textAlign: DEF[c].align ?? "left" }, ci === 0 && firstPad)}>
-          {renderCell(c, it, false)}
+          {renderCell(c, it, false, found?.has(it.id) || focus === it.id ? query : undefined)}
         </div>
       ))}
     </div>
@@ -258,7 +285,7 @@ function plural(n: number, one: string, few: string, many: string): string {
 const muted = "color:var(--text-4)";
 const one = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
 
-function renderCell(c: Column, it: Item, cont: boolean): ReactNode {
+function renderCell(c: Column, it: Item, cont: boolean, q?: string): ReactNode {
   switch (c) {
     case "date":
       return cont ? null : (
@@ -277,11 +304,11 @@ function renderCell(c: Column, it: Item, cont: boolean): ReactNode {
       return (
         <div style={css("min-width:0")}>
           <div style={css(one)} title={it.name}>
-            {it.name}
+            <Hl text={it.name} q={q} />
           </div>
           {it.code && (
             <div style={css(MONO + ";font-size:11px;" + muted + ";" + one)} title={it.code}>
-              {it.code}
+              <Hl text={it.code} q={q} />
             </div>
           )}
         </div>
@@ -348,6 +375,8 @@ function MobileList({
   footer,
   selected,
   onSelect,
+  found,
+  focus,
 }: {
   rows: Item[];
   onOpen: (id: number) => void;
@@ -356,6 +385,8 @@ function MobileList({
   footer?: ReactNode;
   selected?: Set<number>;
   onSelect?: (ids: number[], on: boolean) => void;
+  found?: Set<number>;
+  focus?: number | null;
 }) {
   if (rows.length === 0) return <div style={css(PANEL)}>{empty}</div>;
   const groups: Item[][] = [];
@@ -380,8 +411,9 @@ function MobileList({
             return (
               <div
                 key={it.id}
+                data-item={it.id}
                 onClick={() => onOpen(it.id)}
-                className={"row-click" + (highlight === it.id ? " scan-flash" : "")}
+                className={"row-click" + (highlight === it.id ? " scan-flash" : "") + foundClass(it.id, found, focus)}
                 style={css("padding:9px 13px;border-bottom:1px solid var(--border-2);display:flex;flex-direction:column;gap:5px")}
               >
                 <div style={css("display:flex;justify-content:space-between;gap:8px;align-items:flex-start")}>

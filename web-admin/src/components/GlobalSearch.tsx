@@ -2,21 +2,26 @@
  * Сквозной поиск в шапке: клиенты и товары по имени, телефону, коду товара, названию.
  * Запрос уходит с задержкой (debounce), результаты — выпадающим списком.
  * Клиент → его карточка; товар → карточка товара поверх текущего экрана (openItem). Ctrl+K — фокус.
+ * Открыта карточка клиента и найден его товар — строка подсвечивается прямо в списке,
+ * а клик по такому товару прокручивает к ней (focusItem).
  */
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { globalSearch, type SearchResults } from "../api/domain";
 import { MONO, css } from "../design/css";
 import { I_SEARCH, Svg } from "../design/icons";
 import { HButton, StatusBadge } from "../design/ui";
 import { som } from "../lib/cargo";
-import { openItem, useDebounced } from "../lib/events";
+import { focusItem, itemMatches, openItem, setSearchHits, useDebounced } from "../lib/events";
 
 const EMPTY: SearchResults = { query: "", customers: [], items: [] };
 
 export default function GlobalSearch() {
   const nav = useNavigate();
+  const loc = useLocation();
+  // Клиент, чья карточка открыта: его товары из поиска показываем прямо в списке.
+  const hereId = Number(loc.pathname.match(/\/customers\/(\d+)\/?$/)?.[1] ?? 0) || null;
   const [q, setQ] = useState("");
   const term = useDebounced(q.trim(), 200);
   const [res, setRes] = useState<SearchResults>(EMPTY);
@@ -61,7 +66,25 @@ export default function GlobalSearch() {
     };
   }, []);
 
+  // Найденное — открытой карточке клиента, чтобы подсветить строки. Пустой запрос — снять подсветку.
+  // Подсвечиваем только найденные по коду или названию — не все товары клиента, найденного по телефону.
+  useEffect(() => {
+    if (term.length < 2) setSearchHits({ query: "", ids: [] });
+    else if (res.query === term) setSearchHits({ query: term, ids: res.items.filter((i) => itemMatches(i, term)).map((i) => i.id) });
+  }, [term, res]);
+
   const total = res.customers.length + res.items.length;
+  const isHere = (i: { customer_id: number }) => hereId !== null && i.customer_id === hereId;
+  function pickItem(i: { id: number; customer_id: number }) {
+    if (isHere(i)) {
+      // Товар этого клиента — не открываем поверх, а показываем, где он в списке.
+      setOpen(false);
+      focusItem(i.id);
+    } else {
+      openItem(i.id);
+      reset();
+    }
+  }
   const reset = () => {
     setOpen(false);
     setQ("");
@@ -72,8 +95,7 @@ export default function GlobalSearch() {
       reset();
       nav(`/customers/${res.customers[0].id}`);
     } else if (res.items[0]) {
-      openItem(res.items[0].id);
-      reset();
+      pickItem(res.items[0]);
     }
   }
 
@@ -129,20 +151,21 @@ export default function GlobalSearch() {
               {res.items.length > 0 && (
                 <Group title="Товары">
                   {res.items.map((i) => (
-                    <Row
-                      key={i.id}
-                      onClick={() => {
-                        openItem(i.id);
-                        reset();
-                      }}
-                    >
+                    <Row key={i.id} onClick={() => pickItem(i)}>
                       <span style={css("min-width:0")}>
                         <span style={css("display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{i.name}</span>
                         <span style={css("font-size:11.5px;color:var(--text-3)")}>
                           {i.customer_name} · <span style={css(MONO)}>{i.code || "без кода"}</span>
                         </span>
                       </span>
-                      <StatusBadge status={i.stage ?? i.status} size="sm" dot={false} />
+                      <span style={css("display:flex;align-items:center;gap:6px;flex:none")}>
+                        {isHere(i) && (
+                          <span title="Товар этого клиента — нажмите, чтобы показать в списке" style={css("font-size:11px;color:var(--amber);background:var(--amber-tint);padding:2px 8px;border-radius:999px;white-space:nowrap")}>
+                            ↓ в списке
+                          </span>
+                        )}
+                        <StatusBadge status={i.stage ?? i.status} size="sm" dot={false} />
+                      </span>
                     </Row>
                   ))}
                 </Group>

@@ -5,7 +5,7 @@
  * суммы, оплаты, долг, что заказано / на складе / выдано.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
 import {
@@ -35,7 +35,7 @@ import { I_BACK, I_CLOSE, I_PLUS, I_SEARCH, I_USER, Icon, Svg } from "../design/
 import { PANEL, Page } from "../design/table";
 import { FieldLabel, HButton, LoadError, ModalCancel, ModalError, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary, inputStyle } from "../design/ui";
 import { METHOD_OPTIONS, date, parseMoney, som, todayIso } from "../lib/cargo";
-import { emit, useDebounced, useRefresh } from "../lib/events";
+import { emit, itemMatches, onFocusItem, useDebounced, useRefresh, useSearchHits } from "../lib/events";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 const LIMIT = 100;
@@ -450,6 +450,75 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
   useEffect(load, [load]);
   useRefresh(load);
 
+  // --- Найденное поиском в шапке: где эти товары в списке клиента ---
+  const loc = useLocation();
+  const hits = useSearchHits();
+  const [focusId, setFocusId] = useState<number | null>(null);
+  const [pulse, setPulse] = useState(0);
+  const [hidden, setHidden] = useState("");
+  const hitKey = `${id}|${hits.query}`;
+  // Пока грузится другой клиент, в card ещё прошлый — его не трогаем.
+  const cardOk = !!card && card.customer.id === Number(id);
+  const found = useMemo(() => {
+    // Ищем по всему списку клиента (сервер в выпадающем поиске отдаёт только первые 8 товаров).
+    if (!card || !cardOk || hidden === hitKey || hits.query.length < 2) return [] as number[];
+    return card.items.filter((i) => itemMatches(i, hits.query)).map((i) => i.id);
+  }, [card, cardOk, hits, hidden, hitKey]);
+  const foundSet = useMemo(() => new Set(found), [found]);
+  const latest = useRef({ card, tab });
+  latest.current = { card, tab };
+
+  /** Показать товар: открыть вкладку, где он виден, прокрутить к строке; focus — ещё и выделить. */
+  const reveal = useCallback((itemId: number, focus: boolean) => {
+    const { card: cur, tab: curTab } = latest.current;
+    const it = cur?.items.find((i) => i.id === itemId);
+    if (!it) return false;
+    if (curTab && it.status !== curTab) setTab("");
+    if (focus) {
+      setFocusId(itemId);
+      setPulse((n) => n + 1);
+    }
+    window.setTimeout(() => document.querySelector(`[data-item="${itemId}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 80);
+    return true;
+  }, []);
+
+  // Новый поиск нашёл товары этого клиента — сразу к первому (и вкладку, где их видно).
+  const shownKey = useRef("");
+  useEffect(() => {
+    if (!card || !found.length || shownKey.current === hitKey) return;
+    shownKey.current = hitKey;
+    const items = card.items.filter((i) => foundSet.has(i.id));
+    if (tab && !items.some((i) => i.status === tab)) setTab("");
+    setFocusId(null);
+    reveal(items[0].id, false);
+  }, [card, found, foundSet, hitKey, tab, reveal]);
+
+  // Клик по товару этого клиента в выпадающем поиске.
+  useEffect(() => onFocusItem((itemId) => void reveal(itemId, true)), [reveal]);
+
+  // Пришли из карточки товара («Клиент») — выделить этот товар.
+  const stateFocus = (loc.state as { focus?: number } | null)?.focus ?? null;
+  const focusedFromState = useRef<string>("");
+  useEffect(() => {
+    if (!card || !cardOk || !stateFocus || focusedFromState.current === loc.key) return;
+    focusedFromState.current = loc.key;
+    reveal(stateFocus, true);
+  }, [card, cardOk, stateFocus, loc.key, reveal]);
+
+  // Перешли к другому клиенту — прошлое выделение не тащим.
+  useEffect(() => setFocusId(null), [id]);
+
+  /** Стрелки «к следующему найденному» — по порядку в списке. */
+  function stepFound(dir: 1 | -1) {
+    if (!card) return;
+    const order = card.items.filter((i) => foundSet.has(i.id) || i.id === focusId).map((i) => i.id);
+    if (!order.length) return;
+    const at = focusId !== null ? order.indexOf(focusId) : -1;
+    const next = order[(at + dir + order.length) % order.length];
+    reveal(next, true);
+  }
+  const foundCount = new Set([...found, ...(focusId !== null ? [focusId] : [])]).size;
+
   if (error && !card) return <LoadError text={error} onRetry={load} />;
   if (!card) return <Page size="wide"><SkeletonRows rows={5} /></Page>;
   const c = card.customer;
@@ -545,7 +614,7 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
         />
       </div>
 
-      <div style={css("margin-bottom:10px")}>
+      <div style={css("margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
         <Tabs<"" | ItemStatus>
           value={tab}
           onChange={setTab}
@@ -556,6 +625,51 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
             { key: "issued", label: "Выданы", count: t.issued, dot: ST.issued.dot },
           ]}
         />
+        {foundCount > 0 && (
+          <div className="cu-found" role="status">
+            <span className="cu-found-i">
+              <Svg paths={I_SEARCH} size={13} />
+            </span>
+            <span style={css("white-space:nowrap")}>
+              {focusId !== null && foundCount > 1 ? (
+                <>
+                  Найдено здесь <b>{[...card.items.filter((i) => foundSet.has(i.id) || i.id === focusId)].findIndex((i) => i.id === focusId) + 1}</b> из <b>{foundCount}</b>
+                </>
+              ) : (
+                <>
+                  Найдено здесь: <b>{foundCount}</b> {plural(foundCount, "товар", "товара", "товаров")}
+                </>
+              )}
+            </span>
+            {foundCount > 1 && (
+              <>
+                <HButton onClick={() => stepFound(-1)} className="cu-found-b" s="" hover="" title="Предыдущий найденный">
+                  <Svg paths={[["path", { d: "m18 15-6-6-6 6" }]]} size={15} />
+                </HButton>
+                <HButton onClick={() => stepFound(1)} className="cu-found-b" s="" hover="" title="Следующий найденный">
+                  <Svg paths={[["path", { d: "m6 9 6 6 6-6" }]]} size={15} />
+                </HButton>
+              </>
+            )}
+            {foundCount === 1 && (
+              <HButton onClick={() => stepFound(1)} className="cu-found-b wide" s="" hover="" title="Показать в списке">
+                показать
+              </HButton>
+            )}
+            <HButton
+              onClick={() => {
+                setFocusId(null);
+                setHidden(hitKey);
+              }}
+              className="cu-found-b"
+              s=""
+              hover=""
+              title="Снять выделение"
+            >
+              <Svg paths={I_CLOSE} size={13} />
+            </HButton>
+          </div>
+        )}
       </div>
       <ItemTable
         rows={rows}
@@ -564,6 +678,10 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
         onOpen={setOpen}
         selected={sel.selected}
         onSelect={sel.onSelect}
+        found={foundSet}
+        focus={focusId}
+        query={hidden === hitKey ? undefined : hits.query}
+        key={`f${pulse}`}
         empty={<Empty icon="orders" title="Товаров нет" text="Нажмите «+ Новый заказ» вверху" />}
       />
 

@@ -19,7 +19,7 @@ import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_SEARCH, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { HButton, ModalError } from "../design/ui";
+import { HButton, ModalError, ModalShell, btnPrimary, useModalClose } from "../design/ui";
 import { dateTime, som } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
 
@@ -164,10 +164,10 @@ export default function Notify({ toast }: { isDesktop?: boolean; toast: Toast })
 // --- Сводка ---------------------------------------------------------------------------------------
 
 const TONE = {
-  amber: { bg: "var(--amber-tint)", fg: "var(--amber)" },
-  green: { bg: "var(--green-tint)", fg: "var(--green)" },
-  violet: { bg: "var(--violet-tint)", fg: "var(--violet)" },
-  sky: { bg: "var(--sky-tint)", fg: "var(--sky)" },
+  amber: { bg: "var(--amber-tint)", fg: "var(--amber)", dot: "var(--amber-dot)" },
+  green: { bg: "var(--green-tint)", fg: "var(--green)", dot: "var(--green-dot)" },
+  violet: { bg: "var(--violet-tint)", fg: "var(--violet)", dot: "var(--violet-dot)" },
+  sky: { bg: "var(--sky-tint)", fg: "var(--sky)", dot: "var(--sky-dot)" },
 } as const;
 
 function Stat({ tone, icon, label, value, sub, onClick, active }: { tone: keyof typeof TONE; icon: React.ReactNode; label: string; value: string | null; sub: string; onClick?: () => void; active?: boolean }) {
@@ -187,7 +187,7 @@ function Stat({ tone, icon, label, value, sub, onClick, active }: { tone: keyof 
     </>
   );
   return onClick ? (
-    <button type="button" className={"nt-stat click" + (active ? " on" : "")} style={{ ["--c" as string]: t.fg }} onClick={onClick}>
+    <button type="button" className={"nt-stat click" + (active ? " on" : "")} style={{ ["--c" as string]: t.dot }} onClick={onClick}>
       {body}
     </button>
   ) : (
@@ -404,6 +404,8 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [cancel, setCancel] = useState<Notice | null>(null);
+  // Отправка без веса — сначала спросить: за вес тогда ничего не возьмём.
+  const [noWeight, setNoWeight] = useState<null | "send" | "copy">(null);
   const [waMode, setWaModeState] = useState<WaMode>(readWaMode);
   const setWaMode = (m: WaMode) => {
     setWaModeState(m);
@@ -489,6 +491,18 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Нет веса для новых товаров — сначала предупредить; иначе сразу отправить. */
+  const needWeightCheck = canWeigh && !kg;
+  function trySend(how: "send" | "copy") {
+    if (bad || busy) return;
+    if (needWeightCheck) {
+      setNoWeight(how);
+      return;
+    }
+    if (how === "send") sendWa();
+    else void copy();
   }
 
   function sendWa() {
@@ -709,7 +723,7 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
           {error && <ModalError text={error} />}
           <div className="nt-actions">
             <HButton
-              onClick={sendWa}
+              onClick={() => trySend("send")}
               disabled={!phone || bad || busy}
               className="nt-wa"
               s=""
@@ -719,7 +733,7 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
               <WaIcon />
               {busy ? "Сохраняю…" : canWeigh ? "Отправить в WhatsApp" : "Напомнить в WhatsApp"}
             </HButton>
-            <HButton onClick={copy} disabled={bad || busy} className="nt-copy" s="" hover="" title="Скопировать текст и отметить уведомление">
+            <HButton onClick={() => trySend("copy")} disabled={bad || busy} className="nt-copy" s="" hover="" title="Скопировать текст и отметить уведомление">
               Скопировать и отметить
             </HButton>
           </div>
@@ -742,6 +756,45 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
           {!phone && <div style={css("font-size:12px;color:var(--amber)")}>У клиента нет телефона — скопируйте текст и отправьте вручную.</div>}
         </div>
       </div>
+
+      {noWeight && (
+        <ModalShell
+          title="Вес посылки не указан"
+          subtitle={`${row.name} · ${row.items.length} ${plural(row.items.length, "товар", "товара", "товаров")} на складе`}
+          icon={<WeightIcon />}
+          tone="amber"
+          width={460}
+          onClose={() => setNoWeight(null)}
+          footer={
+            <NoWeightFoot
+              onSkip={() => {
+                // Окно WhatsApp — прямо в этом клике, иначе браузер его заблокирует.
+                if (noWeight === "send") sendWa();
+                else void copy();
+              }}
+              onWeigh={() => weightRef.current?.focus()}
+            />
+          }
+        >
+          <div className="mf-body">
+            <div className="nt-noweight">
+              <span className="nt-noweight-i">
+                <WeightIcon />
+              </span>
+              <span style={css("min-width:0")}>
+                <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>За вес ничего не возьмём</span>
+                <span style={css("display:block;margin-top:3px;font-size:12.5px;line-height:1.5;color:var(--text-3)")}>
+                  В сообщении будет только долг за товар{debt > 0 ? ` — ${som(debt)}` : ""}, а на «Выдаче» сумма за вес не добавится. Взвесьте посылку и введите вес, чтобы клиент сразу знал, сколько платить.
+                </span>
+              </span>
+            </div>
+            <div className="mf-total">
+              <span>Сейчас к оплате в сообщении</span>
+              <b style={css("font-weight:500;color:var(--text);font-variant-numeric:tabular-nums")}>{som(total)}</b>
+            </div>
+          </div>
+        </ModalShell>
+      )}
 
       {cancel && (
         <Confirm
@@ -774,6 +827,36 @@ function SumRow({ label, value, color, strong }: { label: string; value: string;
       <span>{label}</span>
       <span style={mix(NUM + ";white-space:nowrap", { color: color ?? "var(--text)" })}>{value}</span>
     </div>
+  );
+}
+
+/** Кнопки окна «вес не указан»: закрывают окно плавно, как крестик. */
+function NoWeightFoot({ onSkip, onWeigh }: { onSkip: () => void; onWeigh: () => void }) {
+  const close = useModalClose();
+  return (
+    <>
+      <HButton
+        onClick={() => {
+          onSkip();
+          close();
+        }}
+        className="nt-skip"
+        s=""
+        hover=""
+      >
+        Отправить без веса
+      </HButton>
+      <HButton
+        onClick={() => {
+          close();
+          setTimeout(onWeigh, 200);
+        }}
+        s={btnPrimary + ";min-width:150px"}
+        hover="background:var(--accent-hover)"
+      >
+        Ввести вес
+      </HButton>
+    </>
   );
 }
 

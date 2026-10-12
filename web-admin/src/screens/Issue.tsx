@@ -1334,11 +1334,9 @@ function IssueHistory({ toast }: { toast: Toast }) {
 
         <div ref={listRef} className="iss-hist-list thin-scroll">
           {!data ? (
-            <div style={css("padding:16px 18px")}>
-              <SkeletonRows rows={4} />
-            </div>
+            <HistFill />
           ) : data.rows.length === 0 ? (
-            <Empty icon="issue" title={q ? "Ничего не найдено" : "За этот период выдач нет"} text="Выберите другой период или измените поиск" />
+            <HistFill title={q ? "Ничего не найдено" : "За этот период выдач нет"} text="выберите другой период или измените поиск" />
           ) : (
             <>
               {groups.map((g) => {
@@ -1362,7 +1360,9 @@ function IssueHistory({ toast }: { toast: Toast }) {
                   </div>
                 );
               })}
-              <div style={css("padding:0 18px 22px")}>
+              {/* Остаток ленты — бледные строки, чтобы не было пустоты */}
+              <HistFill title={data.total > LIMIT ? "Ещё выдачи — на следующих страницах" : "Это все выдачи за период"} text={data.total > LIMIT ? "переключите страницу ниже" : "выберите период шире, чтобы увидеть больше"} />
+              <div style={css("flex:none;padding:0 18px 22px")}>
                 <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
               </div>
             </>
@@ -1378,6 +1378,49 @@ function IssueHistory({ toast }: { toast: Toast }) {
  * Одна выдача в ленте: время, точка (цвет — как оплатили: заранее, при выдаче или в долг),
  * клиент и кто выдал, товары (первые четыре, остальное — по нажатию), сумма и оплата.
  */
+/** Пустое место ленты истории: бледные строки «время · точка · клиент · сумма» и подсказка по центру. */
+function HistFill({ title, text }: { title?: string; text?: string }) {
+  return (
+    <div className="ghost-fill iss-hfill">
+      <div className="ghost-rows" aria-hidden>
+        {Array.from({ length: 10 }, (_, i) => (
+          <div key={i} className="iss-tl iss-tl-ghost">
+            <span className="sk" style={css("width:34px;height:8px;margin-top:5px")} />
+            <span className="iss-tl-dot">
+              <i style={{ background: "var(--border-strong)" }} />
+            </span>
+            <span style={css("display:flex;flex-direction:column;gap:9px;padding-top:3px")}>
+              <span style={css("display:flex;gap:8px;align-items:center")}>
+                <span className="sk" style={mix("height:9px", { width: `${[26, 34, 22, 30, 38, 24][i % 6]}%` })} />
+                <span className="sk" style={css("width:18%;height:7px")} />
+              </span>
+              <span style={css("display:flex;gap:6px")}>
+                <span className="sk" style={mix("height:20px;border-radius:7px", { width: `${[120, 90, 140, 100][i % 4]}px` })} />
+                {i % 3 === 0 && <span className="sk" style={css("width:80px;height:20px;border-radius:7px")} />}
+              </span>
+            </span>
+            <span style={css("display:flex;flex-direction:column;align-items:flex-end;gap:8px;padding-top:3px")}>
+              <span className="sk" style={css("width:52px;height:9px")} />
+              <span className="sk" style={css("width:74px;height:7px")} />
+            </span>
+          </div>
+        ))}
+      </div>
+      {title && (
+        <div className="ghost-msg">
+          <span style={css("width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
+            <Icon name="issue" size={16} />
+          </span>
+          <span style={css("min-width:0")}>
+            <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text)")}>{title}</span>
+            {text && <span style={css("display:block;font-size:12px;color:var(--text-4);margin-top:2px")}>{text}</span>}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TimelineRow({ r, first, last, onOpen }: { r: IssueRow; first: boolean; last: boolean; onOpen: (id: number) => void }) {
   const [all, setAll] = useState(false);
   const sum = r.items.reduce((acc, i) => acc + i.sale, 0);
