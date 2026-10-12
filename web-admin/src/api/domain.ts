@@ -177,6 +177,8 @@ export const deleteItem = (id: number) => api.delete(`/items/${id}`).then(() => 
 export const addItemPayment = (id: number, body: { amount: number; method?: string; comment?: string }) =>
   api.post<{ id: number; item: Item }>(`/items/${id}/payments`, body).then((r) => r.data);
 export const cancelPayment = (id: number) => api.delete<Item>(`/payments/${id}`).then((r) => r.data);
+/** Сколько всего оплачено за товар: больше — запишется оплата на разницу, меньше — отменятся последние оплаты (админ). */
+export const setItemPaid = (id: number, paid: number, method = "cash") => api.post<Item>(`/items/${id}/set-paid`, { paid, method }).then((r) => r.data);
 
 // --- Массовые действия ---
 export interface BulkStatusResult {
@@ -184,6 +186,8 @@ export interface BulkStatusResult {
   skipped: { id: number; name: string; reason: string }[];
   debt: number;
   customers: number;
+  /** Вес по уведомлениям этих клиентов — берётся при выдаче. */
+  weight_som?: number;
   dry_run?: boolean;
   issue_ids?: number[];
 }
@@ -209,6 +213,8 @@ export interface CustomerRow extends Customer {
   debt: number;
   ordered: number;
   in_stock: number;
+  stock_sale?: number;
+  stock_debt?: number;
   issued: number;
   last_order_date: string | null;
 }
@@ -216,6 +222,8 @@ export interface CustomerCard {
   customer: Customer;
   totals: Totals;
   items: Item[];
+  /** Вес по уведомлениям, который возьмут при выдаче. */
+  pending_weight?: PendingWeight;
 }
 
 export interface CustomersSummary {
@@ -257,6 +265,9 @@ export interface CustomerBrief {
   debt: number;
   in_stock: number;
   ordered: number;
+  /** Для выдачи: сумма и долг только по товарам на складе. */
+  stock_sale?: number;
+  stock_debt?: number;
 }
 
 export interface ScanResponse {
@@ -353,7 +364,8 @@ export const listScans = (params: { q?: string; result?: string; since?: string;
   api.get<Page<ScanRow>>("/scans", { params }).then((r) => r.data);
 
 export const issueLookup = (q: string) => api.get<CustomerBrief[]>("/issue/lookup", { params: { q } }).then((r) => r.data);
-export const issueItems = (body: { customer_id: number; item_ids: number[]; payment_amount?: number; comment?: string }) =>
+/** weight_som — сумма за вес по уведомлениям, которую видел кассир (сервер сверит). */
+export const issueItems = (body: { customer_id: number; item_ids: number[]; payment_amount?: number; comment?: string; weight_som?: number }) =>
   api.post<{ issue_id: number; items: Item[] }>("/issues", body).then((r) => r.data);
 
 export interface IssueRow {
@@ -366,11 +378,14 @@ export interface IssueRow {
   user_login: string | null;
   /** Сколько оплаты принято прямо при выдаче (старый сервер не присылает). */
   paid_now?: number;
+  /** Вес посылки при выдаче и сумма за него (оплачена сразу). */
+  weight_kg?: number | null;
+  weight_som?: number;
   items: Item[];
 }
 export interface IssueList extends Page<IssueRow> {
   /** debt — сколько по выданным товарам ещё не оплачено; paid_now — принято при выдаче. */
-  summary: { items: number; qty: number; sale: number; customers: number; debt?: number; paid_now?: number };
+  summary: { items: number; qty: number; sale: number; customers: number; debt?: number; paid_now?: number; weight_kg?: number; weight_som?: number };
   /** Выдачи по дням (день — в часовом поясе из tz). */
   by_day?: { day: string; issues: number; items: number; sale: number }[];
 }
@@ -416,6 +431,9 @@ export interface ProfitSummary {
   client: number;
   buy: number;
   delivery: number;
+  /** Вес, взятый при выдаче (сом и кг). */
+  issue_weight?: number;
+  issue_weight_kg?: number;
   total: number;
   /** То же за такой же период перед выбранным; null — сравнивать не с чем. */
   previous: number | null;
@@ -522,7 +540,8 @@ export interface Finance {
     method: string;
     paid_at: string;
     comment: string;
-    item_id: number;
+    /** null — оплата за вес при выдаче (товара нет). */
+    item_id: number | null;
     item_name: string;
     customer_id: number;
     customer_name: string;
@@ -708,7 +727,69 @@ export const globalSearch = (q: string) => api.get<SearchResults>("/search", { p
 
 export interface Settings {
   cny_rate: number;
+  /** Вес посылки: $ за кг и курс доллара (сом за 1 $). */
+  weight_rate_usd: number;
+  usd_rate: number;
+  /** Цена 1 кг для клиента в сомах: $ за кг × курс, вверх до целого сома (считает сервер). */
+  weight_rate_som: number;
+  /** Адрес выдачи — пишется в уведомлении клиенту. */
+  pickup_address: string;
 }
+
+// --- Уведомления клиентам ---
+/** Вес по уведомлениям, который ещё не взяли (берётся при выдаче). */
+export interface PendingWeight {
+  ids: number[];
+  count: number;
+  kg: number;
+  som: number;
+  last_sent_at: string | null;
+}
+export interface Notice {
+  id: number;
+  customer_id: number;
+  item_ids: number[];
+  items_count: number;
+  goods_sum: number;
+  goods_debt: number;
+  weight_kg: number | null;
+  weight_som: number;
+  total: number;
+  sent_at: string;
+  user_login: string | null;
+}
+export interface NotifyItem {
+  id: number;
+  name: string;
+  code: string;
+  qty: number;
+  sale: number;
+  debt: number;
+  arrived_at: string | null;
+  notified: boolean;
+}
+export interface NotifyRow {
+  id: number;
+  name: string;
+  phone: string;
+  items: NotifyItem[];
+  stock_sale: number;
+  stock_debt: number;
+  first_arrived: string | null;
+  notices: Notice[];
+  /** Товары, пришедшие после уведомления. */
+  fresh: number;
+  status: "new" | "more" | "sent";
+}
+export interface NotifyList {
+  rows: NotifyRow[];
+  tariff: { weight_rate_usd: number; usd_rate: number; weight_rate_som: number };
+  pickup_address: string;
+}
+export const listNotify = () => api.get<NotifyList>("/notify").then((r) => r.data);
+export const sendNotify = (body: { customer_id: number; item_ids: number[]; weight_kg?: number; weight_som: number; message: string; phone: string }) =>
+  api.post<{ id: number; weight_som: number; goods_debt: number; total: number }>("/notify", body).then((r) => r.data);
+export const cancelNotify = (id: number) => api.delete(`/notify/${id}`).then(() => undefined);
 export const getSettings = () => api.get<Settings>("/settings").then((r) => r.data);
 export const updateSettings = (body: Partial<Settings>) => api.patch<Settings>("/settings", body).then((r) => r.data);
 

@@ -4,8 +4,8 @@
  * Раскладка «очередь слева»:
  *  - слева — очередь «Ждут выдачи» (клиенты с товаром на складе) и поиск по телефону, имени
  *    или коду товара (можно отсканировать); колонка не выше экрана, список прокручивается;
- *  - справа — выдача выбранному клиенту: товары со склада галочками, ниже — что ещё в пути,
- *    внизу чек: сколько выбрано, долг, приём оплаты и «Выдать»; пока клиент не выбран —
+ *  - справа — выдача выбранному клиенту: только товары на складе (галочками), внизу чек:
+ *    сколько выбрано, долг по ним, вес посылки (кг × $ за кг × курс, до копеек), оплата и «Выдать»; пока клиент не выбран —
  *    подсказка и итоги выдач за сегодня;
  *  - ниже — история выдач за период.
  * Статус, дата, время и история пишутся сервером; финансы не меняются (кроме принятой оплаты).
@@ -34,7 +34,7 @@ import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_CLOSE, I_MINUS, I_SEARCH, Icon, Svg } from "../design/icons";
 import { Page, SearchInput } from "../design/table";
 import { HButton, ModalError, ST, SkeletonRows } from "../design/ui";
-import { date, parseMoney, shortDateTime, som, todayIso } from "../lib/cargo";
+import { parseMoney, shortDateTime, som, todayIso } from "../lib/cargo";
 import { emit, useDebounced, useRefresh } from "../lib/events";
 
 type Toast = (kind: "success" | "error", text: string) => void;
@@ -70,7 +70,7 @@ export default function Issue({ toast }: { isDesktop: boolean; toast: Toast }) {
 
 // --- Очередь слева ---------------------------------------------------------------------------
 
-type QueueEntry = Pick<CustomerBrief, "id" | "name" | "phone" | "in_stock" | "debt">;
+type QueueEntry = Pick<CustomerBrief, "id" | "name" | "phone" | "in_stock" | "debt" | "stock_debt">;
 
 /** Клиенты с товаром на складе (больше товаров — выше); поиск — по телефону, имени или коду товара. */
 function Queue({ selected, onPick, inputRef }: { selected: number | null; onPick: (id: number) => void; inputRef: RefObject<HTMLInputElement> }) {
@@ -217,8 +217,8 @@ function QueueRow({ c, active, onClick }: { c: QueueEntry; active: boolean; onCl
           <Icon name="stock" size={12} />
           {c.in_stock}
         </span>
-        <span style={mix(NUM + ";font-size:11.5px;white-space:nowrap", { color: c.debt > 0 ? "var(--danger)" : "var(--green)" })}>
-          {c.debt > 0 ? `долг ${som(c.debt)}` : "без долга"}
+        <span style={mix(NUM + ";font-size:11.5px;white-space:nowrap", { color: (c.stock_debt ?? c.debt) > 0 ? "var(--danger)" : "var(--green)" })}>
+          {(c.stock_debt ?? c.debt) > 0 ? `к оплате ${som(c.stock_debt ?? c.debt)}` : "оплачено"}
         </span>
       </span>
     </button>
@@ -289,7 +289,8 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   /** Что выдали только что: пока клиент открыт, показываем итог. */
-  const [done, setDone] = useState<{ count: number; paid: number; left: number } | null>(null);
+  const [done, setDone] = useState<Done | null>(null);
+
 
   const load = useCallback(() => {
     getCustomer(customerId)
@@ -304,8 +305,9 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
   useRefresh(load);
 
   const stock = useMemo(() => card?.items.filter((i) => i.status === "in_stock") ?? [], [card]);
-  const ordered = useMemo(() => card?.items.filter((i) => i.status === "ordered") ?? [], [card]);
   const chosen = stock.filter((i) => selected.has(i.id));
+  const stockSale = stock.reduce((s, i) => s + i.sale, 0);
+  const stockDebt = stock.reduce((s, i) => s + i.debt, 0);
   const sum = chosen.reduce((s, i) => s + i.sale, 0);
   const debt = chosen.reduce((s, i) => s + i.debt, 0);
   // Оплата при выдаче: весь долг, часть (сумму вводим) или ничего; больше долга сервер не примет.
@@ -313,6 +315,12 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
   const badPay = payMode === "part" && parsed !== null && (Number.isNaN(parsed) || parsed > debt);
   const pay = payMode === "full" ? debt : payMode === "part" && !badPay ? (parsed ?? 0) : 0;
   const remaining = Math.max(0, debt - pay);
+  // Вес — из уведомления клиенту (страница «Уведомления»): берётся при выдаче целиком.
+  const pending = card?.pending_weight;
+  const kg = pending?.kg ?? 0;
+  const weightSom = pending?.som ?? 0;
+  /** Сколько взять с клиента сейчас: вес по уведомлению + оплата товара. */
+  const takeNow = Math.round((weightSom + pay) * 100) / 100;
 
   // Сменился выбор товаров — снова «весь долг».
   useEffect(() => {
@@ -334,9 +342,15 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
   async function doIssue() {
     setError("");
     if (badPay) throw new Error("Некорректная сумма оплаты");
-    const r = await issueItems({ customer_id: customerId, item_ids: chosen.map((i) => i.id), payment_amount: pay || undefined });
-    toast("success", `Выдано товаров: ${r.items.length}${pay ? `, оплата ${som(pay)}` : ""}`);
-    setDone({ count: r.items.length, paid: pay, left: remaining });
+    const r = await issueItems({
+      customer_id: customerId,
+      item_ids: chosen.map((i) => i.id),
+      payment_amount: pay || undefined,
+      weight_som: weightSom,
+    });
+    toast("success", `Выдано товаров: ${r.items.length}${takeNow ? `, взято ${som(takeNow)}` : ""}`);
+    setDone({ count: r.items.length, paid: pay, left: remaining, kg, weightSom });
+    load();
     setConfirm(false);
     setSelected(new Set());
     emit("cargo:changed");
@@ -393,18 +407,26 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
             <span style={css(NUM + ";display:block;font-size:13.5px;color:var(--text-2);margin-top:2px")}>{c.phone || "без телефона"}</span>
           </span>
         </span>
+        {/* Только то, что уже пришло на склад: сколько, на какую сумму и сколько из этого не оплачено */}
         <span className="iss-cstats">
           <CountChip label="на складе" value={stock.length} dot={ST.in_stock.dot} />
-          <CountChip label="ждём" value={ordered.length} dot={ST.ordered.dot} />
-          <span
-            style={mix("display:inline-flex;align-items:baseline;gap:8px;height:34px;line-height:34px;padding:0 13px;border-radius:10px;white-space:nowrap", {
-              background: card.totals.debt > 0 ? "var(--danger-tint)" : "var(--green-tint)",
-              color: card.totals.debt > 0 ? "var(--danger)" : "var(--green)",
-            })}
-          >
-            <span style={css("font-size:12px")}>{card.totals.debt > 0 ? "долг клиента" : "долгов нет"}</span>
-            {card.totals.debt > 0 && <span style={css(NUM + ";font-size:15px;font-weight:500")}>{som(card.totals.debt)}</span>}
-          </span>
+          {stock.length > 0 && (
+            <span style={css("display:inline-flex;align-items:baseline;gap:8px;height:34px;line-height:34px;padding:0 13px;border-radius:10px;border:1px solid var(--border);background:var(--surface);white-space:nowrap")}>
+              <span style={css("font-size:12px;color:var(--text-3)")}>на сумму</span>
+              <span style={css(NUM + ";font-size:15px;font-weight:500;color:var(--text)")}>{som(stockSale)}</span>
+            </span>
+          )}
+          {stock.length > 0 && (
+            <span
+              style={mix("display:inline-flex;align-items:baseline;gap:8px;height:34px;line-height:34px;padding:0 13px;border-radius:10px;white-space:nowrap", {
+                background: stockDebt > 0 ? "var(--danger-tint)" : "var(--green-tint)",
+                color: stockDebt > 0 ? "var(--danger)" : "var(--green)",
+              })}
+            >
+              <span style={css("font-size:12px")}>{stockDebt > 0 ? "не оплачено" : "всё оплачено"}</span>
+              {stockDebt > 0 && <span style={css(NUM + ";font-size:15px;font-weight:500")}>{som(stockDebt)}</span>}
+            </span>
+          )}
         </span>
         <HButton
           className="iss-close"
@@ -440,6 +462,7 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
               </div>
               <div style={css(NUM + ";font-size:13px;color:var(--text-3)")}>
                 {done.paid ? `оплата принята ${som(done.paid)}` : done.left ? "без оплаты" : "всё было оплачено заранее"}
+                {done.weightSom ? ` · вес ${fmtKg(done.kg)} кг — ${som(done.weightSom)}` : ""}
                 {done.left ? ` · остался долг ${som(done.left)}` : ""}
               </div>
               <div style={css("font-size:12.5px;color:var(--text-4);margin-top:8px")}>Выберите следующего клиента в очереди</div>
@@ -448,11 +471,9 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
             <Empty
               icon="issue"
               title="На складе у клиента ничего нет"
-              text={ordered.length ? "Выдать можно после приёма на склад — что ещё в пути, видно ниже." : "Все товары клиента уже выданы."}
+              text="Выдать можно только то, что принято на склад."
             />
           )}
-          {/* После выдачи — только итог, без списка «в пути» */}
-          {!done && ordered.length > 0 && <OnTheWay items={ordered} />}
         </div>
       ) : (
         <div className="thin-scroll" style={css("flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column")}>
@@ -479,7 +500,6 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
             {stock.map((it) => (
               <StockRow key={it.id} it={it} on={selected.has(it.id)} onToggle={() => toggle(it.id)} onOpen={() => setOpen(it.id)} />
             ))}
-            {ordered.length > 0 && <OnTheWay items={ordered} />}
           </div>
           <PanelFill />
         </div>
@@ -492,6 +512,8 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
             <ReceiptRow label="К выдаче" value={`${chosen.length} из ${stock.length} ${plural(stock.length, "товара", "товаров", "товаров")}`} />
             <ReceiptRow label="Сумма" value={chosen.length ? som(sum) : "—"} />
             <ReceiptRow label="Долг по ним" value={debt > 0 ? som(debt) : "нет"} color={debt > 0 ? "var(--danger)" : "var(--text-3)"} />
+            {weightSom > 0 && <ReceiptRow label="Вес · из уведомления" value={`${fmtKg(kg)} кг · ${som(weightSom)}`} color="var(--violet)" />}
+            {weightSom > 0 && <ReceiptRow label="Взять сейчас" value={chosen.length ? som(takeNow) : "—"} color={chosen.length ? "var(--green)" : "var(--text-4)"} strong />}
             <ReceiptRow label="После выдачи" {...after} strong />
           </div>
 
@@ -547,7 +569,7 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
                 })}
               >
                 {chosen.length ? <Svg paths={I_CHECK} size={16} sw={2.4} /> : null}
-                {chosen.length ? "Оплата не нужна — всё выбранное уже оплачено" : "Отметьте товары, которые клиент забирает"}
+                {!chosen.length ? "Отметьте товары, которые клиент забирает" : weightSom ? `Товар оплачен — берём только вес ${som(weightSom)}` : "Оплата не нужна — всё выбранное уже оплачено"}
               </div>
             )}
 
@@ -564,7 +586,15 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
               hover={chosen.length && !badPay ? "filter:brightness(.95)" : undefined}
             >
               {chosen.length > 0 && !badPay && <Svg paths={I_CHECK} size={17} sw={2.4} />}
-              {!chosen.length ? "Выберите товары" : remaining > 0 ? `Выдать с долгом · ${chosen.length}` : `Выдать ${chosen.length} ${plural(chosen.length, "товар", "товара", "товаров")}`}
+              {!chosen.length
+                ? "Выберите товары"
+                : remaining > 0
+                    ? takeNow
+                      ? `Выдать с долгом · взять ${som(takeNow)}`
+                      : `Выдать с долгом · ${chosen.length}`
+                    : takeNow
+                      ? `Выдать · взять ${som(takeNow)}`
+                      : `Выдать ${chosen.length} ${plural(chosen.length, "товар", "товара", "товаров")}`}
             </HButton>
           </div>
         </div>
@@ -577,7 +607,13 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
           confirmLabel="Выдать"
           text={
             <>
-              После выдачи у клиента останется долг <b style={css(NUM + ";font-weight:600")}>{som(remaining)}</b> по выбранным товарам. Долг сохранится и будет виден в карточке клиента и в
+              {takeNow > 0 && (
+                <>
+                  Сейчас берём <b style={css(NUM + ";font-weight:500")}>{som(takeNow)}</b>
+                  {weightSom ? <> (вес {fmtKg(kg ?? 0)} кг — {som(weightSom)})</> : null}.{" "}
+                </>
+              )}
+              После выдачи у клиента останется долг <b style={css(NUM + ";font-weight:500")}>{som(remaining)}</b> по выбранным товарам. Долг сохранится и будет виден в карточке клиента и в
               финансах.
             </>
           }
@@ -590,10 +626,13 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
   );
 }
 
-function doneText(d: { count: number; paid: number; left: number }): string {
+type Done = { count: number; paid: number; left: number; kg: number; weightSom: number };
+
+function doneText(d: Done): string {
   return (
     `Выдано ${d.count} ${plural(d.count, "товар", "товара", "товаров")}` +
     (d.paid ? ` · оплата ${som(d.paid)}` : "") +
+    (d.weightSom ? ` · вес ${fmtKg(d.kg)} кг — ${som(d.weightSom)}` : "") +
     (d.left ? ` · остался долг ${som(d.left)}` : "")
   );
 }
@@ -655,38 +694,6 @@ function StockRow({ it, on, onToggle, onOpen }: { it: Item; on: boolean; onToggl
   );
 }
 
-/** Под товарами со склада — что у клиента ещё в пути: выдать нельзя, но видно, чего ждать. */
-function OnTheWay({ items }: { items: Item[] }) {
-  const shown = items.slice(0, 6);
-  return (
-    <div style={css("border-top:1px solid var(--border-2);padding-bottom:6px")}>
-      <div style={css("display:flex;align-items:center;gap:8px;padding:12px 18px 6px;font-size:12px;color:var(--text-3);flex-wrap:wrap")}>
-        <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: ST.ordered.dot })} />
-        <span style={css("font-weight:500;color:var(--text-2)")}>Ещё в пути · {items.length}</span>
-        <span style={css("color:var(--text-4)")}>выдать можно после приёма на склад</span>
-      </div>
-      {shown.map((it) => (
-        <div key={it.id} className="iss-row iss-way">
-          <span />
-          <span style={css("min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-3)")}>
-            {it.name} <span style={css(CODE + ";font-size:11px;color:var(--text-4)")}>{it.code}</span>
-          </span>
-          <span className="iss-hide" style={css(NUM + ";text-align:center;color:var(--text-4)")}>
-            {it.qty} шт
-          </span>
-          <span style={css(NUM + ";text-align:right;color:var(--text-3);white-space:nowrap")}>{som(it.sale)}</span>
-          <span className="iss-hide" style={css(NUM + ";font-size:12px;color:var(--text-4);white-space:nowrap")}>
-            заказан {date(it.order_date).slice(0, 5)}
-          </span>
-          <span className="iss-hide" />
-        </div>
-      ))}
-      {items.length > shown.length && (
-        <div style={css("padding:4px 18px 8px;font-size:12px;color:var(--text-4)")}>и ещё {items.length - shown.length} — в карточке клиента</div>
-      )}
-    </div>
-  );
-}
 
 /** Пустое место под товарами: бледные строки и подсказка, чтобы панель не выглядела пустой. */
 function PanelFill() {
@@ -726,6 +733,11 @@ function PanelFill() {
 }
 
 /** Строка чека: подпись слева, значение справа; strong — итоговая строка. */
+// --- Вес посылки ---------------------------------------------------------------------------------
+
+/** Вес для показа: 1,07. */
+const fmtKg = (kg: number) => kg.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 function ReceiptRow({ label, value, color, strong }: { label: string; value: string; color?: string; strong?: boolean }) {
   return (
     <div className="iss-rrow">
@@ -1432,6 +1444,11 @@ function TimelineRow({ r, first, last, onOpen }: { r: IssueRow; first: boolean; 
             <span style={css("color:var(--text-4)")}>оплачено заранее</span>
           )}
         </div>
+        {(r.weight_som ?? 0) > 0 && (
+          <div style={css(NUM + ";font-size:12px;white-space:nowrap;margin-top:2px;color:var(--violet)")} title="Вес посылки, оплачен при выдаче">
+            вес {fmtKg(r.weight_kg ?? 0)} кг · +{som(r.weight_som ?? 0)}
+          </div>
+        )}
       </div>
     </div>
   );

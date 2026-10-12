@@ -419,7 +419,7 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
           )}
         </div>
         <div className="bt-formula">
-          <Term sign="+" tone="green" title="Вес клиентам" hint="с клиентов за вес" value={live.client} note={rateNote("client_cur", live.client)}>
+          <Term sign="+" tone="green" title="Вес клиентам" hint="если вес не брали на «Выдаче» — иначе задвоится" value={live.client} note={rateNote("client_cur", live.client)}>
             {field("client_amount", "Вес клиентам", "client_cur")}
           </Term>
           <Op>+</Op>

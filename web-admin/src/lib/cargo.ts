@@ -41,7 +41,9 @@ export const METHOD_OPTIONS = (["cash", "card", "transfer", "other"] as const).m
 /** 1 250 сом. Дробные — до копеек. */
 export function som(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
-  return `${n.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} с`;
+  // С копейками — всегда два знака (246,40 с), целые — без них (246 с).
+  const frac = Math.abs(Math.round(n * 100) % 100) > 0;
+  return `${n.toLocaleString("ru-RU", { minimumFractionDigits: frac ? 2 : 0, maximumFractionDigits: 2 })} с`;
 }
 
 /** Число без валюты: 1 250. */

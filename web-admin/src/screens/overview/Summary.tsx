@@ -145,8 +145,9 @@ function AllTimeCard({ a, isDesktop }: { a: Dashboard["profit_all"]; isDesktop: 
   const since = a.since ? `${a.since.slice(8, 10)}.${a.since.slice(5, 7)}.${a.since.slice(0, 4)}` : null;
   // Наценка считается только по товарам с реальной ценой (выкупом) — показываем, по скольким.
   const parts: { label: string; value: number; sub?: string }[] = [
-    { label: "Наценка на товары", value: a.goods, sub: a.goods_items < a.items ? `по ${a.goods_items} из ${a.items} — у остальных нет выкупа` : undefined },
-    { label: "Вес клиентам", value: a.client },
+    { label: "Наценка", value: a.goods, sub: a.goods_items < a.items ? `по ${a.goods_items} из ${a.items} тов. с выкупом` : undefined },
+    { label: "Вес при выдаче", value: a.issue_weight ?? 0, sub: a.issue_weight_kg ? `${a.issue_weight_kg.toLocaleString("ru-RU")} кг` : undefined },
+    { label: "Вес в партиях", value: a.client },
     { label: "Выкуп веса", value: -a.buy },
     { label: "Доставка", value: -a.delivery },
   ];
@@ -175,9 +176,16 @@ function AllTimeCard({ a, isDesktop }: { a: Dashboard["profit_all"]; isDesktop: 
           новые заказы и партии добавляются сюда сразу
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "repeat(4,minmax(0,1fr))" : "repeat(2,minmax(0,1fr))", gap: 8 }}>
-        {parts.map((p) => (
-          <div key={p.label} style={css("background:color-mix(in srgb,var(--surface) 82%,transparent);border:1px solid var(--border-2);border-radius:12px;padding:11px 13px;min-width:0")}>
+      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? `repeat(${parts.length},minmax(0,1fr))` : "repeat(2,minmax(0,1fr))", gap: 8 }}>
+        {parts.map((p, i) => (
+          <div
+            key={p.label}
+            style={{
+              ...css("background:color-mix(in srgb,var(--surface) 82%,transparent);border:1px solid var(--border-2);border-radius:12px;padding:11px 13px;min-width:0"),
+              // На телефоне при нечётном числе плиток первая — во всю ширину, чтобы не было дыры.
+              gridColumn: !isDesktop && i === 0 && parts.length % 2 ? "1 / -1" : undefined,
+            }}
+          >
             <div style={css("font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{p.label}</div>
             <div
               style={mix(MONO + ";font-size:16px;font-weight:700;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", {
@@ -222,13 +230,14 @@ function ProfitCard({ p, periodLabel, isDesktop }: { p: ProfitSummary; periodLab
       >
         <CountUp text={som(p.total)} />
       </div>
-      <div style={css("font-size:12px;color:var(--text-3);margin-top:2px")}>наценка на товары + вес клиентам − выкуп веса − доставка</div>
+      <div style={css("font-size:12px;color:var(--text-3);margin-top:2px")}>наценка на товары + вес при выдаче + вес в партиях − выкуп веса − доставка</div>
 
       <Waterfall
         compact={!isDesktop}
         steps={[
           { label: "Наценка", hint: "на товары", value: p.goods },
-          { label: "Вес", hint: "клиентам", value: p.client },
+          { label: "Вес", hint: "при выдаче", value: p.issue_weight ?? 0 },
+          { label: "Вес", hint: "в партиях", value: p.client },
           { label: "Выкуп", hint: "веса", value: -p.buy },
           { label: "Доставка", hint: "водителю", value: -p.delivery },
         ]}

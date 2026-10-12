@@ -77,6 +77,10 @@ export const ICONS: Record<string, PathDef[]> = {
     ["path", { d: "M12 7v10" }],
     ["path", { d: "M17 7v10" }],
   ],
+  notify: [
+    ["path", { d: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" }],
+    ["path", { d: "M10.3 21a1.94 1.94 0 0 0 3.4 0" }],
+  ],
   issue: [
     ["path", { d: "m16 16 2 2 4-4" }],
     ["path", { d: "M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14" }],

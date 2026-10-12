@@ -36,11 +36,33 @@ miscRouter.get("/search", (req, res) => {
 
 // --- Настройки ---------------------------------------------------------------------
 
-function settings() {
+/**
+ * Цена 1 кг в сомах — прайс для клиента: $ за кг × курс, вверх до целого сома (2,8 $ × 88 = 246,40 → 247).
+ * Сумма за вес = вес × эта цена, вверх до целого сома (3,42 × 247 = 844,74 → 845) — клиент может
+ * проверить на калькуляторе. Одна формула для сервера и экрана.
+ */
+export const weightRateSom = (rateUsd: number, usdRate: number) => Math.ceil(Math.round(rateUsd * usdRate * 100) / 100 - 1e-9);
+export const weightCharge = (kg: number, rateSom: number) => (kg > 0 ? Math.ceil(Math.round(kg * rateSom * 100) / 100 - 1e-9) : 0);
+
+export function settings() {
   const rows = all<{ key: string; value: string }>("SELECT key, value FROM app_settings");
   const v = (k: string) => rows.find((r) => r.key === k)?.value;
-  return { cny_rate: Number(v("cny_rate") ?? 13) };
+  const weightRateUsd = Number(v("weight_rate_usd") ?? 2.8);
+  const usdRate = Number(v("usd_rate") ?? 87.5);
+  return {
+    cny_rate: Number(v("cny_rate") ?? 13),
+    // Вес посылки: $ за кг и курс доллара (сом за 1 $; он же — курс по умолчанию для новых партий).
+    weight_rate_usd: weightRateUsd,
+    usd_rate: usdRate,
+    // Цена 1 кг для клиента, целым сомом (см. weightRateSom).
+    weight_rate_som: weightRateSom(weightRateUsd, usdRate),
+    // Где забирать товар — пишется в уведомлении клиенту.
+    pickup_address: v("pickup_address") ?? "",
+  };
 }
+
+const setSetting = (key: string, value: number) =>
+  run("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", key, String(value));
 
 miscRouter.get("/settings", (_req, res) => {
   res.json(settings());
@@ -52,7 +74,20 @@ miscRouter.patch("/settings", (req, res) => {
   if (b.cny_rate !== undefined) {
     const rate = num(b.cny_rate, "Курс юаня");
     if (rate <= 0) throw badRequest("Курс юаня должен быть больше нуля");
-    run("INSERT INTO app_settings (key, value) VALUES ('cny_rate', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", String(rate));
+    setSetting("cny_rate", rate);
+  }
+  if (b.weight_rate_usd !== undefined) {
+    const rate = num(b.weight_rate_usd, "Цена за кг");
+    if (rate <= 0 || rate > 1000) throw badRequest("Цена за кг — больше нуля");
+    setSetting("weight_rate_usd", rate);
+  }
+  if (b.pickup_address !== undefined) {
+    run("INSERT INTO app_settings (key, value) VALUES ('pickup_address', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", str(b.pickup_address, 200));
+  }
+  if (b.usd_rate !== undefined) {
+    const rate = num(b.usd_rate, "Курс доллара");
+    if (rate <= 0 || rate > 100000) throw badRequest("Курс доллара должен быть больше нуля");
+    setSetting("usd_rate", rate);
   }
   res.json(settings());
 });

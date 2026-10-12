@@ -367,6 +367,11 @@ function BulkModal({ pending, chosen, onClose, onRun }: { pending: Pending; chos
             У выдаваемых товаров останется долг <b>{som(check.debt)}</b> — он сохранится у клиентов, принять оплату можно позже.
           </div>
         )}
+        {status === "issued" && (check.weight_som ?? 0) > 0 && n > 0 && (
+          <div className="bk-warn" style={css("background:var(--violet-tint);color:var(--violet)")}>
+            Вместе с выдачей берётся вес по уведомлениям: <b>{som(check.weight_som ?? 0)}</b> — отметится как оплаченный сразу.
+          </div>
+        )}
         {n > 0 ? (
           <div className="mf-hint">{WHAT_HAPPENS[status]}</div>
         ) : (

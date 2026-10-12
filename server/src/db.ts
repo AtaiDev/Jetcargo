@@ -414,6 +414,44 @@ const MIGRATIONS: string[] = [
     LEFT JOIN shipments ts ON ts.id = t.sid
    WHERE i.deleted_at IS NULL AND o.deleted_at IS NULL AND c.deleted_at IS NULL;
   `,
+  // 11. Вес при выдаче: сколько кг вышло у клиента, тариф $/кг и курс на момент выдачи и сумма в сомах.
+  //     Вес оплачивается сразу при выдаче (это доход «Вес при выдаче»), долгом не бывает.
+  //     Только добавление колонок и настройки тарифа — существующие данные не меняются.
+  `
+  ALTER TABLE issues ADD COLUMN weight_kg REAL;
+  ALTER TABLE issues ADD COLUMN weight_rate_usd REAL;
+  ALTER TABLE issues ADD COLUMN weight_usd_rate REAL;
+  ALTER TABLE issues ADD COLUMN weight_som REAL NOT NULL DEFAULT 0;
+  ALTER TABLE issues ADD COLUMN weight_method TEXT NOT NULL DEFAULT 'cash';
+  INSERT OR IGNORE INTO app_settings (key, value) VALUES ('weight_rate_usd', '2.8');
+  INSERT OR IGNORE INTO app_settings (key, value) VALUES ('usd_rate', '87.5');
+  `,
+  // 12. Уведомления клиентам (WhatsApp): что пришло, вес, сумма за вес, долг и итог к оплате.
+  //     Сумма за вес берётся на «Выдаче» и тогда уведомление привязывается к выдаче (issue_id).
+  //     Только новая таблица и настройка адреса — существующие данные не меняются.
+  `
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    item_ids TEXT NOT NULL DEFAULT '[]',     -- какие товары были на складе (JSON)
+    items_count INTEGER NOT NULL DEFAULT 0,
+    goods_sum REAL NOT NULL DEFAULT 0,       -- сумма этих товаров
+    goods_debt REAL NOT NULL DEFAULT 0,      -- сколько по ним не оплачено на момент уведомления
+    weight_kg REAL,
+    weight_rate_usd REAL,
+    weight_usd_rate REAL,
+    weight_som REAL NOT NULL DEFAULT 0,      -- сумма за вес (до копеек), берётся при выдаче
+    total REAL NOT NULL DEFAULT 0,           -- к оплате на момент уведомления: вес + долг
+    message TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    sent_at TEXT NOT NULL DEFAULT ${NOW},
+    user_id INTEGER REFERENCES users(id),
+    issue_id INTEGER REFERENCES issues(id),
+    deleted_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS ix_notifications_customer ON notifications(customer_id);
+  INSERT OR IGNORE INTO app_settings (key, value) VALUES ('pickup_address', '');
+  `,
 ];
 
 function migrate() {
