@@ -56,6 +56,45 @@ export function useDebounced<T>(value: T, ms = 250): T {
 }
 
 
+// --- Поиск в шапке → подсветка товаров на открытой карточке клиента ---
+export type SearchHits = { query: string; ids: number[] };
+let lastHits: SearchHits = { query: "", ids: [] };
+
+/** Товар подходит под запрос по коду или названию (как ищет сервер: код без пробелов, текст без «ё»). */
+export const itemMatches = (i: { code: string | null; name: string }, q: string) =>
+  q.trim().length >= 2 &&
+  ((i.code ?? "").replace(/\s+/g, "").toUpperCase().includes(q.replace(/\s+/g, "").toUpperCase()) ||
+    i.name.toLowerCase().replace(/ё/g, "е").includes(q.trim().toLowerCase().replace(/ё/g, "е")));
+
+/** Что сейчас нашёл поиск в шапке: открытая карточка клиента подсвечивает эти товары в своём списке. */
+export function setSearchHits(next: SearchHits): void {
+  if (next.query === lastHits.query && next.ids.join() === lastHits.ids.join()) return;
+  lastHits = next;
+  window.dispatchEvent(new CustomEvent("cargo:search-hits"));
+}
+
+export function useSearchHits(): SearchHits {
+  const [v, setV] = useState(lastHits);
+  useEffect(() => {
+    const h = () => setV(lastHits);
+    h();
+    window.addEventListener("cargo:search-hits", h);
+    return () => window.removeEventListener("cargo:search-hits", h);
+  }, []);
+  return v;
+}
+
+/** Показать товар в списке на открытой странице: прокрутить к строке и выделить. */
+export function focusItem(id: number): void {
+  window.dispatchEvent(new CustomEvent<number>("cargo:focus-item", { detail: id }));
+}
+
+export function onFocusItem(handler: (id: number) => void): () => void {
+  const h = (e: Event) => handler((e as CustomEvent<number>).detail);
+  window.addEventListener("cargo:focus-item", h);
+  return () => window.removeEventListener("cargo:focus-item", h);
+}
+
 /** Открыть карточку товара поверх любого экрана (её показывает оболочка приложения). */
 export function openItem(id: number): void {
   window.dispatchEvent(new CustomEvent<number>("cargo:open-item", { detail: id }));

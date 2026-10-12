@@ -516,8 +516,8 @@ function StaffForm({
                   title={locked ? "Нельзя снять с себя роль администратора" : undefined}
                   onClick={() => setRole(k)}
                   style={mix("text-align:left;padding:10px 12px;border-radius:10px;background:var(--surface);transition:border-color .12s,box-shadow .12s", {
-                    border: `1px solid ${on ? r.dot : "var(--border-strong)"}`,
-                    boxShadow: on ? `0 0 0 3px ${r.bg}` : "none",
+                    border: `1px solid ${on ? `color-mix(in srgb, ${r.dot} 50%, var(--surface))` : "var(--border-strong)"}`,
+                    boxShadow: on ? `0 0 0 3px color-mix(in srgb, ${r.dot} 14%, transparent)` : "none",
                     cursor: locked ? "not-allowed" : "pointer",
                     opacity: locked ? 0.5 : 1,
                   })}

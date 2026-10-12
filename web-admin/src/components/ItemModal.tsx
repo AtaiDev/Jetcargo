@@ -152,7 +152,8 @@ export default function ItemModal({ id, onClose, toast }: { id: number; onClose:
               hover=""
               onClick={() => {
                 onClose();
-                nav(`/customers/${it.customer_id}`);
+                // На карточке клиента сразу показать, где этот товар в списке.
+                nav(`/customers/${it.customer_id}`, { state: { focus: it.id } });
               }}
               title="Открыть клиента"
             >
