@@ -17,7 +17,7 @@ import multer from "multer";
 
 import { all, get, run, tx } from "../db";
 import { audit, items, normCode, requireAdmin, type ItemView } from "../domain";
-import { badRequest, conflict, notFound, nowIso } from "../util";
+import { badRequest, conflict, notFound, nowIso, str } from "../util";
 import { cellText } from "./imports";
 
 export const shipmentsRouter = Router();
@@ -297,6 +297,121 @@ shipmentsRouter.get("/shipments", (_req, res) => {
     : [];
   const found = itemsByCodes([...new Set(codes.map((c) => c.code_norm))]);
   res.json(ships.map((s) => ({ ...s, stats: stats(codes.filter((c) => c.shipment_id === s.id), found) })));
+});
+
+// --- Приём: какая партия из Китая идёт сейчас ------------------------------------------------------
+
+/** Партии по порядку отправки. Один загруженный файл — одна партия, даже если накладных в нём несколько. */
+function shipmentFiles(): ShipmentRow[][] {
+  const ships = all<ShipmentRow>(
+    `SELECT s.id, s.waybill, s.shipped_at, s.arrives_at, s.filename, s.created_at, s.updated_at, NULL AS user_login
+       FROM shipments s WHERE s.deleted_at IS NULL ORDER BY COALESCE(s.shipped_at, substr(s.created_at, 1, 10)), s.id`
+  );
+  const files = new Map<string, ShipmentRow[]>();
+  for (const s of ships) {
+    const key = `${s.filename}|${s.updated_at}`;
+    files.set(key, [...(files.get(key) ?? []), s]);
+  }
+  return [...files.values()];
+}
+
+/** Сводка партии: сколько отсканировано и осталось, неизвестные коды, оплата и долг. */
+function fileSummary(file: ShipmentRow[]) {
+  const codes = all<{ code_norm: string; box: string }>(
+    `SELECT code_norm, box FROM shipment_codes WHERE shipment_id IN (${file.map(() => "?").join(",")})`,
+    ...file.map((s) => s.id)
+  );
+  const norms = [...new Set(codes.map((c) => c.code_norm))];
+  const found = itemsByCodes(norms);
+  const list = norms.flatMap((c) => found.get(c) ?? []);
+  const unknown = norms.filter((c) => !found.has(c));
+  // Неизвестный код заказа не имеет, поэтому «отсканирован» видно только по истории сканов.
+  const seen = unknown.length
+    ? all<{ code_norm: string }>(
+        `SELECT DISTINCT code_norm FROM scans WHERE result = 'not_found' AND deleted_at IS NULL AND code_norm IN (${unknown.map(() => "?").join(",")})`,
+        ...unknown
+      ).length
+    : 0;
+  // Считаем по кодам, как в файле: одна строка накладной — один код, даже если на нём два товара.
+  const known = norms.map((c) => found.get(c) ?? []).filter((l) => l.length);
+  const waiting = known.filter((l) => l.some((i) => i.status === "ordered")).length;
+  const paid = known.filter((l) => l.every((i) => i.pay_status === "paid")).length;
+  const unpaid = known.filter((l) => l.every((i) => i.pay_status === "unpaid")).length;
+  return {
+    id: file[0].id,
+    waybill: file[0].waybill,
+    waybills: file.length,
+    shipped_at: file[0].shipped_at,
+    arrives_at: file[0].arrives_at,
+    filename: file[0].filename,
+    total: norms.length,
+    scanned: known.length - waiting + seen,
+    remaining: waiting + unknown.length - seen,
+    waiting,
+    items: known.length,
+    unknown: unknown.length,
+    unknown_scanned: seen,
+    paid_items: paid,
+    partial_items: known.length - paid - unpaid,
+    unpaid_items: unpaid,
+    sum: list.reduce((s, i) => s + i.sale, 0),
+    debt: list.reduce((s, i) => s + i.debt, 0),
+    customers: new Set(list.map((i) => i.customer_id)).size,
+    boxes: new Set(codes.map((c) => c.box).filter(Boolean)).size,
+  };
+}
+
+/** Сводка по нескольким партиям сразу: их коды и товары складываются. */
+function summaryOf(files: ShipmentRow[][]) {
+  return { ...fileSummary(files.flat()), files: files.length, waybill_list: files.map((f) => f[0].waybill) };
+}
+
+/**
+ * Какие партии показать на «Приёме».
+ *  - Партии, товары которых сегодня принимали сканером, — все вместе: две партии пришли разом —
+ *    коды, товары, оплата и долг складываются. Товар «свой заказ» (код привязали к клиенту
+ *    на приёме) партию не включает: он мог пролежать без кода с прошлого раза.
+ *  - Сегодня ничего не принимали — партия последнего кода, а если её товары уже приняты,
+ *    следующая, где они ещё ждут приёма. Неизвестные коды дальше не держат.
+ */
+function currentFile(code: string, since: string) {
+  const files = shipmentFiles();
+  if (!files.length) return null;
+  const at = (id: number) => files.findIndex((f) => f.some((s) => s.id === id));
+  // Код может быть и в старой, и в новой накладной — считаем его в самой новой, как в v_items.
+  const latest = `(SELECT MAX(sc.shipment_id) FROM shipment_codes sc
+                     JOIN shipments s ON s.id = sc.shipment_id AND s.deleted_at IS NULL
+                    WHERE sc.code_norm = x.code_norm)`;
+  if (since) {
+    const today = all<{ id: number | null }>(
+      `SELECT DISTINCT ${latest} AS id FROM scans x
+         JOIN order_items i ON i.id = x.order_item_id
+        WHERE x.deleted_at IS NULL AND x.result = 'arrived' AND x.scanned_at >= ?
+          AND i.comment NOT LIKE 'Клиент заказывал сам%'
+          AND NOT EXISTS (SELECT 1 FROM status_history h WHERE h.order_item_id = x.order_item_id
+                            AND h.to_status = 'ordered' AND h.source <> 'create' AND h.changed_at > x.scanned_at)`,
+      since
+    );
+    const idx = [...new Set(today.map((r) => (r.id ? at(r.id) : -1)).filter((i) => i >= 0))].sort((a, b) => a - b);
+    if (idx.length) return summaryOf(idx.map((i) => files[i]));
+  }
+  const byCode = code ? get<{ id: number | null }>(`SELECT ${latest} AS id FROM (SELECT ? AS code_norm) x`, code)?.id : null;
+  if (byCode && at(byCode) >= 0) return summaryOf([files[at(byCode)]]);
+  const last = get<{ id: number }>(
+    `SELECT sc.shipment_id AS id FROM scans x
+       JOIN shipment_codes sc ON sc.code_norm = x.code_norm
+       JOIN shipments s ON s.id = sc.shipment_id AND s.deleted_at IS NULL
+      WHERE x.deleted_at IS NULL ORDER BY x.id DESC, sc.shipment_id DESC LIMIT 1`
+  );
+  const from = last ? at(last.id) : 0;
+  for (let i = from; i < files.length; i++) {
+    if (fileSummary(files[i]).waiting > 0) return summaryOf([files[i]]);
+  }
+  return summaryOf([files[from]]);
+}
+
+shipmentsRouter.get("/shipments/current", (req, res) => {
+  res.json(currentFile(normCode(str(req.query.code, 200)), str(req.query.since, 40)));
 });
 
 shipmentsRouter.get("/shipments/:id", (req, res) => {

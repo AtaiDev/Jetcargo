@@ -104,5 +104,5 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`API: http://${HOST}:${PORT}/api/v1  (база: ${DB_FILE})`);
-  console.log(isTestDb() ? "Среда: ТЕСТОВАЯ — вымышленные данные, рабочая база не затрагивается" : "Среда: рабочая база");
+  console.log(isTestDb() ? "Среда: ТЕСТОВАЯ — копия на этом компьютере, рабочая база не затрагивается" : "Среда: рабочая база");
 });

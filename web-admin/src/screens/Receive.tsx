@@ -14,30 +14,25 @@
  *    со сканами до высоты экрана, дальше прокрутка внутри таблицы.
  *  Данные с сервера — не пропадают при перезагрузке. На телефоне пульт — сверху.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { apiError } from "../api/client";
-import { createBatch, listBatches, listItems, listScans, lookupCode, scanCode, type Batch, type BatchCalc, type ScanResponse, type ScanResult, type ScanRow } from "../api/domain";
-import { Tabs } from "../components/cargo";
+import { createBatch, currentShipment, listBatches, listScans, lookupCode, scanCode, assignCode, listCustomers, type CustomerRow, type Item, type Batch, type BatchCalc, type ReceivingShipment, type ScanResponse, type ScanResult, type ScanRow } from "../api/domain";
+import { HomeHead } from "./overview/Home";
 import ItemModal from "../components/ItemModal";
-import Select from "../components/Select";
 import CountUp from "../design/CountUp";
-import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_SEARCH, Icon, Svg } from "../design/icons";
+import { LogoMark } from "../design/Logo";
 import { Page } from "../design/table";
-import { HButton, ModalError, ST } from "../design/ui";
-import { date, shortDateTime, som, todayIso } from "../lib/cargo";
-import { emit, useRefresh } from "../lib/events";
-import { scanSound, setSoundPrefs, soundLabel, useSoundPrefs, type ScanEvent } from "../lib/sound";
+import { ModalError } from "../design/ui";
+import { som, todayIso } from "../lib/cargo";
+import { emit, useDebounced, useRefresh } from "../lib/events";
+import { scanSound, setSoundPrefs, useSoundPrefs, type ScanEvent } from "../lib/sound";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 type PathDef = [string, Record<string, unknown>][];
 
-/** Числа обычным шрифтом с цифрами одной ширины; коды — моноширинным, их удобно сверять. */
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
-const CODE = MONO + ";letter-spacing:.02em";
-const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:16px";
 
 const I_REPEAT: PathDef = [
   ["path", { d: "M3 12a9 9 0 0 1 15.5-6.2L21 8" }],
@@ -75,17 +70,11 @@ const SOUND_OF: Record<ScanResult | "lookup", ScanEvent> = {
 
 /** Режим работы сканера: приём в партию, приём без партии или только поиск. */
 type Mode = "batch" | "none" | "search";
-const MODES: { key: Mode; label: string; short: string; icon: ReactNode; hint: string }[] = [
-  { key: "batch", label: "В партию", short: "В партию", icon: <Icon name="batches" size={15} />, hint: "товар встанет на склад и попадёт в партию" },
-  { key: "none", label: "Без партии", short: "Без партии", icon: <Icon name="receive" size={15} />, hint: "товар встанет на склад без партии" },
-  { key: "search", label: "Поиск товара", short: "Поиск", icon: <Svg paths={I_SEARCH} size={15} />, hint: "только посмотреть — статус не меняется" },
+const MODES: { key: Mode; short: string; sub: string; icon: ReactNode }[] = [
+  { key: "batch", short: "В партию", sub: "на склад и в партию", icon: <Icon name="batches" size={15} /> },
+  { key: "none", short: "Без партии", sub: "только на склад", icon: <Icon name="receive" size={15} /> },
+  { key: "search", short: "Поиск", sub: "только посмотреть", icon: <Svg paths={I_SEARCH} size={15} /> },
 ];
-const ACCEPT_TONE = { fg: "var(--accent-strong)", border: "var(--accent-border)", ring: "rgba(62,99,221,.14)", solid: "var(--accent)", tint: "var(--accent-tint)" };
-const MODE_TONE: Record<Mode, typeof ACCEPT_TONE> = {
-  batch: ACCEPT_TONE,
-  none: ACCEPT_TONE,
-  search: { fg: "var(--violet)", border: "var(--violet-dot)", ring: "rgba(139,92,240,.16)", solid: "var(--violet-solid)", tint: "var(--violet-tint)" },
-};
 
 /** Значение «партия за сегодня» в выпадающем списке. */
 const TODAY = "today";
@@ -104,15 +93,7 @@ function todayStartIso(): string {
   return d.toISOString();
 }
 
-const hhmm = (iso: string) => shortDateTime(iso).slice(6);
 
-function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
 
 export default function Receive({ toast }: { toast: Toast }) {
   const nav = useNavigate();
@@ -122,7 +103,9 @@ export default function Receive({ toast }: { toast: Toast }) {
   const [last, setLast] = useState<ScanResponse | null>(null);
   const [lastAt, setLastAt] = useState<string>("");
   const [today, setToday] = useState<ScanRow[]>([]);
-  const [waiting, setWaiting] = useState<number | null>(null);
+  // Партия из Китая: undefined — ещё грузится, null — накладных нет. shipCode — последний код приёма.
+  const [ship, setShip] = useState<ReceivingShipment | null | undefined>(undefined);
+  const shipCode = useRef("");
   const [open, setOpen] = useState<number | null>(null);
   // Звук вкл/выкл — общий с «Настройками» и запоминается в этом браузере.
   const sound = useSoundPrefs().on;
@@ -156,7 +139,6 @@ export default function Receive({ toast }: { toast: Toast }) {
     }
     refocus();
   };
-  const tone = MODE_TONE[mode];
   const pickBatch = (value: string) => {
     setSel(value);
     try {
@@ -180,8 +162,6 @@ export default function Receive({ toast }: { toast: Toast }) {
   const todayName = batchNameFor(todayIso());
   const todayBatch = batches.find((b) => b.name === todayName) ?? batches.find((b) => localDay(b.created_at) === todayIso());
   const batchId = sel === TODAY ? (todayBatch?.id ?? null) : Number(sel) || null;
-  const curBatch = sel === TODAY ? todayBatch : batches.find((b) => b.id === batchId);
-  const batchName = sel === TODAY ? (todayBatch?.name ?? todayName) : curBatch?.name;
   const creating = useRef<Promise<number> | null>(null);
 
   /** Id партии для скана; партию за сегодня создаём при первом скане (один раз). */
@@ -207,12 +187,14 @@ export default function Receive({ toast }: { toast: Toast }) {
   }, []);
 
   const loadToday = useCallback(() => {
-    listScans({ since: todayStartIso(), limit: 500 })
+    listScans({ since: todayStartIso(), active: 1, limit: 500 })
       .then((r) => setToday(r.rows))
       .catch(() => setToday([]));
-    listItems({ status: "ordered", limit: 1 })
-      .then((r) => setWaiting(r.total))
-      .catch(() => setWaiting(null));
+    currentShipment(shipCode.current || undefined, todayStartIso())
+      .then(setShip)
+      .catch(() => {
+        /* оставляем прошлые цифры */
+      });
   }, []);
   useEffect(loadToday, [loadToday]);
   useRefresh(loadToday);
@@ -224,9 +206,10 @@ export default function Receive({ toast }: { toast: Toast }) {
     setError("");
     try {
       const res = mode === "search" ? { ...(await lookupCode(c)), lookup: true } : await scanCode(c, await batchForScan());
+      if (mode !== "search") shipCode.current = res.matched_code ?? c;
       setLast(res);
       setLastAt(new Date().toISOString());
-      setFlashId(res.items[0]?.id ?? null);
+      setFlashId(res.result === "arrived" ? (res.items[0]?.id ?? null) : null);
       scanSound(SOUND_OF[res.result]);
       if (res.result === "arrived") emit("cargo:changed");
       else if (mode !== "search") loadToday();
@@ -238,6 +221,19 @@ export default function Receive({ toast }: { toast: Toast }) {
       setBusy(false);
       refocus();
     }
+  }
+
+  /** Неизвестный код — на выбранного клиента, сразу на склад и в текущую партию. */
+  async function assign(customerId: number, name: string) {
+    if (!last) return;
+    const res = await assignCode(last.matched_code ?? last.code, customerId, name, await batchForScan());
+    setLast(res);
+    setLastAt(new Date().toISOString());
+    setFlashId(res.items[0]?.id ?? null);
+    scanSound("arrived");
+    emit("cargo:changed");
+    toast("success", "Товар принят на склад");
+    refocus();
   }
 
   async function newBatch() {
@@ -253,235 +249,109 @@ export default function Receive({ toast }: { toast: Toast }) {
     }
   }
 
-  const counts = useMemo(() => {
-    const c = { arrived: 0, already_in_stock: 0, already_issued: 0, not_found: 0 } as Record<ScanResult, number>;
-    for (const s of today) c[s.result]++;
-    return c;
-  }, [today]);
-  const modeInfo = MODES.find((m) => m.key === mode)!;
+  const modeIx = MODES.findIndex((m) => m.key === mode);
+  // Принят по коду без букв — свой цвет; повтор и «не найден» важнее и остаются своего цвета.
+  // Общая посылка: один код — товары разных клиентов. Её надо разделить, поэтому свой цвет.
+  const split = last ? new Set(last.items.map((i) => i.customer_id)).size : 0;
+  const fx = !last ? "" : last.result === "arrived" && split > 1 ? "split" : last.result === "arrived" && last.matched_code ? "fix" : DOT[last.result];
 
   return (
     <Page size="wide">
-      <div className="rcv-grid">
-        {/* ================= Пульт сканера (справа; на телефоне — сверху) ================= */}
-        <aside className="rcv-pult" style={css(CARD + ";display:flex;flex-direction:column;min-width:0;overflow:hidden")}>
-          <div style={css("padding:16px 18px;display:flex;flex-direction:column;gap:14px")}>
-            {/* Шапка */}
-            <div style={css("display:flex;align-items:center;gap:11px")}>
-              <span style={mix("width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;transition:background .15s,color .15s", { background: tone.tint, color: tone.fg })}>
-                {mode === "search" ? <Svg paths={I_SEARCH} size={18} sw={2} /> : <Icon name="receive" size={19} />}
-              </span>
-              <div style={css("flex:1;min-width:0")}>
-                <div style={css("font-size:15px;font-weight:500;letter-spacing:-.01em;color:var(--text)")}>Пульт сканера</div>
-                <div style={css("font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{modeInfo.hint}</div>
-              </div>
-              <HButton
+      <div className="ov rx">
+        <HomeHead title="Приём" />
+
+        {/* ===== Партия из Китая ===== */}
+        <ShipStrip ship={ship} onNotify={() => nav("/notify")} />
+
+        <div className="rx-desk">
+          {/* ===== Сканер ===== */}
+          <section className="ov-card paper rx-sc">
+            <header className="rx-sc-h">
+              <h2 className="ov-card-title">Сканер</h2>
+              <span className={"rx-ready" + (busy ? " busy" : "")}>{busy ? "обрабатываю…" : mode === "search" ? "только просмотр" : "готов к приёму"}</span>
+              <button
+                type="button"
+                className={"rx-ibtn" + (sound ? "" : " off")}
                 onClick={() => {
                   setSoundPrefs({ on: !sound });
-                  if (!sound) scanSound("arrived"); // образец звука
+                  if (!sound) scanSound("arrived");
                   refocus();
                 }}
-                title={sound ? "Звук включён — выключить (какие звуки — в Настройках)" : "Звук выключен — включить"}
+                title={sound ? "Звук включён — выключить" : "Звук выключен — включить"}
                 aria-label={sound ? "Выключить звук" : "Включить звук"}
-                s={mix("width:34px;height:34px;flex:none;display:grid;place-items:center;padding:0;border-radius:10px;cursor:pointer;border:1px solid var(--border)", {
-                  background: sound ? "var(--surface)" : "var(--surface-2)",
-                  color: sound ? "var(--text-2)" : "var(--text-5)",
-                })}
-                hover="border-color:var(--accent);color:var(--accent)"
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                   <path d="M11 5 6 9H2v6h4l5 4V5Z" />
                   {sound ? <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" /> : <path d="m22 9-6 6M16 9l6 6" />}
                 </svg>
-              </HButton>
-            </div>
+              </button>
+            </header>
 
-            {/* Поле сканера: код принимается по Enter (сканер отправляет его сам) */}
-            <div
-              className="scan-field"
-              onClick={() => inputRef.current?.focus()}
-              style={mix("width:100%;min-width:0;display:flex;align-items:center;gap:10px;height:58px;padding:0 10px 0 16px;border-radius:14px;background:var(--surface);cursor:text;transition:border-color .15s,box-shadow .15s", {
-                border: `2px solid ${tone.border}`,
-                ["--scan-ring" as string]: tone.ring,
-              })}
-            >
-              <span style={mix("display:flex;flex:none", { color: tone.fg })}>{mode === "search" ? <Svg paths={I_SEARCH} size={21} /> : <Icon name="receive" size={22} />}</span>
+            {/* Видоискатель: поле кода внутри, лазер бежит, пока поле в фокусе */}
+            <label className={"rx-vf" + (busy ? " busy" : "") + (fx ? " fx-" + fx : "")}>
+              {/* Новый ключ на каждый скан: вспышка и углы запускаются заново, даже если статус тот же */}
+              <Fragment key={lastAt}>
+                <i className="rx-c tl" />
+                <i className="rx-c tr" />
+                <i className="rx-c bl" />
+                <i className="rx-c br" />
+                {last && <span className="rx-flash" aria-hidden />}
+              </Fragment>
+              <span className="rx-laser" aria-hidden />
               <input
                 ref={inputRef}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && submit()}
-                onBlur={() => !open && setTimeout(() => document.activeElement === document.body && inputRef.current?.focus(), 200)}
-                placeholder={mode === "search" ? "Код для поиска…" : "Сканируйте код…"}
+                placeholder={mode === "search" ? "Код для просмотра" : "Сканируйте код"}
+                aria-label="Код товара"
                 autoComplete="off"
                 spellCheck={false}
-                aria-label="Код товара"
-                style={css("flex:1;min-width:0;height:100%;border:none;outline:none;background:transparent;font-size:18px;box-shadow:none;" + CODE)}
               />
-              {busy ? (
-                <span title="Обработка…" style={mix("width:20px;height:20px;border-radius:50%;border:2px solid var(--border);animation:spin .7s linear infinite;flex:none;margin-right:6px", { borderTopColor: tone.solid })} />
-              ) : code ? (
-                <HButton
-                  onClick={() => {
-                    setCode("");
-                    refocus();
-                  }}
-                  title="Очистить"
-                  s="width:30px;height:30px;display:grid;place-items:center;padding:0;border:none;border-radius:9px;background:var(--hover);color:var(--text-3);cursor:pointer;flex:none"
-                  hover="background:var(--border);color:var(--text)"
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </svg>
-                </HButton>
-              ) : (
-                <span style={css("flex:none;font-size:11px;color:var(--text-4);border:1px solid var(--border);border-bottom-width:2px;border-radius:6px;padding:2px 7px;" + MONO)}>Enter</span>
-              )}
+              <small>{code ? "Enter — отправить" : split > 1 ? `общая посылка — разделить на ${split} ${plural(split, "клиента", "клиентов", "клиентов")}` : last?.matched_code ? `сканер прочитал без букв: ${last.matched_code}` : MODES[modeIx].sub}</small>
+            </label>
+
+            {error && <ModalError text={error} />}
+
+            <div className="rx-modes-t" role="tablist" aria-label="Режим" style={{ "--i": modeIx } as CSSProperties}>
+              <span className="rx-mt-thumb" aria-hidden />
+              {MODES.map((m) => (
+                <button key={m.key} type="button" role="tab" aria-selected={mode === m.key} className={mode === m.key ? "on" : ""} title={m.sub} onClick={() => pickMode(m.key)}>
+                  {m.icon}
+                  <b>{m.short}</b>
+                </button>
+              ))}
             </div>
 
-            {/* Режим */}
-            <Field label="Режим">
-              <div style={css("display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border-2)")}>
-                {MODES.map((m) => {
-                  const on = mode === m.key;
-                  return (
-                    <button
-                      key={m.key}
-                      type="button"
-                      onClick={() => pickMode(m.key)}
-                      aria-pressed={on}
-                      title={m.hint}
-                      style={mix(
-                        "display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 6px;border-radius:9px;font-size:12.5px;cursor:pointer;white-space:nowrap;overflow:hidden;transition:background .12s,color .12s,border-color .12s",
-                        {
-                          border: `1px solid ${on ? "var(--border)" : "transparent"}`,
-                          background: on ? "var(--surface)" : "transparent",
-                          color: on ? MODE_TONE[m.key].fg : "var(--text-3)",
-                          fontWeight: on ? 600 : 500,
-                          boxShadow: on ? "0 1px 3px rgba(15,18,25,.08)" : "none",
-                        }
-                      )}
-                    >
-                      <span style={css("display:flex;flex:none")}>{m.icon}</span>
-                      {m.short}
-                    </button>
-                  );
-                })}
-              </div>
-            </Field>
+            <BatchPicker
+              value={sel}
+              disabled={mode !== "batch"}
+              options={[
+                { value: TODAY, label: todayBatch ? todayBatch.name : todayName, hint: todayBatch ? `${todayBatch.calc.items} тов.` : "новая" },
+                ...batches.filter((b) => b.id !== todayBatch?.id).map((b) => ({ value: String(b.id), label: b.name, hint: `${b.calc.items} тов.` })),
+              ]}
+              onPick={pickBatch}
+              onClose={refocus}
+              onNew={newBatch}
+            />
+          </section>
 
-            {/* Куда идёт товар */}
-            {mode === "batch" ? (
-              <Field
-                label="Партия"
-                right={
-                  <HButton onClick={newBatch} s="border:none;background:transparent;padding:0;color:var(--accent);font-size:12px;cursor:pointer" hover="color:var(--accent-hover)">
-                    + новая
-                  </HButton>
-                }
-              >
-                <Select
-                  value={sel}
-                  onChange={pickBatch}
-                  width="100%"
-                  height={38}
-                  fontSize={13}
-                  highlight
-                  ariaLabel="Партия"
-                  menuMinWidth={300}
-                  options={[
-                    { value: TODAY, label: todayBatch?.name ?? todayName, hint: todayBatch ? "сегодня" : "создастся при скане" },
-                    ...batches.filter((b) => b.id !== todayBatch?.id).map((b) => ({ value: String(b.id), label: b.name })),
-                  ]}
-                />
-                <div style={css("margin-top:7px;font-size:12px;min-height:16px")}>
-                  {sel === TODAY && !todayBatch ? (
-                    <span style={css("display:inline-flex;align-items:center;gap:6px;color:var(--accent-strong)")}>
-                      <span style={css("width:6px;height:6px;border-radius:50%;background:var(--accent)")} />
-                      создастся при первом скане
-                    </span>
-                  ) : (
-                    batchId && (
-                      <HButton onClick={() => nav(`/batches/${batchId}`)} s="border:none;background:transparent;padding:0;color:var(--accent);font-size:12px;cursor:pointer" hover="color:var(--accent-hover)">
-                        расчёт партии →
-                      </HButton>
-                    )
-                  )}
-                </div>
-              </Field>
-            ) : (
-              <div style={mix("display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.45", { background: tone.tint, color: tone.fg })}>
-                <span style={mix("width:6px;height:6px;border-radius:50%;flex:none;margin-top:6px", { background: tone.solid })} />
-                {mode === "none" ? "Товар встанет на склад без партии — добавить в партию можно позже в «Партиях»." : "Только просмотр: статус не меняется, в историю ничего не пишется."}
-              </div>
-            )}
-          </div>
-
-          {/* Что уже в выбранной партии */}
-          {mode === "batch" && (
-            <div style={css("padding:0 18px 16px")}>
-              <div style={css("border-radius:12px;border:1px solid var(--border-2);overflow:hidden")}>
-                <div style={css("display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface-2);font-size:11.5px;font-weight:600;color:var(--text-3)")}>
-                  <Icon name="batches" size={13} />
-                  В этой партии сейчас
-                </div>
-                {curBatch ? (
-                  <div style={css("display:grid;grid-template-columns:repeat(3,minmax(0,1fr))")}>
-                    <BatchFact label="товаров" value={String(curBatch.calc.items)} />
-                    <BatchFact label="клиентов" value={String(curBatch.calc.customers)} divider />
-                    <BatchFact label="на сумму" value={som(curBatch.calc.sale)} divider />
-                  </div>
-                ) : (
-                  <div style={css("padding:10px 12px;font-size:12px;color:var(--text-4)")}>пока пусто — первый принятый товар создаст партию</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Итоги дня: прогресс приёма и одна строка чисел */}
-          <div style={css("border-top:1px solid var(--border-2);padding:14px 18px 16px")}>
-            <div style={css("display:flex;align-items:baseline;justify-content:space-between;gap:8px")}>
-              <span style={css("font-size:11.5px;font-weight:600;color:var(--text-3)")}>Итоги дня</span>
-              {waiting !== null && (
-                <span style={css("font-size:12px;color:var(--text-3);" + NUM)}>
-                  принято <b style={css("font-weight:600;color:var(--text)")}>{counts.arrived}</b> из {counts.arrived + waiting}
-                  <b style={css("font-weight:600;color:var(--green);margin-left:6px")}>{counts.arrived + waiting > 0 ? Math.round((counts.arrived / (counts.arrived + waiting)) * 100) : 0}%</b>
-                </span>
-              )}
-            </div>
-            {waiting !== null && (
-              <div style={css("height:8px;border-radius:5px;background:var(--border-2);overflow:hidden;margin-top:8px")}>
-                <div
-                  style={mix("height:100%;border-radius:5px;background:linear-gradient(90deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 70%,var(--accent)));transition:width .4s ease", {
-                    width: `${counts.arrived + waiting > 0 ? Math.max(counts.arrived ? 2 : 0, (counts.arrived / (counts.arrived + waiting)) * 100) : 0}%`,
-                  })}
-                />
-              </div>
-            )}
-            <div style={css("display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:12px;border:1px solid var(--border-2);border-radius:12px;overflow:hidden")}>
-              <DayNum dot="var(--green-dot)" label="принято" value={counts.arrived} />
-              <DayNum dot="var(--amber-dot)" label="повторы" value={counts.already_in_stock + counts.already_issued} />
-              <DayNum dot="var(--danger-dot)" label="не найдено" value={counts.not_found} alarm />
-              <DayNum dot="var(--accent)" label="ждём →" value={waiting ?? 0} onClick={() => nav("/orders?status=ordered")} />
-            </div>
-          </div>
-        </aside>
-
-        {/* ================= Слева: результат скана и сканы за сегодня ================= */}
-        <div className="rcv-main">
-          {error && <ModalError text={error} />}
-          <LastScan
+          {/* ===== Чек последнего скана ===== */}
+          <Receipt
             last={last}
             at={lastAt}
-            batchName={batchName}
+            batches={batches}
             onOpen={setOpen}
             onUseCode={(c) => {
               setCode(c);
               refocus();
             }}
+            onAssign={mode === "search" ? undefined : assign}
           />
-          <TodayTable rows={today} flashId={flashId} onOpen={setOpen} />
         </div>
+
+        {/* ===== Сканы за сегодня — таблицей ===== */}
+        <Feed rows={today} flashId={flashId} onOpen={setOpen} onAll={() => nav("/warehouse?tab=scans")} />
       </div>
 
       {open !== null && (
@@ -498,566 +368,962 @@ export default function Receive({ toast }: { toast: Toast }) {
   );
 }
 
-function BatchFact({ label, value, divider }: { label: string; value: string; divider?: boolean }) {
-  return (
-    <div style={mix("padding:9px 12px;min-width:0", divider && "border-left:1px solid var(--border-2)")}>
-      <div style={css(NUM + ";font-size:15px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{value}</div>
-      <div style={css("font-size:11px;color:var(--text-4)")}>{label}</div>
-    </div>
-  );
-}
+// --- партия из Китая ------------------------------------------------------------------------------
 
-function Field({ label, right, children }: { label: string; right?: ReactNode; children: ReactNode }) {
-  return (
-    <div>
-      <div style={css("display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:7px")}>
-        <span style={css("font-size:11.5px;font-weight:600;color:var(--text-3)")}>{label}</span>
-        {right}
-      </div>
-      {children}
-    </div>
-  );
-}
+const SHIP_I = {
+  box: "M21 8 12 3 3 8v8l9 5 9-5V8ZM3 8l9 5 9-5M12 13v8",
+  help: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01",
+  card: "M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7ZM2 10h20M6 15h4",
+  coins: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM15 9.5c-.6-.9-1.7-1.5-3-1.5-1.7 0-3 1-3 2.2 0 2.8 6 1.5 6 4.3 0 1.2-1.3 2.2-3 2.2-1.3 0-2.4-.6-3-1.5M12 6.5v11",
+};
+const pc = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
 
-const TINT = {
-  green: ["var(--green-tint)", "var(--green)"],
-  amber: ["var(--amber-tint)", "var(--amber)"],
-  danger: ["var(--danger-tint)", "var(--danger)"],
-  accent: ["var(--accent-tint)", "var(--accent)"],
-  violet: ["var(--violet-tint)", "var(--violet)"],
-  muted: ["var(--muted-bg)", "var(--text-3)"],
-} as const;
-
-/** Число итогов дня в общей строке: число крупно, под ним подпись с цветной точкой. */
-function DayNum({ dot, label, value, alarm, onClick }: { dot: string; label: string; value: number; alarm?: boolean; onClick?: () => void }) {
-  return (
-    <HButton
-      onClick={onClick}
-      title={onClick ? "Товары «Заказан» — открыть в «Заказах»" : undefined}
-      className="rcv-daynum"
-      s={mix("display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 4px;border:none;background:var(--surface);font:inherit;color:inherit;min-width:0", {
-        cursor: onClick ? "pointer" : "default",
-      })}
-      hover={onClick ? "background:var(--accent-tint2)" : ""}
-    >
-      <span style={mix(NUM + ";font-size:20px;font-weight:600;line-height:1.1", { color: !value ? "var(--text-5)" : alarm ? "var(--danger)" : "var(--text)" })}>
-        <CountUp text={String(value)} />
-      </span>
-      <span style={css("display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-3);white-space:nowrap")}>
-        <span style={mix("width:6px;height:6px;border-radius:50%;flex:none", { background: dot })} />
-        {label}
-      </span>
-    </HButton>
-  );
-}
-
-// --- Результат последнего скана -----------------------------------------------------------
-
-const PAY = {
-  paid: { label: "Оплачено полностью", short: "оплачено", dot: "var(--green-dot)", fg: "var(--green)", tint: "var(--green-tint)" },
-  partial: { label: "Оплачено частично", short: "частично", dot: "var(--amber-dot)", fg: "var(--amber)", tint: "var(--amber-tint)" },
-  unpaid: { label: "Не оплачено", short: "не оплачено", dot: "var(--danger-dot)", fg: "var(--danger)", tint: "var(--danger-tint)" },
-} as const;
-
-
-/** Результат скана одной карточкой: статус → товар → клиент и деньги одним блоком → действия. */
-function LastScan({
-  last,
-  at,
-  batchName,
-  onOpen,
-  onUseCode,
+/** Ячейка партии: подпись, число и тонкая полоса доли. Подробности — во всплывающей подсказке. */
+function ShipCell({
+  label,
+  value,
+  unit,
+  segs,
+  hint,
+  icon,
+  side,
+  dots,
+  onClick,
 }: {
-  last: ScanResponse | null;
-  at: string;
-  batchName?: string;
-  onOpen: (id: number) => void;
-  onUseCode: (code: string) => void;
+  icon?: string;
+  /** Короткая цифра справа от числа (доля, процент). */
+  side?: string;
+  /** Вместо полосы — точки по числу клиентов. */
+  dots?: number;
+  label: string;
+  value?: string;
+  unit?: string;
+  segs?: { v: number; k: "a" | "b" | "c" }[];
+  hint?: string;
+  onClick?: () => void;
 }) {
-  const nav = useNavigate();
-  const snd = useSoundPrefs();
-  if (!last) {
-    return (
-      <section style={css(CARD + ";padding:22px 24px;display:flex;align-items:center;gap:18px;flex:none")}>
-        <span style={css("width:58px;height:58px;border-radius:18px;flex:none;display:grid;place-items:center;background:var(--surface-2);border:1px dashed var(--border-strong);color:var(--text-4)")}>
-          <Icon name="receive" size={26} />
+  const body = (
+    <>
+      <span className="rx-ship-h">
+        <small>{label}</small>
+        <span className="rx-ship-ic">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d={onClick ? "M7 17 17 7M8 7h9v9" : icon} />
+          </svg>
         </span>
-        <div style={css("min-width:0;flex:1")}>
-          <div style={css("font-size:15px;font-weight:600;color:var(--text)")}>Готов к приёму — отсканируйте код</div>
-          <div style={css("font-size:12.5px;color:var(--text-3);margin-top:3px;line-height:1.5")}>
-            Здесь сразу появится товар, чей он, оплачен ли и какой долг. Товар «Заказан» станет «На складе».
+      </span>
+      <span className="rx-ship-v">
+        {value === undefined ? (
+          <span className="sk" style={{ width: "50%", height: 20 }} />
+        ) : (
+          <>
+            <b>{value}</b>
+            {unit && <span>{unit}</span>}
+            {side && <em>{side}</em>}
+          </>
+        )}
+      </span>
+      {dots !== undefined ? (
+        <span className="rx-ship-dots" aria-hidden>
+          {Array.from({ length: Math.min(dots, 14) }, (_, i) => (
+            <i key={i} style={{ animationDelay: `${i * 40}ms` }} />
+          ))}
+          {dots > 14 && <small>+{dots - 14}</small>}
+        </span>
+      ) : (
+      <span className={"rx-ship-seg" + (segs ? "" : " none")}>
+        {segs?.filter((s) => s.v > 0).map((s, i) => <i key={i} className={s.k} style={{ width: `${s.v}%` }} />)}
+      </span>
+      )}
+    </>
+  );
+  return onClick ? (
+    <button type="button" className="rx-ship-c link" onClick={onClick} title={hint}>
+      {body}
+    </button>
+  ) : (
+    <div className="rx-ship-c" title={hint}>
+      {body}
+    </div>
+  );
+}
+
+/** Партия из Китая: один загруженный файл. Сколько уже отсканировано, что осталось, неизвестные и оплата. */
+function ShipStrip({ ship, onNotify }: { ship: ReceivingShipment | null | undefined; onNotify: () => void }) {
+  if (ship === null) {
+    return (
+      <section className="rx-ship empty">
+        <div className="rx-ship-main">
+          <div className="rx-ship-t">
+            <b>Партия из Китая</b>
           </div>
-          <div style={css("display:flex;flex-wrap:wrap;gap:6px;margin-top:10px")}>
-            {snd.on ? (
-              <>
-                <Tip dot="var(--green-dot)" text={`принят — ${soundLabel("arrived", snd.map.arrived).toLowerCase()}`} />
-                <Tip dot="var(--amber-dot)" text={`повтор — ${soundLabel("repeat", snd.map.repeat).toLowerCase()}`} />
-                <Tip dot="var(--danger-dot)" text={`не найден — ${soundLabel("not_found", snd.map.not_found).toLowerCase()}`} />
-              </>
-            ) : (
-              <Tip dot="var(--text-5)" text="звук выключен" />
-            )}
-            <HButton onClick={() => nav("/settings")} className="au-reset" s="font-size:12px;margin-left:4px" hover="">
-              настроить звуки →
-            </HButton>
+          <div className="rx-ship-n">
+            <b>Накладных пока нет</b>
+          </div>
+          <div className="rx-ship-t">
+            <span>Загрузите файл из Китая в «Импорте» — здесь появится, сколько принято и сколько осталось.</span>
           </div>
         </div>
       </section>
     );
   }
-
-  const tone = TONE[last.result];
-  const c = last.customer;
-  const [first, ...rest] = last.items;
-
+  const s = ship;
+  const pct = s && s.total ? Math.round((s.scanned / s.total) * 100) : 0;
   return (
-    <section key={at} style={css(CARD + ";overflow:hidden;animation:pop .2s ease;flex:none")}>
-      {/* Статус скана */}
-      <div style={mix("display:flex;align-items:center;gap:12px;padding:12px 18px", { background: tone.bg })}>
-        <span style={mix("width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff", { background: tone.dot })}>
-          <Svg paths={tone.icon} size={17} sw={2.6} />
+    <section className="rx-ship">
+      <div className="rx-ship-main">
+        <div className="rx-ship-t">
+          <b title={s ? s.waybill_list.map((w) => "№ " + w).join("\n") : undefined}>
+            {!s ? "Партия …" : s.files > 1 ? `${s.files} партии вместе` : `Партия № ${s.waybill}${s.waybills > 1 ? ` +${s.waybills - 1}` : ""}`}
+          </b>
+          <span>{s?.files && s.files > 1 ? s.waybill_list.map((w) => "№ " + w.slice(-8)).join(" + ") : s?.shipped_at ? `отправлена ${s.shipped_at.split("-").reverse().join(".")}` : ""}</span>
+        </div>
+        <div className="rx-ship-n">
+          <b>{s ? <CountUp text={String(s.scanned)} /> : "—"}</b>
+          <span>из {s ? s.total : "—"} отсканировано</span>
+          <em>{pct}%</em>
+        </div>
+        <span className="rx-ship-bar">
+          <i style={{ width: `${pct}%` }} />
         </span>
-        <div style={css("flex:1;min-width:0")}>
-          <span style={mix("font-size:15px;font-weight:600", { color: tone.fg })}>{tone.title}</span>
-          <span style={css("font-size:12.5px;color:var(--text-3);margin-left:8px")} className="hide-sm">
-            {tone.hint}
-          </span>
-        </div>
-        {last.result === "arrived" && batchName && (
-          <span className="hide-sm" style={css("display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;background:var(--surface);border:1px solid var(--border-2);font-size:12px;color:var(--text-2);white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis")}>
-            <Icon name="batches" size={13} />
-            {batchName}
-          </span>
-        )}
-        <span style={css(NUM + ";font-size:13px;font-weight:600;color:var(--text-2);flex:none")}>{hhmm(at)}</span>
       </div>
-
-      {last.result === "not_found" ? (
-        <div style={css("padding:16px 18px;display:flex;flex-direction:column;gap:12px")}>
-          <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
-            <span style={css(CODE + ";font-size:15px;padding:4px 10px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text)")}>{last.code}</span>
-            <span style={css("font-size:12.5px;color:var(--text-3)")}>ничего не изменено — проверьте код на упаковке и отсканируйте ещё раз</span>
-          </div>
-          {last.suggestions.length > 0 && (
-            <div>
-              <div style={css("font-size:12px;font-weight:600;color:var(--text-2);margin-bottom:6px")}>Похожие коды — возможно, опечатка:</div>
-              <div style={css("display:flex;flex-direction:column;gap:6px")}>
-                {last.suggestions.map((s) => (
-                  <HButton
-                    key={s.id}
-                    onClick={() => onUseCode(s.code)}
-                    s="display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;text-align:left;padding:9px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);cursor:pointer;font:inherit;font-size:12.5px;color:inherit"
-                    hover="border-color:var(--accent)"
-                  >
-                    <span style={css(CODE + ";font-weight:600")}>{s.code}</span>
-                    <span style={css("white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                      {s.name} · <span style={css("color:var(--text-3)")}>{s.customer_name}</span>
-                    </span>
-                    <span style={css("font-size:11.5px;color:var(--accent)")}>подставить</span>
-                  </HButton>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      ) : first ? (
-        <div>
-          {/* 1. Клиент: имя, под ним телефон; справа — что у клиента */}
-          <div
-            onClick={c ? () => nav(`/customers/${c.id}`) : undefined}
-            className={c ? "row-click" : undefined}
-            title={c ? "Открыть карточку клиента" : undefined}
-            style={css("display:flex;align-items:center;gap:14px 20px;flex-wrap:wrap;padding:14px 20px")}
-          >
-            {c ? (
-              <>
-                <span style={css("display:flex;align-items:center;gap:12px;flex:1 1 240px;min-width:0")}>
-                  <Avatar name={c.name} size={42} />
-                  <span style={css("min-width:0")}>
-                    <span style={css("display:block;font-size:16px;font-weight:500;color:var(--text);line-height:1.3;overflow-wrap:anywhere")}>{c.name}</span>
-                    <span style={css(NUM + ";display:block;font-size:14px;color:var(--text-2);margin-top:2px;white-space:nowrap")}>{c.phone || "без телефона"}</span>
-                  </span>
-                </span>
-                <span className="rcv-cstats">
-                  <CountChip label="на складе" value={c.in_stock} dot={ST.in_stock.dot} />
-                  <CountChip label="ждём" value={c.ordered} dot={ST.ordered.dot} />
-                  <span
-                    style={mix("display:inline-flex;align-items:baseline;gap:8px;height:34px;padding:0 13px;border-radius:10px;white-space:nowrap", {
-                      background: c.debt > 0 ? "var(--danger-tint)" : "var(--green-tint)",
-                      color: c.debt > 0 ? "var(--danger)" : "var(--green)",
-                      lineHeight: "34px",
-                    })}
-                  >
-                    <span style={css("font-size:12px")}>{c.debt > 0 ? "долг клиента" : "долгов нет"}</span>
-                    {c.debt > 0 && <span style={css(NUM + ";font-size:15px;font-weight:500")}>{som(c.debt)}</span>}
-                  </span>
-                </span>
-              </>
-            ) : (
-              <span style={css("font-size:13px;color:var(--text-4)")}>Клиент не найден</span>
-            )}
-          </div>
-
-          {/* 2. Товар: что это и трек-код; справа — оплата или долг плашкой */}
-          <div
-            onClick={() => onOpen(first.id)}
-            className="row-click"
-            title="Открыть карточку товара"
-            style={css("display:flex;align-items:center;gap:14px;padding:14px 20px;flex-wrap:wrap;border-top:1px solid var(--border-2)")}
-          >
-            <span style={css("width:44px;height:44px;border-radius:12px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-              <Icon name="stock" size={22} />
-            </span>
-            <div style={css("flex:1 1 220px;min-width:0")}>
-              <div style={css("font-size:16px;font-weight:500;color:var(--text);line-height:1.3;overflow-wrap:anywhere")}>{first.name}</div>
-              <div style={css("display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px")}>
-                <span style={css(NUM + ";display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border-2);font-size:12px;color:var(--text-2)")}>
-                  {first.qty} шт
-                </span>
-                <span style={css("display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px 0 7px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border-2);min-width:0")}>
-                  <span style={css("font-size:10.5px;color:var(--text-4);text-transform:uppercase;letter-spacing:.05em")}>трек</span>
-                  <span style={css(CODE + ";font-size:12.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{first.code || "—"}</span>
-                </span>
-              </div>
-            </div>
-            <div
-              style={mix("flex:none;margin-left:auto;display:flex;align-items:center;gap:10px;padding:9px 14px;border-radius:12px", {
-                background: first.debt > 0 ? "var(--danger-tint)" : "var(--green-tint)",
-                border: `1px solid ${first.debt > 0 ? "var(--danger-border)" : "color-mix(in srgb, var(--green-dot) 30%, transparent)"}`,
-              })}
-            >
-              <span style={mix("width:28px;height:28px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff", { background: first.debt > 0 ? "var(--danger-dot)" : "var(--green-dot)" })}>
-                {first.debt > 0 ? <b style={css("font-size:15px;line-height:1")}>!</b> : <Svg paths={I_CHECK} size={14} sw={2.8} />}
-              </span>
-              <span style={css("text-align:left")}>
-                <span style={mix("display:block;font-size:11.5px", { color: first.debt > 0 ? "var(--danger)" : "var(--green)" })}>
-                  {first.debt > 0 ? (first.paid > 0 ? "долг · оплачено частично" : "долг · не оплачено") : "оплачено полностью"}
-                </span>
-                <span style={mix(NUM + ";display:block;font-size:18px;font-weight:500;line-height:1.25;white-space:nowrap", { color: first.debt > 0 ? "var(--danger)" : "var(--green)" })}>
-                  {som(first.debt > 0 ? first.debt : first.sale)}
-                </span>
-              </span>
-            </div>
-          </div>
-
-          {/* 3. Подробности */}
-          <div className="rcv-facts">
-            <Fact label="Сумма товара" value={som(first.sale)} />
-            <Fact label="Оплачено" value={som(Math.min(first.paid, first.sale))} color={first.paid > 0 ? "var(--green)" : "var(--text-3)"} />
-            <Fact label="Статус" value={ST[first.status].label} text />
-            <Fact label="Заказ от" value={date(first.order_date)} />
-            <Fact label="Сканов" value={first.scans.length ? String(first.scans.length) : "—"} />
-          </div>
-
-          {/* Ещё товары с этим же кодом */}
-          {rest.length > 0 && (
-            <div style={css("border-top:1px solid var(--border-2)")}>
-              <div style={css("padding:8px 20px 4px;font-size:11.5px;color:var(--text-4)")}>Ещё с этим кодом · {rest.length}</div>
-              {rest.map((it) => (
-                <div key={it.id} onClick={() => onOpen(it.id)} className="row-click" style={css("display:flex;align-items:center;gap:10px;padding:8px 20px;font-size:13px")}>
-                  <span style={css("flex:1;min-width:0;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                    {it.name} <span style={css(NUM + ";color:var(--text-4)")}>{it.qty} шт</span>
-                  </span>
-                  <span style={mix(NUM + ";white-space:nowrap", { color: it.debt > 0 ? "var(--danger)" : "var(--green)" })}>{it.debt > 0 ? `долг ${som(it.debt)}` : "оплачено"}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-/**
- * Подробность скана: подпись мелкими заглавными, значение ровным шрифтом.
- * text — значение словами (статус): буквы при той же жирности кажутся темнее цифр, поэтому тоньше.
- */
-function Fact({ label, value, color, text }: { label: string; value: string; color?: string; text?: boolean }) {
-  return (
-    <div style={css("min-width:0;padding:11px 20px 12px;display:flex;flex-direction:column;gap:6px")}>
-      <span style={css("font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
-      <span
-        style={mix(NUM + ";font-size:14.5px;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", {
-          color: color ?? "var(--text)",
-          fontWeight: text ? 400 : 500,
-        })}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-/** Таблетка «число + подпись» в строке клиента. */
-function CountChip({ label, value, dot }: { label: string; value: number; dot: string }) {
-  return (
-    <span style={css("display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border-2);white-space:nowrap")}>
-      <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: dot })} />
-      <span style={css("font-size:12px;color:var(--text-3)")}>{label}</span>
-      <span style={mix(NUM + ";font-size:15px;font-weight:500", { color: value ? "var(--text)" : "var(--text-5)" })}>{value}</span>
-    </span>
-  );
-}
-
-function Tip({ dot, text }: { dot: string; text: string }) {
-  return (
-    <span style={css("display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border-2);font-size:11.5px;color:var(--text-3)")}>
-      <span style={mix("width:6px;height:6px;border-radius:50%", { background: dot })} />
-      {text}
-    </span>
-  );
-}
-
-/** Аватар-буква; цвет — от имени, чтобы у клиента он всегда был один и тот же. */
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
-function Avatar({ name, size }: { name: string; size: number }) {
-  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
-  return (
-    <span
-      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:700", {
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.42),
-        background: AVATAR_BG[n % AVATAR_BG.length],
-      })}
-    >
-      {name.trim().slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
-
-// --- Сканы за сегодня ---------------------------------------------------------------------
-
-type TodayTab = "arrived" | "repeat" | "not_found";
-
-const RESULT_ICON: Record<ScanResult, { icon: PathDef; tone: keyof typeof TINT }> = {
-  arrived: { icon: I_CHECK, tone: "green" },
-  already_in_stock: { icon: I_REPEAT, tone: "amber" },
-  already_issued: { icon: I_OUT, tone: "muted" },
-  not_found: { icon: I_ALERT, tone: "danger" },
-};
-
-/** Оплата в строке скана: «оплачено» или «долг N с» и тонкая полоска оплаченной доли. */
-function PayCell({ status, sale, debt }: { status: keyof typeof PAY; sale: number; debt: number }) {
-  const t = PAY[status];
-  const share = sale > 0 ? Math.max(0, Math.min(100, Math.round(((sale - debt) / sale) * 100))) : 0;
-  return (
-    <span style={css("display:flex;flex-direction:column;gap:4px;min-width:0")}>
-      <span style={mix(NUM + ";display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap", { color: t.fg })}>
-        {status === "paid" ? (
-          <>
-            <Svg paths={I_CHECK} size={12} sw={2.6} />
-            оплачено
-          </>
-        ) : (
-          <>долг {som(debt)}</>
-        )}
-      </span>
-      <span style={css("height:3px;border-radius:2px;background:var(--border-2);overflow:hidden;width:100%;max-width:96px")}>
-        <span style={mix("display:block;height:100%;border-radius:2px", { width: `${share}%`, background: t.dot })} />
-      </span>
-    </span>
-  );
-}
-
-/** Все сканы за сегодня — таблицей; занимает оставшуюся высоту колонки, прокрутка внутри. */
-function TodayTable({ rows, flashId, onOpen }: { rows: ScanRow[]; flashId: number | null; onOpen: (id: number) => void }) {
-  const [tab, setTab] = useState<TodayTab>("arrived");
-  const arrived = rows.filter((r) => r.result === "arrived");
-  const repeat = rows.filter((r) => r.result === "already_in_stock" || r.result === "already_issued");
-  const notFound = rows.filter((r) => r.result === "not_found");
-  const list = tab === "arrived" ? arrived : tab === "repeat" ? repeat : notFound;
-  const sum = arrived.reduce((s, r) => s + (r.sale ?? 0), 0);
-  const clients = new Set(arrived.map((r) => r.customer_id)).size;
-
-  return (
-    <section className="rcv-table-card" style={css(CARD + ";overflow:hidden;display:flex;flex-direction:column")}>
-      <div style={css("display:flex;align-items:center;gap:12px 16px;flex-wrap:wrap;padding:12px 18px")}>
-        <div style={css("flex:1 1 220px;min-width:0")}>
-          <div style={css("font-size:15px;font-weight:500;letter-spacing:-.01em;color:var(--text)")}>Сканы за сегодня</div>
-          <div style={css("font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" + NUM)}>
-            {arrived.length
-              ? `принято ${arrived.length} ${plural(arrived.length, "товар", "товара", "товаров")} · ${clients} ${plural(clients, "клиент", "клиента", "клиентов")} · на ${som(sum)}`
-              : "сегодня ещё ничего не принято"}
-          </div>
-        </div>
-        <Tabs<TodayTab>
-          value={tab}
-          onChange={setTab}
-          tabs={[
-            { key: "arrived", label: "Принято", count: arrived.length, dot: "var(--green-dot)" },
-            { key: "repeat", label: "Повторы", count: repeat.length, dot: "var(--amber-dot)" },
-            { key: "not_found", label: "Не найдено", count: notFound.length, dot: "var(--danger-dot)" },
-          ]}
+      <div className="rx-ship-cells">
+        <ShipCell
+          label="Осталось принять"
+          icon={SHIP_I.box}
+          side={s && `${pc(s.scanned, s.total)}%`}
+          value={s && String(s.remaining)}
+          unit={s && `/ ${s.total}`}
+          segs={s ? [{ v: pc(s.scanned, s.total), k: "a" }] : []}
+          hint={s && `принято ${s.scanned} из ${s.total}${s.boxes ? ` · коробок ${s.boxes}` : ""}`}
         />
-      </div>
-
-      <div className="thin-scroll" style={css("flex:1;min-height:0;overflow:auto;border-top:1px solid var(--border-2);display:flex;flex-direction:column")}>
-        {list.length > 0 && (
-          <div style={css("flex:none")}>
-            <div className="rcv-row rcv-head">
-              <span />
-              <span>Время</span>
-              <span className="rcv-hide">Клиент</span>
-              <span>Товар</span>
-              <span style={css("text-align:right")}>Сумма</span>
-              <span className="rcv-hide">Оплата</span>
-            </div>
-            {list.map((r) => {
-              if (r.result === "not_found") return <NotFoundRow key={r.id} r={r} />;
-              const ri = RESULT_ICON[r.result];
-              const [tint, fg] = TINT[ri.tone];
-              const payTone = r.pay_status ? PAY[r.pay_status] : null;
-              return (
-                <div
-                  key={r.id}
-                  onClick={() => r.order_item_id && onOpen(r.order_item_id)}
-                  className={"rcv-row" + (r.order_item_id ? " row-click" : "") + (flashId !== null && flashId === r.order_item_id ? " scan-flash" : "")}
-                >
-                  <span style={mix("width:24px;height:24px;border-radius:7px;display:grid;place-items:center", { background: tint, color: fg })}>
-                    <Svg paths={ri.icon} size={12} sw={2.4} />
-                  </span>
-                  <span style={css(NUM + ";color:var(--text-3)")}>{hhmm(r.scanned_at)}</span>
-                  <span className="rcv-hide" style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
-                    {r.customer_name ? (
-                      <>
-                        <Avatar name={r.customer_name} size={22} />
-                        <span style={css("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-2)")}>{r.customer_name}</span>
-                      </>
-                    ) : (
-                      <span style={css("color:var(--text-5)")}>—</span>
-                    )}
-                  </span>
-                  <span style={css("min-width:0")}>
-                    <span style={css("display:block;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                      {r.item_name ?? <span style={css("color:var(--danger)")}>нет такого товара</span>}
-                      {r.qty && r.qty > 1 ? <span style={css(NUM + ";color:var(--text-4);font-weight:400")}> × {r.qty}</span> : null}
-                    </span>
-                    <span style={css("display:block;font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                      <span style={css(CODE + ";font-size:11px")}>{r.code}</span>
-                      {r.result === "already_in_stock" || r.result === "already_issued" ? ` · ${r.result === "already_issued" ? "уже выдан" : "уже на складе"} · скан №${r.scan_no}` : ""}
-                    </span>
-                  </span>
-                  <span style={css(NUM + ";text-align:right;white-space:nowrap;color:var(--text);font-weight:500")}>{r.sale === null ? "—" : som(r.sale)}</span>
-                  <span className="rcv-hide">
-                    {payTone && r.pay_status && r.sale !== null ? (
-                      <PayCell status={r.pay_status} sale={r.sale} debt={r.debt ?? 0} />
-                    ) : (
-                      <span style={css("color:var(--text-5)")}>—</span>
-                    )}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <TableFill tab={tab} empty={list.length === 0} />
+        <ShipCell
+          label="Неизвестные коды"
+          icon={SHIP_I.help}
+          side={s && s.unknown ? `скан ${s.unknown_scanned}` : undefined}
+          value={s && String(s.unknown)}
+          segs={s ? [{ v: pc(s.unknown_scanned, s.unknown), k: "a" }] : []}
+          hint={s && (s.unknown ? `нет в заказах · отсканировано ${s.unknown_scanned} из ${s.unknown}` : "все коды есть в заказах")}
+        />
+        <ShipCell
+          label="Оплачено"
+          icon={SHIP_I.card}
+          side={s && `${pc(s.paid_items, s.items)}%`}
+          value={s && String(s.paid_items)}
+          unit={s && `/ ${s.items}`}
+          segs={
+            s
+              ? [
+                  { v: pc(s.paid_items, s.items), k: "a" },
+                  { v: pc(s.partial_items, s.items), k: "b" },
+                ]
+              : []
+          }
+          hint={s && `полностью ${s.paid_items} · частично ${s.partial_items} · без оплаты ${s.unpaid_items}`}
+        />
+        <ShipCell
+          label="Долг"
+          icon={SHIP_I.coins}
+          side={s && s.sum ? `опл. ${pc(s.sum - s.debt, s.sum)}%` : undefined}
+          value={s && som(s.debt)}
+          segs={s ? [{ v: pc(s.sum - s.debt, s.sum), k: "a" }] : []}
+          hint={s && `оплачено ${som(s.sum - s.debt)} из ${som(s.sum)}`}
+        />
+        <ShipCell label="Клиенты" value={s && String(s.customers)} side={s && "сообщить"} dots={s?.customers ?? 0} hint="Сообщить клиентам о приходе" onClick={s ? onNotify : undefined} />
       </div>
     </section>
   );
 }
 
-/** Строка «код не найден»: код на месте товара, а клиент, сумма и оплата — бледными заглушками вместо прочерков. */
-function NotFoundRow({ r }: { r: ScanRow }) {
+/** Пусто: три призрачные строки таблицы и подсказка поверх. */
+function EmptyScans({ tab }: { tab: boolean }) {
+  const W = [
+    [62, 40, 70, 46],
+    [48, 52, 54, 60],
+    [56, 34, 64, 38],
+  ];
   return (
-    <div className="rcv-row">
-      <span style={css("width:24px;height:24px;border-radius:7px;display:grid;place-items:center;background:var(--danger-tint);color:var(--danger)")}>
-        <Svg paths={I_ALERT} size={13} sw={2.4} />
-      </span>
-      <span style={css(NUM + ";color:var(--text-3)")}>{hhmm(r.scanned_at)}</span>
-      <span className="rcv-hide" style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
-        <span className="sk sk-ring" style={css("width:22px;height:22px;border-radius:50%;flex:none")} />
-        <span className="sk" style={css("width:55%;height:8px")} />
-      </span>
-      <span style={css("min-width:0")}>
-        <span style={css(CODE + ";display:block;font-size:12.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.code}</span>
-        <span style={css("display:block;font-size:11.5px;color:var(--danger);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>код не найден · ничего не изменено</span>
-      </span>
-      <span style={css("display:flex;justify-content:flex-end")}>
-        <span className="sk" style={css("width:52px;height:8px")} />
-      </span>
-      <span className="rcv-hide" style={css("display:flex;flex-direction:column;gap:7px")}>
-        <span className="sk" style={css("width:64px;height:8px")} />
-        <span className="sk" style={css("width:100%;max-width:96px;height:3px")} />
-      </span>
+    <div className="rx-ghost">
+      {W.map((w, i) => (
+        <div key={i} className="rx-tr rx-gr" aria-hidden style={{ opacity: 1 - i * 0.3, animationDelay: `${i * 60}ms` }}>
+          <span className="sk" style={{ width: 38, height: 10 }} />
+          <span className="rx-who">
+            <span className="sk rx-sk-av" />
+            <span className="rx-two" style={{ flex: 1 }}>
+              <span className="sk" style={{ width: `${w[0]}%`, height: 10 }} />
+              <span className="sk" style={{ width: `${w[1]}%`, height: 8, marginTop: 7 }} />
+            </span>
+          </span>
+          <span className="rx-two">
+            <span className="sk" style={{ width: `${w[2]}%`, height: 10 }} />
+            <span className="sk" style={{ width: `${w[3]}%`, height: 8, marginTop: 7 }} />
+          </span>
+          <span className="sk" style={{ width: 22, height: 10, margin: "0 auto" }} />
+          <span className="sk" style={{ width: 64, height: 10, margin: "0 auto" }} />
+          <span className="sk" style={{ width: 72, height: 10, margin: "0 auto" }} />
+          <span className="sk" style={{ width: 78, height: 10, margin: "0 auto" }} />
+        </div>
+      ))}
+      <div className="rx-ghost-msg">
+        <span className="rx-ghost-i">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M11 8v8M14 8v8M17 8v8" />
+          </svg>
+        </span>
+        <span>
+          <b>{tab ? "В этой вкладке пусто" : "Сегодня ещё ничего не сканировали"}</b>
+          <small>{tab ? "сканы с этим статусом появятся здесь" : "наведите сканер на код — строка появится здесь"}</small>
+        </span>
+      </div>
     </div>
   );
 }
 
-/** Что написать под строками на каждой вкладке: пока строки есть и когда их нет. */
-const FILL: Record<TodayTab, { icon: PathDef; tone: keyof typeof TINT; title: string; hint: string; emptyTitle: string; emptyHint: string }> = {
-  arrived: {
-    icon: I_CHECK,
-    tone: "accent",
-    title: "Новые сканы появляются сверху",
-    hint: "нажмите на строку — откроется карточка товара",
-    emptyTitle: "Сегодня ещё ничего не принято",
-    emptyHint: "отсканируйте код на пульте — товар появится здесь",
-  },
-  repeat: {
-    icon: I_REPEAT,
-    tone: "amber",
-    title: "Повторный скан ничего не меняет",
-    hint: "статус, деньги и партия товара остаются прежними",
-    emptyTitle: "Повторных сканов нет",
-    emptyHint: "каждый код сегодня отсканирован один раз",
-  },
-  not_found: {
-    icon: I_ALERT,
-    tone: "danger",
-    title: "Проверьте коды на упаковке",
-    hint: "возможно, опечатка или товара ещё нет в заказах",
-    emptyTitle: "Ненайденных кодов нет",
-    emptyHint: "все отсканированные коды нашлись в заказах",
-  },
+const hhmm = (iso: string) => {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+const initials = (name: string) => {
+  const w = name.trim().split(/\s+/).filter(Boolean);
+  return ((w.length > 1 ? w[0][0] + w[1][0] : (w[0] ?? "?").slice(0, 2)) || "?").toUpperCase();
 };
 
-/** Пустое место под строками: бледные строки-заготовки и подсказка, чтобы таблица не выглядела пустой. */
-function TableFill({ tab, empty }: { tab: TodayTab; empty: boolean }) {
-  const f = FILL[tab];
-  const ok = empty && tab !== "arrived"; // нет повторов или ненайденных — это хорошо
-  const [tint, fg] = TINT[ok ? "green" : f.tone];
+/** Статус — точкой и словом, без цветных рамок. */
+const DOT: Record<ScanResult | "lookup", string> = {
+  arrived: "ok",
+  already_in_stock: "warn",
+  already_issued: "info",
+  not_found: "bad",
+  lookup: "info",
+};
+const STATUS_SHORT: Record<ScanResult, string> = {
+  arrived: "Принят",
+  already_in_stock: "Повтор",
+  already_issued: "Уже выдан",
+  not_found: "Не найден",
+};
+const PAY_TEXT: Record<string, string> = { unpaid: "Не оплачено", partial: "Частично", paid: "Оплачено" };
+
+// --- сканы за сегодня ------------------------------------------------------------------------------
+
+type FeedTab = "all" | "arrived" | "repeat" | "not_found";
+const inTab = (t: FeedTab, r: ScanRow) =>
+  t === "all" || (t === "arrived" ? r.result === "arrived" : t === "repeat" ? r.result === "already_in_stock" || r.result === "already_issued" : r.result === "not_found");
+
+function Feed({ rows, flashId, onOpen, onAll }: { rows: ScanRow[]; flashId: number | null; onOpen: (id: number) => void; onAll: () => void }) {
+  const [tab, setTab] = useState<FeedTab>("all");
+  const list = rows.filter((r) => inTab(tab, r));
+  // Сканы одного клиента — одной строкой, раскрывается; без клиента (код не найден) — по одному.
+  const groups: { key: string; rows: ScanRow[] }[] = [];
+  const at = new Map<string, number>();
+  for (const r of list) {
+    const k = r.customer_id ? `c${r.customer_id}` : `s${r.id}`;
+    if (at.has(k)) groups[at.get(k)!].rows.push(r);
+    else {
+      at.set(k, groups.length);
+      groups.push({ key: k, rows: [r] });
+    }
+  }
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  const tabs: { k: FeedTab; label: string }[] = [
+    { k: "all", label: "Все" },
+    { k: "arrived", label: "Приняты" },
+    { k: "repeat", label: "Повторы" },
+    { k: "not_found", label: "Не найдены" },
+  ];
   return (
-    <div className="ghost-fill" style={css(empty ? "min-height:220px" : "")}>
-      <div className="ghost-rows" aria-hidden>
-        {Array.from({ length: 12 }, (_, i) => (
-          <div key={i} className="rcv-row">
-            <span className="sk" style={css("width:24px;height:24px;border-radius:7px")} />
-            <span className="sk" style={css("width:34px;height:8px")} />
-            <span className="rcv-hide" style={css("display:flex;align-items:center;gap:8px")}>
-              <span className="sk" style={css("width:22px;height:22px;border-radius:50%;flex:none")} />
-              <span className="sk" style={mix("height:8px", { width: `${[62, 48, 70, 55][i % 4]}%` })} />
+    <section className="rx-feed">
+      <div className="rx-feed-bar">
+        <div className="rx-tabs">
+          {tabs.map((t) => (
+            <button key={t.k} type="button" className={tab === t.k ? "on" : ""} onClick={() => setTab(t.k)}>
+              {t.label}
+              <span>{rows.filter((r) => inTab(t.k, r)).length}</span>
+            </button>
+          ))}
+        </div>
+        <button type="button" className="ov-btn sm" onClick={onAll}>
+          Вся история сканов
+        </button>
+      </div>
+      <div className="rx-table">
+        <div className="rx-tr rx-th">
+          <span>Время</span>
+          <span>Клиент</span>
+          <span>Товар</span>
+          <span className="c">Кол-во</span>
+          <span className="c">Сумма</span>
+          <span className="c">Оплата</span>
+          <span className="c">Статус</span>
+        </div>
+        {list.length === 0 ? (
+          <EmptyScans tab={rows.length > 0} />
+        ) : (
+          groups.map((g, gi) =>
+            g.rows.length === 1 ? (
+              <ScanLine key={g.key} r={g.rows[0]} i={gi} fresh={flashId !== null && flashId === g.rows[0].order_item_id} onOpen={onOpen} />
+            ) : (
+              <ScanGroup key={g.key} rows={g.rows} i={gi} flashId={flashId} open={!!opened[g.key]} onToggle={() => setOpened((o) => ({ ...o, [g.key]: !o[g.key] }))} onOpen={onOpen} />
+            )
+          )
+        )}
+      </div>
+    </section>
+  );
+}
+
+function Who({ r }: { r: ScanRow }) {
+  return (
+    <span className="rx-who">
+      {r.customer_name ? (
+        <>
+          <span className="rx-av">{initials(r.customer_name)}</span>
+          <span className="rx-two">
+            <b>{r.customer_name}</b>
+            <small>{r.customer_phone}</small>
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="rx-av ghost">?</span>
+          <span className="rx-two">
+            <b className="rx-mute">Клиент не определён</b>
+            <small>кода нет в заказах</small>
+          </span>
+        </>
+      )}
+    </span>
+  );
+}
+
+/** Пустая ячейка у ненайденного кода — бледная полоска-скелетон вместо прочерка. */
+const Ghost = ({ w }: { w: number }) => <span className="sk rx-gh" style={{ width: w }} />;
+
+function ScanLine({ r, i, fresh, onOpen, sub }: { r: ScanRow; i: number; fresh: boolean; onOpen: (id: number) => void; sub?: boolean }) {
+  return (
+    <button
+      type="button"
+      className={"rx-tr" + (fresh ? " fresh" : "") + (sub ? " sub" : "")}
+      style={sub ? undefined : { animationDelay: `${Math.min(i, 12) * 25}ms` }}
+      onClick={() => r.order_item_id && onOpen(r.order_item_id)}
+      disabled={!r.order_item_id}
+    >
+      <span className="rx-time">{hhmm(r.scanned_at)}</span>
+      {sub ? (
+        <span className="rx-rail" aria-hidden>
+          <i>{i + 1}</i>
+        </span>
+      ) : (
+        <Who r={r} />
+      )}
+      {sub ? (
+        <span className="rx-subitem">
+          <span className="rx-box" aria-hidden>
+            <Icon name="products" size={15} />
+          </span>
+          <span className="rx-two">
+            <b>{r.item_name ?? "Нет такого товара"}</b>
+            <small>{r.code}</small>
+          </span>
+        </span>
+      ) : (
+        <span className="rx-two">
+          <b>{r.item_name ?? "Нет такого товара"}</b>
+          <small>{r.code}</small>
+        </span>
+      )}
+      <span className="c">{r.qty ?? <Ghost w={18} />}</span>
+      <span className="c rx-sum">{r.sale === null ? <Ghost w={56} /> : som(r.sale)}</span>
+      <span className={"c rx-pay " + (r.pay_status ?? "")}>{r.pay_status ? PAY_TEXT[r.pay_status] : <Ghost w={72} />}</span>
+      <span className="c">
+        <span className={"rx-pill-st " + DOT[r.result]}>{STATUS_SHORT[r.result]}</span>
+      </span>
+    </button>
+  );
+}
+
+const KIND_TEXT: Record<string, string> = { ok: "Принято", warn: "Повтор", info: "Выдан", bad: "Не найдено" };
+const plural = (n: number, one: string, few: string, many: string) => {
+  const a = n % 100;
+  const b = n % 10;
+  return a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many;
+};
+
+/** Несколько сканов одного клиента: сводка строкой, по клику плавно раскрываются товары. */
+function ScanGroup({ rows, i, flashId, open, onToggle, onOpen }: { rows: ScanRow[]; i: number; flashId: number | null; open: boolean; onToggle: () => void; onOpen: (id: number) => void }) {
+  const first = rows[0];
+  // Деньги и штуки — по разным товарам: повторный скан того же товара не удваивает сумму.
+  const uniq = [...new Map(rows.filter((r) => r.order_item_id).map((r) => [r.order_item_id, r])).values()];
+  const qty = uniq.reduce((a, r) => a + (r.qty ?? 0), 0);
+  const sum = uniq.reduce((a, r) => a + (r.sale ?? 0), 0);
+  const debt = uniq.reduce((a, r) => a + (r.debt ?? 0), 0);
+  const by = (k: string) => rows.filter((r) => DOT[r.result] === k).length;
+  const kinds = (["ok", "warn", "info", "bad"] as const).filter((k) => by(k));
+  return (
+    <div className={"rx-grp" + (open ? " open" : "")} style={{ animationDelay: `${Math.min(i, 12) * 25}ms` }}>
+      <button type="button" className={"rx-tr rx-grp-h" + (flashId !== null && flashId === first.order_item_id ? " fresh" : "")} onClick={onToggle} aria-expanded={open}>
+        <span className="rx-time">{hhmm(first.scanned_at)}</span>
+        <span className="rx-who">
+          <span className="rx-av">{initials(first.customer_name ?? "?")}</span>
+          <span className="rx-two">
+            <b>{first.customer_name}</b>
+            <small>{first.customer_phone}</small>
+          </span>
+        </span>
+        <span className="rx-cnt">
+          <span className="rx-box dark" aria-hidden>
+            <Icon name="products" size={15} />
+          </span>
+          <span className="rx-two">
+            <b>
+              {uniq.length} {plural(uniq.length, "товар", "товара", "товаров")}
+            </b>
+            <small>{open ? "свернуть" : "показать все"}</small>
+          </span>
+        </span>
+        <span className="c">{qty || "—"}</span>
+        <span className="c rx-sum">{sum ? som(sum) : "—"}</span>
+        <span className={"c rx-pay " + (debt > 0 ? "" : "paid")}>{debt > 0 ? `долг ${som(debt)}` : "Оплачено"}</span>
+        <span className="c rx-mix">
+          {kinds.map((k) => (
+            <span key={k} className={"rx-pill-st " + k}>
+              {KIND_TEXT[k]} {by(k)}
             </span>
-            <span style={css("display:flex;flex-direction:column;gap:7px")}>
-              <span className="sk" style={mix("height:8px", { width: `${[58, 72, 46, 64][i % 4]}%` })} />
-              <span className="sk" style={css("width:38%;height:6px")} />
-            </span>
-            <span style={css("display:flex;justify-content:flex-end")}>
-              <span className="sk" style={css("width:52px;height:8px")} />
-            </span>
-            <span className="rcv-hide" style={css("display:flex;flex-direction:column;gap:7px")}>
-              <span className="sk" style={css("width:64px;height:8px")} />
-              <span className="sk" style={css("width:100%;max-width:96px;height:3px")} />
-            </span>
-          </div>
+          ))}
+        </span>
+      </button>
+      <div className="rx-acc">
+        <div className="rx-acc-in">
+          {rows.map((r, j) => (
+            <ScanLine key={r.id} r={r} i={j} sub fresh={flashId !== null && flashId === r.order_item_id} onOpen={onOpen} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- партия приёма: свой выпадающий список --------------------------------------------------------------
+
+function BatchPicker({
+  value,
+  options,
+  disabled,
+  onPick,
+  onClose,
+  onNew,
+}: {
+  value: string;
+  options: { value: string; label: string; hint: string }[];
+  disabled: boolean;
+  onPick: (v: string) => void;
+  onClose: () => void;
+  onNew: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const root = useRef<HTMLDivElement>(null);
+  const picked = Math.max(0, options.findIndex((o) => o.value === value));
+
+  useEffect(() => {
+    if (!open) return;
+    const down = (e: PointerEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", down, true);
+    return () => document.removeEventListener("pointerdown", down, true);
+  }, [open]);
+
+  const pick = (i: number) => {
+    setOpen(false);
+    onPick(options[i].value);
+  };
+  const onKey = (e: React.KeyboardEvent) => {
+    if (!open) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      onClose();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((a) => (a + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      pick(active);
+    }
+  };
+
+  return (
+    <div ref={root} className={"rx-bt" + (open ? " open" : "") + (disabled ? " off" : "")} onKeyDown={onKey}>
+      <button
+        type="button"
+        className="rx-bt-t"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => {
+          setActive(picked);
+          setOpen((o) => !o);
+        }}
+      >
+        <span className="rx-mi">
+          <Icon name="batches" size={15} />
+        </span>
+        <span className="rx-bt-v">
+          <small>Партия приёма</small>
+          <b>{options[picked].label}</b>
+        </span>
+        <span className="rx-bt-chev" aria-hidden>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </span>
+      </button>
+      <button type="button" className="rx-bt-new" onClick={onNew} disabled={disabled} title="Новая партия" aria-label="Новая партия">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden>
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      </button>
+      <div className="rx-bt-menu" role="listbox" aria-label="Партия">
+        {options.map((o, i) => (
+          <button
+            key={o.value}
+            type="button"
+            role="option"
+            aria-selected={i === picked}
+            className={(i === active ? "act" : "") + (i === picked ? " on" : "")}
+            style={{ animationDelay: `${Math.min(i, 8) * 22}ms` }}
+            onPointerMove={() => active !== i && setActive(i)}
+            onClick={() => pick(i)}
+          >
+            <span>{o.label}</span>
+            <small>{o.hint}</small>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden style={{ visibility: i === picked ? "visible" : "hidden" }}>
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          </button>
         ))}
       </div>
-      <div className="ghost-msg">
-        <span style={mix("width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center", { background: tint, color: fg })}>
-          <Svg paths={ok ? I_CHECK : f.icon} size={16} sw={2.2} />
+    </div>
+  );
+}
+
+// --- общая посылка: один код на нескольких клиентов ------------------------------------------------------
+
+const ITEM_ST: Record<string, [string, string]> = { ordered: ["Заказан", "warn"], in_stock: ["На складе", "ok"], issued: ["Выдан", "info"] };
+
+/** Кому что отдать из одной посылки: клиент, его товар, штуки, оплата и статус. */
+function SharedList({ items, onOpen }: { items: ScanResponse["items"]; onOpen: (id: number) => void }) {
+  const total = items.reduce((a, i) => a + i.qty, 0);
+  return (
+    <div className="rx-sh">
+      <div className="rx-sh-tip">
+        <span className="rx-sh-i" aria-hidden>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+          </svg>
         </span>
-        <span style={css("min-width:0")}>
-          <span style={css("display:block;font-size:13px;font-weight:600;color:var(--text)")}>{empty ? f.emptyTitle : f.title}</span>
-          <span style={css("display:block;font-size:12px;color:var(--text-4);margin-top:2px")}>{empty ? f.emptyHint : f.hint}</span>
+        <span>
+          <b>Разделите посылку</b>
+          <small>{items.map((i) => `${i.customer_name} — ${i.qty} шт`).join(" · ")}</small>
         </span>
       </div>
+      <div className="rx-sh-list">
+        {items.map((i, k) => {
+          const st = ITEM_ST[i.status] ?? ITEM_ST.ordered;
+          return (
+            <button key={i.id} type="button" className="rx-sh-r" style={{ animationDelay: `${80 + k * 40}ms` }} onClick={() => onOpen(i.id)} title="Открыть товар">
+              <span className="rx-who">
+                <span className="rx-av">{initials(i.customer_name)}</span>
+                <span className="rx-two">
+                  <b>{i.customer_name}</b>
+                  <small>{i.customer_phone}</small>
+                </span>
+              </span>
+              <span className="rx-two">
+                <b>{i.name}</b>
+                <small>заказ от {i.order_date.split("-").reverse().join(".")}</small>
+              </span>
+              <span className="rx-sh-q">
+                <b>{i.qty} шт</b>
+                <small>из {total}</small>
+              </span>
+              <span className="rx-sh-pay">{i.debt > 0 ? `долг ${som(i.debt)}` : "оплачено"}</span>
+              <span className={"rx-pill-st " + st[1]}>{st[0]}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
+  );
+}
+
+// --- неизвестный код: чей это товар -----------------------------------------------------------------
+
+/** Клиент заказывал сам, и кода нет в заказах: выбрать клиента — товар заведётся на него и примется. */
+const GHOST_W = [62, 48, 54, 40];
+
+function AssignBox({
+  code,
+  sugg,
+  onUseCode,
+  onAssign,
+}: {
+  code: string;
+  sugg: Item[];
+  onUseCode: (code: string) => void;
+  onAssign?: (customerId: number, name: string) => Promise<void>;
+}) {
+  const [q, setQ] = useState("");
+  const dq = useDebounced(q.trim(), 200);
+  const [rows, setRows] = useState<CustomerRow[] | null>(null);
+  // Пока ничего не ввели — клиенты со своим кодом, самые активные (по последнему заказу).
+  const canAssign = !!onAssign;
+  const [top, setTop] = useState<CustomerRow[] | null>(null);
+  const [pick, setPick] = useState<CustomerRow | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!dq) {
+      setRows(null);
+      return;
+    }
+    let on = true;
+    listCustomers({ q: dq, limit: 4 })
+      .then((r) => on && setRows(r.rows))
+      .catch(() => on && setRows([]));
+    return () => {
+      on = false;
+    };
+  }, [dq]);
+
+  useEffect(() => {
+    if (!canAssign) return;
+    let on = true;
+    // Только клиенты со своим кодом (014, 002…) — они заказывают сами; самые активные первыми.
+    listCustomers({ sort: "recent", limit: 200 })
+      .then((r) => on && setTop(r.rows.filter((c) => c.code).slice(0, 4)))
+      .catch(() => on && setTop([]));
+    return () => {
+      on = false;
+    };
+  }, [canAssign]);
+
+  async function go() {
+    if (!pick || busy || !onAssign) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await onAssign(pick.id, "");
+    } catch (e) {
+      setErr(apiError(e, "Не удалось принять"));
+      setBusy(false);
+    }
+  }
+
+  const card = (c: CustomerRow, i: number) => (
+    <button
+      key={c.id}
+      type="button"
+      className="rx-as-c"
+      style={{ animationDelay: `${i * 35}ms` }}
+      onClick={() => {
+        setPick(c);
+        setErr("");
+      }}
+    >
+      <span className="rx-av">{initials(c.name)}</span>
+      <span className="rx-two">
+        <b>{c.name}</b>
+        <small>{c.phone}</small>
+      </span>
+      {c.code && <em>№ {c.code}</em>}
+    </button>
+  );
+  const chips = sugg.slice(0, 2).map((s) => (
+    <button key={s.id} type="button" className="rx-as-chip" title={`${s.name} · ${s.customer_name}`} onClick={() => s.code && onUseCode(s.code)}>
+      {s.code}
+    </button>
+  ));
+  return (
+    <div className="rx-as">
+      <div className="rx-as-top">
+        <b>{onAssign ? "Чей это товар?" : "Код не найден"}</b>
+        <small>{onAssign ? "клиент заказывал сам — выберите его, и товар примется" : "проверьте код или добавьте его в заказ"}</small>
+        {chips.length > 0 && (
+          <span className="rx-as-chips">
+            <small>похожие:</small>
+            {chips}
+          </span>
+        )}
+      </div>
+      {!onAssign ? null : pick ? (
+        <>
+          <div className="rx-as-sel">
+            <div className="rx-as-card">
+              <span className="rx-av">{initials(pick.name)}</span>
+              <span className="rx-as-id">
+                <b>{pick.name}</b>
+                <small>{pick.phone}</small>
+              </span>
+              {pick.code && <em>№ {pick.code}</em>}
+              <button type="button" className="rx-as-x" onClick={() => setPick(null)} title="Выбрать другого клиента" aria-label="Другой клиент">
+                ×
+              </button>
+            </div>
+            <div className="rx-as-sum">
+              <span>
+                <small>Код</small>
+                <b className="mono" title={code}>
+                  {code}
+                </b>
+              </span>
+              <span>
+                <small>Цена</small>
+                <b>только вес</b>
+              </span>
+              <span>
+                <small>У клиента на складе</small>
+                <b>{pick.in_stock} шт</b>
+              </span>
+              <span>
+                <small>Долг клиента</small>
+                <b>{pick.debt > 0 ? som(pick.debt) : "нет"}</b>
+              </span>
+            </div>
+          </div>
+          <button type="button" className="rx-as-go" disabled={busy} onClick={go} autoFocus>
+            {busy ? "Принимаю…" : `Принять на склад — ${pick.name}`}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </button>
+        </>
+      ) : (
+        <>
+          <label className="rx-as-in">
+            <Svg paths={I_SEARCH} size={15} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="№ клиента, имя или телефон" autoComplete="off" spellCheck={false} />
+          </label>
+          <div className="rx-as-list">
+            {rows !== null && rows.length === 0 ? (
+              <span className="rx-as-none">Никого не нашли — проверьте номер или имя</span>
+            ) : (
+              <>
+                {(rows ?? top ?? []).map(card)}
+                {/* Пустые места до четырёх — серыми заглушками */}
+                {GHOST_W.slice((rows ?? top ?? []).length).map((w, i) => (
+                  <span key={"g" + i} className="rx-as-c ghost" aria-hidden>
+                    <span className="sk rx-sk-av" />
+                    <span className="rx-two" style={{ flex: 1 }}>
+                      <span className="sk" style={{ width: `${w}%`, height: 9 }} />
+                      <span className="sk" style={{ width: `${w - 14}%`, height: 7, marginTop: 6 }} />
+                    </span>
+                  </span>
+                ))}
+              </>
+            )}
+          </div>
+        </>
+      )}
+      {err && <small className="rx-as-err">{err}</small>}
+    </div>
+  );
+}
+
+// --- чек последнего скана -----------------------------------------------------------------------------
+
+/** Штрихкод для вида чека: полосы считаются из кода (рисунок свой у каждого кода, сканером не читается). */
+function Barcode({ code }: { code: string }) {
+  const src = code || "JETCARGO";
+  let h = 7;
+  let x = 0;
+  const bars: { x: number; w: number }[] = [];
+  for (let i = 0; i < 52; i++) {
+    h = (h * 31 + src.charCodeAt(i % src.length)) >>> 0;
+    const w = 1 + (h % 3);
+    bars.push({ x, w });
+    x += w + 1 + ((h >> 4) % 2);
+  }
+  return (
+    <svg className="rx-code" viewBox={`0 0 ${x} 40`} preserveAspectRatio="none" aria-hidden>
+      {bars.map((b, i) => (
+        <rect key={i} x={b.x} y="0" width={b.w} height="40" />
+      ))}
+    </svg>
+  );
+}
+
+/** Разделы чека: что принято, сколько платить и что ещё у этого клиента. */
+const RC_SECTIONS = [
+  { title: "Товар", rows: ["Количество", "Заказ от", "Партия"], ghost: [36, 74, 74] },
+  { title: "Оплата", rows: ["Сумма", "Оплачено", "Статус"], ghost: [58, 52, 80] },
+  { title: "Клиент", rows: ["Весь долг", "На складе", "Ждём ещё"], ghost: [62, 22, 22] },
+];
+
+function Receipt({
+  last,
+  at,
+  batches,
+  onOpen,
+  onUseCode,
+  onAssign,
+}: {
+  onAssign?: (customerId: number, name: string) => Promise<void>;
+  last: ScanResponse | null;
+  at: string;
+  batches: Batch[];
+  onOpen: (id: number) => void;
+  onUseCode: (code: string) => void;
+}) {
+  const it = last?.items[0];
+  const c = last?.customer;
+  const found = !!(last?.lookup && it);
+  const t = !last ? null : found ? TONE.lookup : TONE[last.result];
+  const dot = !last ? "" : found ? "info" : DOT[last.result];
+  const d = at ? new Date(at) : null;
+  const code = it?.code || last?.matched_code || last?.code || "";
+  const hint = last?.matched_code ? `сканер прочитал без букв: ${last.code}` : t?.hint;
+  const name = c?.name ?? it?.customer_name;
+  const batch = !it?.batch_id ? "без партии" : (batches.find((b) => b.id === it.batch_id)?.name.replace(/^Партия от /, "") ?? `№ ${it.batch_id}`);
+  const pay = !it ? "" : it.debt <= 0 ? "оплачено" : it.paid > 0 ? "частично" : "не оплачено";
+  const lines = it
+    ? [`${it.qty} шт`, it.order_date.split("-").reverse().join("."), batch, som(it.sale), som(it.paid), pay, c ? som(c.debt) : "—", c ? c.in_stock : "—", c ? c.ordered : "—"]
+    : null;
+  // Один код — товары нескольких клиентов: показываем всех и итог по посылке.
+  const owners = last ? [...new Map(last.items.map((i) => [i.customer_id, i.customer_name])).values()] : [];
+  const shared = owners.length > 1;
+  const all = last?.items ?? [];
+  const sum = (k: "sale" | "paid" | "debt" | "qty") => all.reduce((a, i) => a + i[k], 0);
+  const due = shared ? sum("debt") : it?.debt;
+  const paidShare = shared ? (sum("sale") > 0 ? Math.min(100, Math.round((sum("paid") / sum("sale")) * 100)) : null) : it && it.sale > 0 ? Math.min(100, Math.round((it.paid / it.sale) * 100)) : null;
+  return (
+    <section className="rx-rc-wrap">
+      <div key={at || "empty"} className={"rx-rc" + (last ? " printed" : "")}>
+        <div className="rx-rc-main">
+          {/* Главное — кто: имя и телефон читаются первыми */}
+          <header className="rx-rc-who">
+            {shared ? (
+              <span className="rx-rc-avs" aria-hidden>
+                {owners.slice(0, 3).map((n) => (
+                  <i key={n}>{initials(n)}</i>
+                ))}
+              </span>
+            ) : (
+              <span className={"rx-rc-av" + (it ? "" : " ghost")}>{it ? initials(name ?? "?") : "?"}</span>
+            )}
+            <span className="rx-rc-id">
+              {shared ? (
+                <>
+                  <b>Общая посылка</b>
+                  <span>
+                    {owners.length} {plural(owners.length, "клиент", "клиента", "клиентов")} · {sum("qty")} шт
+                  </span>
+                </>
+              ) : !last ? (
+                <>
+                  <span className="sk" style={{ width: "48%", height: 18 }} />
+                  <span className="sk" style={{ width: "32%", height: 12 }} />
+                </>
+              ) : it ? (
+                <>
+                  <b>{name ?? "Клиент не указан"}</b>
+                  {c?.phone && <span>{c.phone}</span>}
+                </>
+              ) : (
+                <>
+                  <b className="mute">Клиент не определён</b>
+                  <span className="mute">кода нет в заказах</span>
+                </>
+              )}
+            </span>
+            <span className={"rx-rc-st" + (last ? "" : " ghost")}>
+              <span className={"rx-pill-st " + dot}>{t ? t.title : "Ждём скан"}</span>
+              <small>{t ? hint : "здесь появится чек"}</small>
+            </span>
+          </header>
+
+          <div className="rx-rc-body">
+            {last && !it ? (
+              <AssignBox code={last.matched_code ?? last.code} sugg={last.suggestions} onUseCode={onUseCode} onAssign={onAssign} />
+            ) : shared ? (
+              <SharedList items={all} onOpen={onOpen} />
+            ) : (
+              <>
+                <div className="rx-rc-item">
+                  {it ? (
+                    <>
+                      <b title={it.name}>{it.name}</b>
+                      {last && last.items.length > 1 && <small>ещё {last.items.length - 1} с этим кодом</small>}
+                      <i aria-hidden />
+                      <button type="button" className="rx-rc-open" onClick={() => onOpen(it.id)}>
+                        Открыть
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                          <path d="M7 17 17 7M8 7h9v9" />
+                        </svg>
+                      </button>
+                    </>
+                  ) : last ? (
+                    <b>Проверьте код или добавьте его в заказ</b>
+                  ) : (
+                    <span className="sk" style={{ display: "block", width: "34%", height: 15 }} />
+                  )}
+                </div>
+                <div className="rx-rc-secs">
+                  {RC_SECTIONS.map((sec, s) => (
+                    <div key={sec.title} className="rx-rc-sec">
+                      <h3>{sec.title}</h3>
+                      {sec.rows.map((label, r) => (
+                        <div key={label} className="rx-rc-l" style={{ animationDelay: `${90 + (s * 3 + r) * 26}ms` }}>
+                          <span>{label}</span>
+                          {lines ? <b title={String(lines[s * 3 + r])}>{lines[s * 3 + r]}</b> : <span className="sk" style={{ width: sec.ghost[r], height: 10 }} />}
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        <aside className="rx-rc-stub">
+          <div className="rx-rc-h">
+            <span className="rx-rc-logo">
+              <LogoMark size={16} />
+            </span>
+            <span className="rx-rc-brand">
+              <b>Jetcargo</b>
+              <small>чек приёма</small>
+            </span>
+            <span className="rx-rc-when">
+              <b>{d ? hhmm(at) : "--:--"}</b>
+              <small>{d ? `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}` : "сегодня"}</small>
+            </span>
+          </div>
+          <div className={"rx-rc-total" + (it ? "" : " ghost")}>
+            <div className="rx-rc-due">
+              <small>К оплате</small>
+              {it ? <b>{som(due ?? 0)}</b> : last ? <b>—</b> : <i className="sk" style={{ display: "block", width: 92, height: 20, margin: "4px 0" }} />}
+            </div>
+            <div className="rx-rc-paid">
+              <small>Оплачено</small>
+              <span>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" strokeWidth="3.2" aria-hidden>
+                  <circle className="trk" cx="12" cy="12" r="9.5" />
+                  {!!paidShare && <circle className="arc" cx="12" cy="12" r="9.5" pathLength={100} style={{ strokeDasharray: `${paidShare} 100` }} />}
+                </svg>
+                <b>{paidShare === null ? "—" : `${paidShare}%`}</b>
+              </span>
+            </div>
+          </div>
+          <div className={"rx-rc-bar" + (last ? "" : " ghost")}>
+            <Barcode code={code} />
+            <span>{code || "• • • • • • • • • •"}</span>
+          </div>
+        </aside>
+      </div>
+    </section>
   );
 }

@@ -285,7 +285,12 @@ function plural(n: number, one: string, few: string, many: string): string {
 const muted = "color:var(--text-4)";
 const one = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
 
+/** Товар без заказа: клиент заказывал сам, код привязали на «Приёме». Цены нет — платят только за вес. */
+const isSelf = (it: Item) => it.comment.startsWith("Клиент заказывал сам");
+const kg = (v: number) => `${String(Math.round(v * 100) / 100).replace(".", ",")} кг`;
+
 function renderCell(c: Column, it: Item, cont: boolean, q?: string): ReactNode {
+  const self = isSelf(it);
   switch (c) {
     case "date":
       return cont ? null : (
@@ -303,8 +308,15 @@ function renderCell(c: Column, it: Item, cont: boolean, q?: string): ReactNode {
     case "item":
       return (
         <div style={css("min-width:0")}>
-          <div style={css(one)} title={it.name}>
-            <Hl text={it.name} q={q} />
+          <div style={css("display:flex;align-items:center;gap:6px;min-width:0")} title={it.name}>
+            <span style={css(one + (self && it.name === "Товар без заказа" ? ";" + muted : ""))}>
+              <Hl text={self && it.name === "Товар без заказа" ? "Название неизвестно" : it.name} q={q} />
+            </span>
+            {self && (
+              <span style={css("flex:none;padding:1px 7px;border-radius:999px;background:var(--muted-bg);font-size:10.5px;font-weight:600;color:var(--text-2);white-space:nowrap")}>
+                свой заказ
+              </span>
+            )}
           </div>
           {it.code && (
             <div style={css(MONO + ";font-size:11px;" + muted + ";" + one)} title={it.code}>
@@ -320,8 +332,10 @@ function renderCell(c: Column, it: Item, cont: boolean, q?: string): ReactNode {
         </span>
       );
     case "sale":
+      if (self) return <span style={css(muted)}>—</span>;
       return <span style={css(MONO + ";font-weight:600;white-space:nowrap")}>{som(it.sale)}</span>;
     case "profit": {
+      if (self) return <span style={css(muted)}>—</span>;
       const p = profitOf(it);
       if (p === null) return <span style={css("font-size:11.5px;" + muted + ";white-space:nowrap")}>нет выкупа</span>;
       return (
@@ -335,6 +349,13 @@ function renderCell(c: Column, it: Item, cont: boolean, q?: string): ReactNode {
       );
     }
     case "pay":
+      if (self)
+        return (
+          <div style={css("display:flex;flex-direction:column;align-items:flex-start;gap:1px;line-height:1.3")}>
+            <span style={css(MONO + ";font-weight:600;white-space:nowrap")}>{it.issue_weight_kg ? kg(it.issue_weight_kg) : "—"}</span>
+            <span style={css("font-size:10.5px;" + muted + ";white-space:nowrap")}>{it.issue_weight_kg ? "вес при выдаче" : "оплата за вес"}</span>
+          </div>
+        );
       return (
         <div style={css("display:flex;flex-direction:column;align-items:flex-start;gap:2px")}>
           <StatusBadge status={it.pay_status} size="sm" />

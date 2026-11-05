@@ -48,6 +48,8 @@ export interface Item {
   transit_id?: number | null;
   transit_waybill?: string | null;
   transit_shipped_at?: string | null;
+  /** Вес посылки при выдаче (кг), если его записали. */
+  issue_weight_kg?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -272,6 +274,8 @@ export interface CustomerBrief {
 
 export interface ScanResponse {
   code: string;
+  /** Сканер прислал только цифры, а в базе код с буквами: здесь полный код. */
+  matched_code?: string | null;
   /** lookup — режим «только поиск»: товар найден, ничего не изменено. */
   result: ScanResult | "lookup";
   items: (Item & { scans: ScanEntry[] })[];
@@ -370,7 +374,10 @@ export interface ScanRow {
   item_status: ItemStatus | null;
   order_date: string | null;
 }
-export const listScans = (params: { q?: string; result?: string; since?: string; limit?: number; offset?: number }) =>
+/** Неизвестный код — клиент заказывал сам: товар на клиента и сразу на склад. */
+export const assignCode = (code: string, customerId: number, name: string, batchId: number | null) =>
+  api.post<ScanResponse>("/scan/assign", { code, customer_id: customerId, name, batch_id: batchId ?? undefined }).then((r) => r.data);
+export const listScans = (params: { q?: string; result?: string; since?: string; active?: 1; limit?: number; offset?: number }) =>
   api.get<Page<ScanRow>>("/scans", { params }).then((r) => r.data);
 
 export const issueLookup = (q: string) => api.get<CustomerBrief[]>("/issue/lookup", { params: { q } }).then((r) => r.data);
@@ -470,8 +477,42 @@ export interface BatchProfitRow {
   profit: number;
 }
 
+/** Месяц на графике «Сумма заказов» главного экрана. */
+export interface HomeMonth {
+  month: string;
+  sale: number;
+  orders: number;
+  items: number;
+  profit: number;
+}
+
+/** Верх «Обзора» (новый дизайн): карточки, шкала оплаты, месяцы, работа склада, этапы. */
+export interface HomeBoard {
+  sales: { value: number; delta: number | null; bars: number[] };
+  profit: { value: number; delta: number | null; spark: number[] };
+  arrived: { value: number; qty: number; delta: number | null; issued: number };
+  debt: { value: number; customers: number; items: number; weeks: number[] };
+  /** «Требует внимания» — что сделать сейчас (не зависит от периода). */
+  todo: {
+    notify: { items: number; customers: number };
+    ready: { items: number; customers: number; total: number };
+    stale: { items: number; customers: number; days: number; oldest_days: number };
+    no_batch: { items: number; sale: number };
+    no_cost: { items: number; sale: number; total: number };
+    no_code: { items: number; customers: number };
+  };
+  gauge: { score: number | null; delta: number | null; sale: number; paid: number; debt: number; unpaid_items: number };
+  year: { year: number; current: HomeMonth[]; previous: HomeMonth[]; this_month: string };
+  heat: { since: string; cells: { arrived: number; issued: number }[][] };
+  stages: { total: number; delta: number | null; ordered: number; in_transit: number; in_stock: number; issued: number };
+  /** Ждут выдачи — товары на складе сейчас. */
+  waiting: number;
+}
+
 export interface Dashboard {
   period: { date_from: string; date_to: string };
+  /** Верх «Обзора»; нет — сервер ещё старый (обновление прода), показываем без него. */
+  home?: HomeBoard;
   profit: ProfitSummary;
   /** Общая прибыль за всё время: все товары и все партии. since — дата первого заказа. */
   profit_all: Omit<ProfitSummary, "previous"> & { since: string | null };
@@ -710,6 +751,35 @@ export const commitWaybill = (file: File) =>
   api.post<{ shipments: { id: number; waybill: string; updated: boolean }[]; counts: WaybillCounts }>("/shipments", fileForm(file)).then((r) => r.data);
 export const listShipments = () => api.get<Shipment[]>("/shipments").then((r) => r.data);
 export const getShipment = (id: number) => api.get<ShipmentDetail>(`/shipments/${id}`).then((r) => r.data);
+/** Партия из Китая на «Приёме»: один загруженный файл. */
+export interface ReceivingShipment {
+  id: number;
+  waybill: string;
+  waybills: number;
+  /** Сколько партий (файлов) считается вместе и их номера. */
+  files: number;
+  waybill_list: string[];
+  shipped_at: string | null;
+  arrives_at: string | null;
+  filename: string;
+  total: number;
+  scanned: number;
+  remaining: number;
+  waiting: number;
+  items: number;
+  unknown: number;
+  unknown_scanned: number;
+  paid_items: number;
+  partial_items: number;
+  unpaid_items: number;
+  sum: number;
+  debt: number;
+  customers: number;
+  boxes: number;
+}
+/** since — начало сегодняшнего дня: партии, принятые сегодня, считаются вместе. */
+export const currentShipment = (code: string | undefined, since: string) =>
+  api.get<ReceivingShipment | null>("/shipments/current", { params: { code: code || undefined, since } }).then((r) => r.data);
 export const deleteShipment = (id: number) => api.delete(`/shipments/${id}`).then(() => undefined);
 
 export interface ImportBatch {

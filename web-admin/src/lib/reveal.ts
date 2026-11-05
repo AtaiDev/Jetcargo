@@ -77,7 +77,7 @@ function collect(root: Element, out: HTMLElement[], depth = 0) {
     if (out.length >= MAX_BLOCKS) return;
     const el = node as HTMLElement;
     const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.position === "fixed" || cs.position === "absolute") continue;
+    if (cs.display === "none" || cs.position === "fixed" || cs.position === "absolute" || el.hasAttribute("data-no-reveal")) continue;
     if (depth < 5 && isWrapper(el, cs)) collect(el, out, depth + 1);
     else if (el.offsetHeight > 0) out.push(el);
   }

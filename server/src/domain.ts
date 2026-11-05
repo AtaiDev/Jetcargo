@@ -203,12 +203,15 @@ export interface ItemView {
   transit_id: number | null;
   transit_waybill: string | null;
   transit_shipped_at: string | null;
+  /** Вес посылки при выдаче (кг), если его записали. */
+  issue_weight_kg: number | null;
 }
 
 const ITEM_COLS = `id, order_id, customer_id, customer_name, customer_phone, customer_code, order_date,
   name, code, qty, price, price_cny, real_price, cost, sale, paid, debt, pay_status, split_with, comment,
   status, arrived_at, issued_at, issue_id, import_id, batch_id, created_at, updated_at,
-  stage, transit_id, transit_waybill, transit_shipped_at`;
+  stage, transit_id, transit_waybill, transit_shipped_at,
+  (SELECT weight_kg FROM issues WHERE issues.id = v_items.issue_id) AS issue_weight_kg`;
 
 export function items(where = "1 = 1", params: Param[] = [], tail = "ORDER BY order_date DESC, id DESC"): ItemView[] {
   return all<ItemView>(`SELECT ${ITEM_COLS} FROM v_items WHERE ${where} ${tail}`, ...params);

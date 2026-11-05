@@ -8,8 +8,8 @@
 import { Router } from "express";
 
 import { all, get, run, tx, type Param } from "../db";
-import { audit, itemOr404, items, normCode, pendingNotices, setStatus, totals, type ItemView } from "../domain";
-import { badRequest, conflict, normText, nowIso, num, optInt, phoneDigits, str } from "../util";
+import { audit, findOrCreateOrder, itemOr404, items, normCode, pendingNotices, setStatus, totals, type ItemView } from "../domain";
+import { badRequest, conflict, normText, nowIso, num, optInt, phoneDigits, str, today } from "../util";
 import { customerOr404, customerSearch } from "./customers";
 
 export const warehouseRouter = Router();
@@ -72,14 +72,45 @@ function customerBrief(customerId: number) {
   };
 }
 
+/**
+ * Сканер штрихкодов не читает буквы: JT1234567890123 приходит как 1234567890123.
+ * Если точного кода нет, а пришли только цифры, ищем код с теми же цифрами и буквами впереди.
+ * Подставляем, только когда такой код один; иначе решает человек по подсказкам похожих кодов.
+ */
+function codeWithLetters(digits: string): string | null {
+  if (!/^\d{6,}$/.test(digits)) return null;
+  const hits = (rows: { c: string }[]) => rows.map((r) => r.c).filter((c) => c.endsWith(digits) && /^\D+$/.test(c.slice(0, -digits.length)));
+  const inItems = hits(all<{ c: string }>("SELECT DISTINCT code_norm AS c FROM v_items WHERE code_norm LIKE ?", `%${digits}`));
+  if (inItems.length) return inItems.length === 1 ? inItems[0] : null;
+  // В заказах кода нет, но он есть в накладной: это неизвестный товар партии, скан должен засчитаться ему.
+  const inShip = hits(
+    all<{ c: string }>(
+      `SELECT DISTINCT sc.code_norm AS c FROM shipment_codes sc
+         JOIN shipments s ON s.id = sc.shipment_id AND s.deleted_at IS NULL
+        WHERE sc.code_norm LIKE ?`,
+      `%${digits}`
+    )
+  );
+  return inShip.length === 1 ? inShip[0] : null;
+}
+
+/** Товары по коду; alt — код с буквами, если пришли только цифры. */
+function findByCode(code: string): { matches: ItemView[]; alt: string | null } {
+  const matches = items("code_norm = ?", [code], "ORDER BY order_date, id");
+  if (matches.length) return { matches, alt: null };
+  const alt = codeWithLetters(code);
+  return { matches: alt ? items("code_norm = ?", [alt], "ORDER BY order_date, id") : [], alt };
+}
+
 /** Только поиск по коду: ничего не меняет и не пишет в историю сканов. */
 warehouseRouter.get("/scan/lookup", (req, res) => {
   const raw = str(req.query.code, 200);
   const code = normCode(raw);
   if (!code) throw badRequest("Пустой код");
-  const matches = items("code_norm = ?", [code], "ORDER BY order_date, id");
+  const { matches, alt } = findByCode(code);
   res.json({
     code: raw,
+    matched_code: alt && (matches[0]?.code ?? alt),
     result: matches.length ? "lookup" : "not_found",
     items: matches.map((i) => ({ ...i, scans: scansOf(i.id) })),
     customer: matches.length ? customerBrief(matches[0].customer_id) : null,
@@ -100,12 +131,16 @@ warehouseRouter.post("/scan", (req, res) => {
   const at = nowIso();
 
   const out = tx(() => {
-    const matches = items("code_norm = ?", [code], "ORDER BY order_date, id");
+    const { matches, alt } = findByCode(code);
+    // В истории — полный код, чтобы скан нашёлся по нему и засчитался партии.
+    const matched = alt && (matches[0]?.code ?? alt);
+    const saved = matched ?? raw;
+    const savedNorm = alt ?? code;
     if (!matches.length) {
-      run("INSERT INTO scans (code, code_norm, result, user_id, scanned_at) VALUES (?, ?, 'not_found', ?, ?)", raw, code, userId, at);
+      run("INSERT INTO scans (code, code_norm, result, user_id, scanned_at) VALUES (?, ?, 'not_found', ?, ?)", saved, savedNorm, userId, at);
       // Похожие коды — только подсказка, ничего не меняем автоматически.
       const suggestions = similarCodes(code);
-      return { result: "not_found" as ScanResult, items: [] as ItemView[], suggestions };
+      return { result: "not_found" as ScanResult, items: [] as ItemView[], suggestions, matched };
     }
     const results: ScanResult[] = [];
     for (const it of matches) {
@@ -117,7 +152,7 @@ warehouseRouter.post("/scan", (req, res) => {
       } else r = it.status === "in_stock" ? "already_in_stock" : "already_issued";
       run(
         "INSERT INTO scans (code, code_norm, result, order_item_id, user_id, scanned_at) VALUES (?, ?, ?, ?, ?, ?)",
-        raw, code, r, it.id, userId, at
+        saved, savedNorm, r, it.id, userId, at
       );
       results.push(r);
     }
@@ -126,17 +161,58 @@ warehouseRouter.post("/scan", (req, res) => {
       : results.includes("already_in_stock")
         ? "already_in_stock"
         : "already_issued";
-    return { result, items: matches.map((m) => itemOr404(m.id)), suggestions: [] as ItemView[] };
+    return { result, items: matches.map((m) => itemOr404(m.id)), suggestions: [] as ItemView[], matched };
   });
 
-  if (out.result === "arrived") audit(req, "scan", "item", out.items[0].id, null, code);
+  if (out.result === "arrived") audit(req, "scan", "item", out.items[0].id, null, out.matched ?? code);
   res.json({
     code: raw,
+    matched_code: out.matched,
     result: out.result,
     items: out.items.map((i) => ({ ...i, scans: scansOf(i.id) })),
     customer: out.items.length ? customerBrief(out.items[0].customer_id) : null,
     suggestions: out.suggestions,
   });
+});
+
+/**
+ * Код не нашёлся в заказах: клиент заказывал сам. Заводим товар на выбранного клиента и сразу
+ * принимаем на склад. Прошлые сканы «не найден» по этому коду больше не нужны — скрываем их.
+ */
+warehouseRouter.post("/scan/assign", (req, res) => {
+  const raw = str(req.body?.code, 200);
+  const code = normCode(raw);
+  if (!code) throw badRequest("Пустой код");
+  const customerId = optInt(req.body?.customer_id);
+  if (!customerId) throw badRequest("Выберите клиента");
+  customerOr404(customerId);
+  const batchId = optInt(req.body?.batch_id) ?? null;
+  if (batchId && !get("SELECT id FROM batches WHERE id = ? AND deleted_at IS NULL AND status = 'open'", batchId)) {
+    throw badRequest("Партия не найдена или закрыта");
+  }
+  if (items("code_norm = ?", [code]).length) throw conflict("Этот код уже есть в заказах — отсканируйте его ещё раз");
+  const name = str(req.body?.name, 200) || "Товар без заказа";
+  const userId = req.user!.id;
+  const at = nowIso();
+  const id = tx(() => {
+    const orderId = findOrCreateOrder(customerId, today(), userId);
+    const itemId = run(
+      "INSERT INTO order_items (order_id, name, code, code_norm, qty, price, comment, status, created_by) VALUES (?, ?, ?, ?, 1, 0, ?, 'ordered', ?)",
+      orderId, name, raw, code, "Клиент заказывал сам — код привязан на приёме", userId
+    );
+    setStatus(itemId, "ordered", "create", userId, { at });
+    setStatus(itemId, "in_stock", "scan", userId, { at });
+    if (batchId) run("UPDATE order_items SET batch_id = ? WHERE id = ?", batchId, itemId);
+    run("UPDATE scans SET deleted_at = ? WHERE code_norm = ? AND result = 'not_found' AND deleted_at IS NULL", at, code);
+    run(
+      "INSERT INTO scans (code, code_norm, result, order_item_id, user_id, scanned_at) VALUES (?, ?, 'arrived', ?, ?, ?)",
+      raw, code, itemId, userId, at
+    );
+    return itemId;
+  });
+  audit(req, "assign_code", "item", id, null, code);
+  const it = itemOr404(id);
+  res.json({ code: raw, result: "arrived", items: [{ ...it, scans: scansOf(id) }], customer: customerBrief(customerId), suggestions: [] });
 });
 
 warehouseRouter.get("/scans", (req, res) => {
@@ -159,6 +235,12 @@ warehouseRouter.get("/scans", (req, res) => {
   if (since) {
     w.push("s.scanned_at >= ?");
     p.push(since);
+  }
+  // active=1 — для «Приёма»: товар вернули в «Заказан», значит его прошлые сканы уже не действуют.
+  // В полной истории они остаются, из базы ничего не удаляется.
+  if (req.query.active === "1") {
+    w.push(`NOT EXISTS (SELECT 1 FROM status_history h
+                         WHERE h.order_item_id = s.order_item_id AND h.to_status = 'ordered' AND h.source <> 'create' AND h.changed_at > s.scanned_at)`);
   }
   // Сканы удалённых товаров (или их удалённых клиентов/заказов) не показываем:
   // v_items содержит только живые товары. Ненайденные коды (без товара) остаются.

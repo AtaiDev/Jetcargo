@@ -17,7 +17,11 @@ import { focusItem, itemMatches, openItem, setSearchHits, useDebounced } from ".
 
 const EMPTY: SearchResults = { query: "", customers: [], items: [] };
 
-export default function GlobalSearch() {
+/**
+ * finder — вид для окна «Поиск» (кнопка в панели, Ctrl+K): поле крупнее, сразу в фокусе,
+ * результаты под полем, а не всплывающим списком; onDone — закрыть окно после выбора.
+ */
+export default function GlobalSearch({ finder, onDone }: { finder?: boolean; onDone?: () => void } = {}) {
   const nav = useNavigate();
   const loc = useLocation();
   // Клиент, чья карточка открыта: его товары из поиска показываем прямо в списке.
@@ -80,6 +84,7 @@ export default function GlobalSearch() {
       // Товар этого клиента — не открываем поверх, а показываем, где он в списке.
       setOpen(false);
       focusItem(i.id);
+      onDone?.();
     } else {
       openItem(i.id);
       reset();
@@ -88,7 +93,11 @@ export default function GlobalSearch() {
   const reset = () => {
     setOpen(false);
     setQ("");
+    onDone?.();
   };
+  useEffect(() => {
+    if (finder) inputRef.current?.focus();
+  }, [finder]);
 
   function enter() {
     if (res.customers[0]) {
@@ -100,9 +109,9 @@ export default function GlobalSearch() {
   }
 
   return (
-    <div ref={boxRef} style={css("position:relative;width:280px")}>
-      <span style={css("position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text-4);display:flex")}>
-        <Svg paths={I_SEARCH} size={15} />
+    <div ref={boxRef} className={finder ? "gs-finder" : undefined} style={finder ? undefined : css("position:relative;width:280px")}>
+      <span className={finder ? "gs-ico" : undefined} style={finder ? undefined : css("position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text-4);display:flex")}>
+        <Svg paths={I_SEARCH} size={finder ? 18 : 15} />
       </span>
       <input
         ref={inputRef}
@@ -111,17 +120,27 @@ export default function GlobalSearch() {
         onFocus={() => term.length >= 2 && setOpen(true)}
         onKeyDown={(e) => {
           if (e.key === "Enter") enter();
-          if (e.key === "Escape") setOpen(false);
+          if (e.key === "Escape") {
+            if (finder) onDone?.();
+            else setOpen(false);
+          }
         }}
-        placeholder="Имя, телефон, код, товар…  Ctrl+K"
-        style={css("width:100%;height:34px;padding:0 10px 0 30px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);font-size:12.5px;outline:none")}
+        placeholder={finder ? "Имя, телефон, код товара или название…" : "Имя, телефон, код, товар…  Ctrl+K"}
+        className={finder ? "gs-input" : undefined}
+        style={finder ? undefined : css("width:100%;height:34px;padding:0 10px 0 30px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);font-size:12.5px;outline:none")}
       />
+      {finder && term.length < 2 && <p className="gs-hint">Начните печатать — от 2 символов. Enter откроет первый результат, Esc — закрыть.</p>}
 
       {open && term.length >= 2 && (
         <div
-          style={css(
-            "position:absolute;top:40px;right:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 34px rgba(0,0,0,.16);z-index:40;overflow:hidden;animation:pop .12s ease;max-height:460px;overflow-y:auto;width:400px"
-          )}
+          className={finder ? "gs-res" : undefined}
+          style={
+            finder
+              ? undefined
+              : css(
+                  "position:absolute;top:40px;right:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 34px rgba(0,0,0,.16);z-index:40;overflow:hidden;animation:pop .12s ease;max-height:460px;overflow-y:auto;width:400px"
+                )
+          }
         >
           {total === 0 ? (
             <div style={css("padding:18px;text-align:center;color:var(--text-4);font-size:12.5px")}>Ничего не найдено</div>

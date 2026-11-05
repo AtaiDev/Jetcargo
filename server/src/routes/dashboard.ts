@@ -116,6 +116,169 @@ function profitFor(list: ItemView[], bs: BatchCalc[], ws: IssueWeight[], from: s
   };
 }
 
+/** Изменение в % к прошлому: null — сравнивать не с чем (в прошлом ноль или минус). */
+const pctChange = (now: number, before: number) => (before > 0 ? r2(((now - before) / before) * 100) : null);
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/**
+ * Главный экран «Обзор» (верх страницы): карточки, шкала оплаты, суммы по месяцам,
+ * работа склада по времени и товары по этапам. Те же правила расчёта, что и везде.
+ */
+function homeBoard(list: ItemView[], bs: BatchCalc[], ws: IssueWeight[], from: string, to: string) {
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+  const prevFrom = addDays(from, -days);
+  const prevTo = addDays(from, -1);
+  const prev2From = addDays(from, -2 * days);
+  const prev2To = addDays(from, -days - 1);
+  const cur = totals(inRange(list, from, to));
+  const prev = totals(inRange(list, prevFrom, prevTo));
+  const prev2 = totals(inRange(list, prev2From, prev2To));
+
+  // 1. Сумма заказов: этот период и два прошлых таких же — столбиками.
+  const sales = { value: r2(cur.sale), delta: pctChange(cur.sale, prev.sale), bars: [prev2.sale, prev.sale, cur.sale].map(r2) };
+
+  // 2. Прибыль: итог периода и как она шла — до 8 отрезков периода.
+  const profitNow = profitFor(list, bs, ws, from, to).total;
+  const profitPrev = profitFor(list, bs, ws, prevFrom, prevTo).total;
+  const dl = dayList(from, to);
+  const parts = Math.max(1, Math.min(8, dl.length));
+  const spark = Array.from({ length: parts }, (_, k) => {
+    const a = dl[Math.floor((k * dl.length) / parts)];
+    const b = dl[Math.floor(((k + 1) * dl.length) / parts) - 1];
+    return profitFor(list, bs, ws, a, b).total;
+  });
+  const profit = { value: profitNow, delta: pctChange(profitNow, profitPrev), spark };
+
+  // 3. Принято на склад за период (по дню прихода); кольцо — сколько из них уже выдано.
+  const arrivedIn = (a: string, b: string) => list.filter((i) => i.arrived_at && localDay(i.arrived_at) >= a && localDay(i.arrived_at) <= b);
+  const arr = arrivedIn(from, to);
+  const arrPrev = arrivedIn(prevFrom, prevTo);
+  const arrived = {
+    value: arr.length,
+    qty: arr.reduce((a, i) => a + i.qty, 0),
+    delta: pctChange(arr.length, arrPrev.length),
+    issued: arr.filter((i) => i.status === "issued").length,
+  };
+
+  // 4. Долг клиентов сейчас; столбики — долг по неделям заказа, последние 10 недель.
+  const t = today();
+  const debtItems = list.filter((i) => openDebt(i) > 0);
+  const debtWeeks = Array.from({ length: 10 }, (_, k) => {
+    const end = addDays(t, -7 * (9 - k));
+    const start = addDays(end, -6);
+    return r2(debtItems.filter((i) => i.order_date >= start && i.order_date <= end).reduce((a, i) => a + openDebt(i), 0));
+  });
+  const debt = {
+    value: r2(debtItems.reduce((a, i) => a + openDebt(i), 0)),
+    customers: new Set(debtItems.map((i) => i.customer_id)).size,
+    items: debtItems.length,
+    weeks: debtWeeks,
+  };
+
+  // Шкала: сколько процентов суммы заказов периода уже оплачено (выданное — оплачено).
+  const paidPct = cur.sale > 0 ? (cur.paid / cur.sale) * 100 : null;
+  const prevPaidPct = prev.sale > 0 ? (prev.paid / prev.sale) * 100 : null;
+  const gauge = {
+    score: paidPct === null ? null : Math.round(paidPct),
+    delta: paidPct !== null && prevPaidPct !== null ? Math.round(paidPct - prevPaidPct) : null,
+    sale: r2(cur.sale),
+    paid: r2(cur.paid),
+    debt: r2(cur.debt),
+    unpaid_items: cur.unpaid_items,
+  };
+
+  // Сумма заказов по месяцам: год, где конец периода, и прошлый год.
+  const year = Number(to.slice(0, 4));
+  const months = (y: number) =>
+    Array.from({ length: 12 }, (_, m) => {
+      const ym = `${y}-${pad2(m + 1)}`;
+      const inM = list.filter((i) => i.order_date.startsWith(ym));
+      const tm = totals(inM);
+      return {
+        month: ym,
+        sale: r2(tm.sale),
+        orders: new Set(inM.map((i) => i.order_id)).size,
+        items: tm.items,
+        profit: profitFor(list, bs, ws, `${ym}-01`, `${ym}-31`).total,
+      };
+    });
+
+  // Работа склада по времени — последние 4 недели: принято (по приходу) и выдано (по выдаче).
+  // Время — местное (на проде часовой пояс Бишкека); слоты как на макете: 0–8, 8–12, 12–16, 16–24.
+  const since = addDays(t, -27);
+  const slotOf = (h: number) => (h < 8 ? 0 : h < 12 ? 1 : h < 16 ? 2 : 3);
+  const heat = Array.from({ length: 4 }, () => Array.from({ length: 7 }, () => ({ arrived: 0, issued: 0 })));
+  const put = (iso: string | null, k: "arrived" | "issued") => {
+    if (!iso || localDay(iso) < since || localDay(iso) > t) return;
+    const d = new Date(iso);
+    heat[slotOf(d.getHours())][(d.getDay() + 6) % 7][k]++;
+  };
+  for (const i of list) {
+    put(i.arrived_at, "arrived");
+    put(i.issued_at, "issued");
+  }
+
+  // Товары периода по этапам — для кольца.
+  const inP = inRange(list, from, to);
+  const stages = {
+    total: inP.length,
+    delta: pctChange(inP.length, inRange(list, prevFrom, prevTo).length),
+    ordered: inP.filter((i) => i.stage === "ordered").length,
+    in_transit: inP.filter((i) => i.stage === "in_transit").length,
+    in_stock: inP.filter((i) => i.stage === "in_stock").length,
+    issued: inP.filter((i) => i.stage === "issued").length,
+  };
+
+  // «Требует внимания» — что сделать сейчас (не зависит от периода).
+  const stock = list.filter((i) => i.status === "in_stock");
+  // Уведомлено = все товары клиента на складе есть в действующих уведомлениях (как на «Уведомлениях»).
+  const told = new Map<number, Set<number>>();
+  for (const n of all<{ customer_id: number; item_ids: string }>(
+    "SELECT customer_id, item_ids FROM notifications WHERE deleted_at IS NULL AND issue_id IS NULL"
+  )) {
+    let ids: number[] = [];
+    try {
+      ids = (JSON.parse(n.item_ids) as unknown[]).map(Number);
+    } catch {
+      /* битая запись — как будто товаров нет */
+    }
+    const set = told.get(n.customer_id) ?? new Set<number>();
+    ids.forEach((id) => set.add(id));
+    told.set(n.customer_id, set);
+  }
+  const notTold = stock.filter((i) => !told.get(i.customer_id)?.has(i.id));
+  const ready = stock.filter((i) => openDebt(i) <= 0);
+  const staleDays = 14;
+  const staleFrom = addDays(t, -staleDays);
+  const stale = stock.filter((i) => i.arrived_at && localDay(i.arrived_at) < staleFrom);
+  const oldest = stale.reduce<string | null>((a, i) => (!a || (i.arrived_at as string) < a ? (i.arrived_at as string) : a), null);
+  const noBatch = list.filter((i) => i.status !== "ordered" && !i.batch_id);
+  const noCost = list.filter((i) => i.cost === null);
+  const noCode = list.filter((i) => i.status !== "issued" && !(i.code ?? "").trim());
+  const cust = (l: ItemView[]) => new Set(l.map((i) => i.customer_id)).size;
+  const todo = {
+    notify: { items: notTold.length, customers: cust(notTold) },
+    ready: { items: ready.length, customers: cust(ready), total: stock.length },
+    stale: { items: stale.length, customers: cust(stale), days: staleDays, oldest_days: oldest ? Math.round((Date.parse(t) - Date.parse(localDay(oldest))) / 86400000) : 0 },
+    no_batch: { items: noBatch.length, sale: r2(noBatch.reduce((a, i) => a + i.sale, 0)) },
+    no_cost: { items: noCost.length, sale: r2(noCost.reduce((a, i) => a + i.sale, 0)), total: list.length },
+    no_code: { items: noCode.length, customers: cust(noCode) },
+  };
+
+  return {
+    sales,
+    profit,
+    arrived,
+    debt,
+    todo,
+    gauge,
+    year: { year, current: months(year), previous: months(year - 1), this_month: t.slice(0, 7) },
+    heat: { since, cells: heat },
+    stages,
+    waiting: list.filter((i) => i.status === "in_stock").length,
+  };
+}
+
 /** Поступило денег за период — по дате оплаты, без отменённых; плюс вес, оплаченный при выдаче. */
 function cashIn(from: string, to: string) {
   return [
@@ -289,6 +452,8 @@ dashboardRouter.get("/dashboard", (req, res) => {
 
   res.json({
     period: { date_from: from, date_to: to },
+    // Верх «Обзора»: карточки, шкала, месяцы, работа склада по времени, этапы.
+    home: homeBoard(list, bs, ws, from, to),
     profit: {
       ...profitFor(list, bs, ws, from, to),
       // Сравнивать не с чем, если в прошлом периоде не было ни товаров, ни партий, ни веса.

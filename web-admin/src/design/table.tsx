@@ -29,7 +29,7 @@ export const EMPTY_ICON =
  */
 const PAGE_WIDTH = {
   list: "1180px", // таблицы и списки
-  wide: "none", // дашборд — во всю ширину
+  wide: "1720px", // дашборд — во всю ширину
   detail: "1000px", // карточка брони или клиента
   form: "760px", // настройки и узкие формы
 } as const;
@@ -43,7 +43,7 @@ export function Page({
 }) {
   return (
     <div
-      style={mix("padding:18px 22px;animation:fadeIn .2s ease", { maxWidth: PAGE_WIDTH[size] })}
+      style={mix("padding:18px 22px;margin:0 auto;animation:fadeIn .2s ease", { maxWidth: PAGE_WIDTH[size] })}
     >
       {children}
     </div>
