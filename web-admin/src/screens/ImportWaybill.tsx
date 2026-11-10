@@ -7,6 +7,7 @@
  *  - ниже — загруженные накладные с прогрессом: сколько ещё в пути, сколько уже на складе и выдано.
  * Превью ничего не пишет. «В пути» вычисляется по накладной — скрыли её, и товары снова «Заказан».
  */
+import ImportHelp from "./ImportHelp";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -29,7 +30,7 @@ import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_CLOSE, I_EXCEL, Icon, Svg } from "../design/icons";
 import { HButton, ModalError, ST } from "../design/ui";
-import { date, dateTime, som } from "../lib/cargo";
+import { date, dateTime, shortDateTime, som } from "../lib/cargo";
 import { emit } from "../lib/events";
 
 type Toast = (kind: "success" | "error", text: string) => void;
@@ -246,6 +247,7 @@ function WStart({ busy, fileName, onPick, onDrop }: { busy: boolean; fileName?: 
         tabIndex={0}
         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && !busy && onPick()}
       >
+        <svg className="im-dash" aria-hidden><rect x="1" y="1" rx="19" /></svg>
         <span className="im-drop-icon wb-drop-icon">
           <Icon name="batches" size={34} />
         </span>
@@ -266,33 +268,16 @@ function WStart({ busy, fileName, onPick, onDrop }: { busy: boolean; fileName?: 
         )}
       </div>
 
-      <section className="im-card">
-        <div style={css("font-size:15px;font-weight:500;color:var(--text)")}>Как это работает</div>
-        <div style={css("display:flex;flex-direction:column;gap:12px;margin-top:14px")}>
-          {[
-            ["Китай присылает накладную", "Excel с номерами заказов, номером накладной, датой отправки и коробками"],
-            ["Загружаете её сюда", "найдём товары по коду: «Номер заказа» в накладной = код товара"],
-            ["Найденные становятся «В пути»", "видно в заказах, на складе и в карточке товара — с номером накладной и датой отправки"],
-            ["На приёме — как обычно", "скан кода переводит товар «На склад»; накладную можно скрыть, и товары снова «Заказан»"],
-          ].map(([t, h], i) => (
-            <div key={t} style={css("display:flex;gap:12px;align-items:flex-start")}>
-              <span style={css(NUM + ";width:24px;height:24px;border-radius:8px;flex:none;display:grid;place-items:center;font-size:12px;font-weight:600;color:var(--sky);background:var(--sky-tint)")}>{i + 1}</span>
-              <span style={css("min-width:0")}>
-                <span style={css("display:block;font-size:13.5px;color:var(--text)")}>{t}</span>
-                <span style={css("display:block;font-size:12.5px;color:var(--text-4);margin-top:1px;line-height:1.45")}>{h}</span>
-              </span>
-            </div>
-          ))}
-        </div>
-        <div style={css("font-size:12px;color:var(--text-3);margin:16px 0 8px")}>Какие колонки понимаем</div>
-        <div style={css("display:flex;flex-wrap:wrap;gap:6px")}>
-          {["订单号 / Номер заказа *", "运单号 / Номер накладной", "发货时间 / Время отправления", "箱子编号 / Номер коробки", "入库时间 / Время поступления"].map((k) => (
-            <span key={k} className="im-chip">
-              {k}
-            </span>
-          ))}
-        </div>
-      </section>
+      <ImportHelp
+        title="Как выглядит накладная"
+        sub="Excel, который присылает Китай"
+        cols={["订单号 / Номер заказа *", "运单号 / Номер накладной", "发货时间 / Время отправления", "箱子编号 / Номер коробки", "入库时间 / Время поступления"]}
+        tips={[
+          ["search", "Найдём по коду", "номер заказа = код товара"],
+          ["truck", "Статус «В пути»", "с накладной и датой"],
+          ["scan", "На приёме", "скан → «На складе»"],
+        ]}
+      />
     </div>
   );
 }
@@ -380,8 +365,10 @@ function WTable({ rows }: { rows: WaybillPreview["rows"] }) {
 function WHistory({ toast }: { toast: Toast }) {
   const [list, setList] = useState<Shipment[] | null>(null);
   const [open, setOpen] = useState<number | null>(null);
-  const [detail, setDetail] = useState<ShipmentDetail | null>(null);
+  const [cache, setCache] = useState<Record<number, ShipmentDetail>>({});
   const [hide, setHide] = useState<Shipment | null>(null);
+  const [flt, setFlt] = useState<"all" | "go" | "done">("all");
+  const [all, setAll] = useState(false);
 
   const load = useCallback(() => {
     listShipments()
@@ -390,94 +377,223 @@ function WHistory({ toast }: { toast: Toast }) {
   }, []);
   useEffect(load, [load]);
 
-  useEffect(() => {
-    setDetail(null);
-    if (open !== null) getShipment(open).then(setDetail).catch(() => setDetail(null));
-  }, [open]);
+  const want = (id: number) => {
+    if (cache[id]) return;
+    getShipment(id)
+      .then((d) => setCache((c) => ({ ...c, [id]: d })))
+      .catch(() => undefined);
+  };
 
   if (list && !list.length) return null;
+  const dm = (iso: string) => shortDateTime(iso).slice(0, 5);
+  const isGo = (x: Shipment) => x.stats.in_transit > 0;
+  const nGo = (list ?? []).filter(isGo).length;
+  const nDone = (list ?? []).length - nGo;
+  const picked = (list ?? []).filter((x) => (flt === "all" ? true : flt === "go" ? isGo(x) : !isGo(x)));
+  const LIMIT = 6;
+  const shown = all ? picked : picked.slice(0, LIMIT);
   return (
-    <section style={css("margin-top:22px")}>
-      <div style={css("display:flex;align-items:baseline;gap:10px;margin-bottom:10px")}>
-        <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>Загруженные накладные</span>
-        {list && <span style={css(NUM + ";font-size:12.5px;color:var(--text-4)")}>{list.length}</span>}
+    <section className="im-card ihs wts" style={css("margin-top:16px")}>
+      <div className="ihs-head">
+        <span className="ihs-ttl">
+          Загруженные накладные
+          {list && <em>{list.length}</em>}
+        </span>
+        {list && list.length > 0 && (
+          <span className="ihs-flt" role="tablist">
+            {(
+              [
+                ["all", "Все", list.length],
+                ["go", "В пути", nGo],
+                ["done", "Доехали", nDone],
+              ] as const
+            ).map(([k, l, c]) => (
+              <button key={k} type="button" role="tab" aria-selected={flt === k} className={flt === k ? "on" : ""} disabled={k !== "all" && !c} onClick={() => setFlt(k)}>
+                {l}
+                <em>{c}</em>
+              </button>
+            ))}
+          </span>
+        )}
       </div>
       {!list ? (
-        <div className="wb-hist">
+        <div className="wts-grid">
           {[0, 1].map((i) => (
-            <span key={i} className="sk" style={css("height:96px;border-radius:16px")} />
+            <span key={i} className="sk" style={css("height:150px;border-radius:16px")} />
           ))}
         </div>
       ) : (
-        <div className="wb-hist">
-          {list.map((s) => {
+        <div className="wts-grid">
+          {shown.map((s, i) => {
             const t = s.stats;
             const total = Math.max(1, t.in_transit + t.in_stock + t.issued + t.ordered);
-            const seg = (n: number) => `${(n / total) * 100}%`;
+            const p = (t.in_stock + t.issued) / total;
+            const done = t.items > 0 && t.in_transit === 0 && t.ordered === 0;
             const isOpen = open === s.id;
+            const no = s.waybill.match(/^(.*-)([^-]+-[^-]+)$/);
+            const days = s.shipped_at ? Math.round((new Date(s.updated_at.slice(0, 10)).getTime() - new Date(s.shipped_at.slice(0, 10)).getTime()) / 864e5) : null;
             return (
-              <div key={s.id} className={"wb-card" + (isOpen ? " open" : "")}>
-                <div className="wb-card-top">
-                  <span style={css("min-width:0;flex:1")}>
-                    <span style={css(CODE + ";display:block;font-size:14px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{s.waybill}</span>
-                    <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-3);margin-top:2px")}>
-                      {s.shipped_at ? `отправлена ${date(s.shipped_at)} · ` : ""}загружена {dateTime(s.updated_at)}
-                      {s.user_login ? ` · ${s.user_login}` : ""}
+              <div key={s.id} className={"wt-w" + (isOpen ? " open" : "")} style={{ ["--k" as string]: i }}>
+                <div className={"wt" + (done ? " done" : "") + (t.in_transit > 0 ? " moving" : "")} style={{ ["--p" as string]: p }}>
+                  <div className="wt-stub">
+                    <span className="wt-lbl">
+                      Накладная
+                      {s.user_login && <span>{s.user_login}</span>}
                     </span>
-                  </span>
-                  <span style={css(NUM + ";font-size:13px;color:var(--text-2);white-space:nowrap")}>
-                    {t.items} {plural(t.items, "товар", "товара", "товаров")} · {som(t.sum)}
-                  </span>
-                </div>
-                <div className="wb-bar" aria-hidden>
-                  <span style={{ width: seg(t.in_transit), background: "var(--sky-dot)" }} />
-                  <span style={{ width: seg(t.in_stock), background: "var(--accent)" }} />
-                  <span style={{ width: seg(t.issued), background: "var(--green-dot)" }} />
-                  <span style={{ width: seg(t.ordered), background: "var(--amber-dot)" }} />
-                </div>
-                <div className="wb-legend">
-                  <Leg c="var(--sky-dot)" n={t.in_transit} label="в пути" />
-                  <Leg c="var(--accent)" n={t.in_stock} label="на складе" />
-                  <Leg c="var(--green-dot)" n={t.issued} label="выдано" />
-                  {t.ordered > 0 && <Leg c="var(--amber-dot)" n={t.ordered} label="в другой накладной" />}
-                  {t.not_found > 0 && <Leg c="var(--danger-dot)" n={t.not_found} label="кодов без товара" />}
-                  <span style={css("flex:1")} />
-                  <HButton onClick={() => setOpen(isOpen ? null : s.id)} className="au-reset" s="" hover="">
-                    {isOpen ? "Свернуть" : "Подробнее"}
-                  </HButton>
-                  <HButton onClick={() => setHide(s)} className="au-reset" s="color:var(--text-4)" hover="color:var(--danger)">
-                    Скрыть
-                  </HButton>
-                </div>
-                {isOpen &&
-                  (!detail ? (
-                    <span className="sk" style={css("display:block;height:80px;margin-top:12px;border-radius:12px")} />
-                  ) : (
-                    <div className="wb-detail thin-scroll">
-                      {detail.rows.map((r, i) => (
-                        <div key={i} className="wb-drow">
-                          <span style={css(CODE + ";font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.code}</span>
-                          <MatchCell m={r.matches} />
-                          <span className="wb-flow">
-                            {r.matches.length ? (
-                              <>
-                                <span style={mix("width:7px;height:7px;border-radius:50%", { background: ST[r.matches[0].stage].dot })} />
-                                <span style={{ color: ST[r.matches[0].stage].fg }}>{ST[r.matches[0].stage].label}</span>
-                              </>
-                            ) : (
-                              <>
-                                <span style={mix("width:7px;height:7px;border-radius:50%", { background: "var(--danger-dot)" })} />
-                                <span style={css("color:var(--danger)")}>нет товара</span>
-                              </>
-                            )}
+                    <b className="wt-no" title={s.waybill}>
+                      {no ? (
+                        <>
+                          <span>{no[1]}</span>
+                          {no[2]}
+                        </>
+                      ) : (
+                        s.waybill
+                      )}
+                    </b>
+                    <span className="wt-route">
+                      <span>
+                        {s.shipped_at ? date(s.shipped_at).slice(0, 5) : "—"}
+                        <small>отправлена</small>
+                      </span>
+                      <span className="wt-gap">{days === null ? "" : days <= 0 ? "в тот же день" : `${days} ${plural(days, "день", "дня", "дней")}`}</span>
+                      <span>
+                        {dm(s.updated_at)}
+                        <small>загружена</small>
+                      </span>
+                    </span>
+                    <span className="wt-sum">
+                      <span>
+                        <b>{t.items}</b> {plural(t.items, "товар", "товара", "товаров")}
+                      </span>
+                      <b>{som(t.sum)}</b>
+                    </span>
+                  </div>
+                  <div className="wt-main">
+                    <div className="wt-road" title={`Доехало до склада: ${Math.round(p * 100)}%`}>
+                      <span className="wt-end">Китай</span>
+                      <span className="wt-track">
+                        <span className="wt-line">
+                          <i />
+                        </span>
+                        <span className="wt-truck">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d={done ? "M5 12.5l4.5 4.5L19 7.5" : "M3 6h11v10H3z M14 9h4l3 3v4h-7 M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0z M19 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"} />
+                          </svg>
+                        </span>
+                      </span>
+                      <span className="wt-end">Склад</span>
+                    </div>
+                    <div className="wt-st">
+                      {(
+                        [
+                          [t.in_transit, "в пути", total, "mv"],
+                          [t.in_stock, "на складе", total, ""],
+                          [t.issued, "выдано", total, ""],
+                          ...(t.ordered > 0 ? [[t.ordered, "в другой накладной", total, ""]] : []),
+                          ...(t.not_found > 0 ? [[t.not_found, plural(t.not_found, "код без товара", "кода без товара", "кодов без товара"), Math.max(1, t.codes), "warn"]] : []),
+                        ] as [number, string, number, string][]
+                      ).map(([v, l, of, c]) => (
+                        <span key={l} className={"wt-s" + (v ? "" : " z") + (c ? " " + c : "")}>
+                          <span className="wt-s-v">
+                            <b>{v}</b>
+                            <small>{l}</small>
                           </span>
-                        </div>
+                          <u>
+                            <i style={{ width: (v / of) * 100 + "%" }} />
+                          </u>
+                        </span>
                       ))}
                     </div>
-                  ))}
+                    <div className="wt-foot">
+                      <span className="wt-acts">
+                        <button
+                          type="button"
+                          className={"wt-btn" + (isOpen ? " on" : "")}
+                          onMouseEnter={() => want(s.id)}
+                          onFocus={() => want(s.id)}
+                          onClick={() => {
+                            want(s.id);
+                            setOpen(isOpen ? null : s.id);
+                          }}
+                        >
+                          {isOpen ? "Свернуть" : "Подробнее"}
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M6 9l6 6 6-6" />
+                          </svg>
+                        </button>
+                        <button type="button" className="wt-btn wt-hide" onClick={() => setHide(s)} title="Скрыть накладную">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M3 3l18 18 M10.6 5.1A10 10 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-2.7 3.6 M6.3 6.3C3.9 8 2.5 12 2.5 12s3.5 7 9.5 7a9.6 9.6 0 0 0 4.2-1 M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                          </svg>
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                {(() => {
+                  const det = cache[s.id];
+                  // пока грузится — заглушка той же высоты, что и будущая таблица (без скачка)
+                  const h = Math.min(368, 42 + Math.max(1, t.codes) * 42);
+                  return (
+                    <div className={"wt-x" + (isOpen ? " open" : "")} aria-hidden={!isOpen}>
+                      <div className="wt-x-in">
+                        {det ? (
+                          <div className="wt-detail thin-scroll">
+                            <div className="wt-dr wt-dh">
+                              <span>Клиент</span>
+                              <span>Товар</span>
+                              <span>Код</span>
+                              <span className="r">Шт</span>
+                              <span className="r">Сумма</span>
+                              <span>Статус</span>
+                            </div>
+                            {det.rows.map((r, j) => {
+                              const m = r.matches[0];
+                              return (
+                                <div key={j} className={"wt-dr" + (m ? "" : " miss")}>
+                                  <span className="wt-dc">
+                                    {m ? (
+                                      <>
+                                        <i>{(m.customer_name || "?").trim().charAt(0).toUpperCase()}</i>
+                                        <b>{m.customer_name}</b>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <i className="wt-skel" />
+                                        <s className="wt-skel" style={{ width: 84 }} />
+                                      </>
+                                    )}
+                                  </span>
+                                  <span className="wt-dn">
+                                    {m ? m.name : "нет товара с таким кодом"}
+                                    {r.matches.length > 1 && <small>+{r.matches.length - 1}</small>}
+                                  </span>
+                                  <span className="wt-dk">{r.code}</span>
+                                  <span className="r">{m ? m.qty : <s className="wt-skel" style={{ width: 18 }} />}</span>
+                                  <span className="r">{m ? som(m.sale) : <s className="wt-skel" style={{ width: 52 }} />}</span>
+                                  <span className={"wt-stage " + (m ? m.stage : "none")}>
+                                    <i />
+                                    {m ? ST[m.stage].label : "нет товара"}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                              ) : (
+                          <span className="wt-detail wt-dsk" style={{ height: h }} />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
+          {picked.length > LIMIT && (
+            <button type="button" className="ihs-more" onClick={() => setAll(!all)}>
+              {all ? "Свернуть" : `Показать все · ещё ${picked.length - LIMIT}`}
+            </button>
+          )}
         </div>
       )}
       {hide && (
@@ -504,13 +620,6 @@ function WHistory({ toast }: { toast: Toast }) {
     </section>
   );
 }
-
-const Leg = ({ c, n, label }: { c: string; n: number; label: string }) => (
-  <span style={css(NUM + ";display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-3);white-space:nowrap")}>
-    <span style={mix("width:7px;height:7px;border-radius:50%", { background: c })} />
-    <b style={css("font-weight:500;color:var(--text-2)")}>{n}</b> {label}
-  </span>
-);
 
 function plural(n: number, one: string, few: string, many: string): string {
   const a = n % 10;

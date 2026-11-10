@@ -844,6 +844,7 @@ export interface ImportBatch {
   alive_items: number;
 }
 export const listImports = () => api.get<ImportBatch[]>("/imports").then((r) => r.data);
+export const getImportTemplate = () => api.get<Blob>("/import/template", { responseType: "blob" }).then((r) => r.data);
 export const undoImport = (id: number) => api.post(`/imports/${id}/undo`).then(() => undefined);
 
 // --- Поиск, настройки, сотрудники, журнал -------------------------------------------

@@ -7,6 +7,7 @@
  *  - ниже — строки файла с фильтром и пометками по каждой строке; в самом низу — история импортов.
  * Превью ничего не пишет. Существующие записи по умолчанию не меняются. Любой импорт можно отменить.
  */
+import ImportHelp from "./ImportHelp";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 
@@ -14,9 +15,12 @@ import { apiError } from "../api/client";
 import {
   commitImport,
   listImports,
+  getImportTemplate,
+  listShipments,
   previewImport,
   undoImport,
   type ImportBatch,
+  type Shipment,
   type ImportField,
   type ImportOptions,
   type ImportPreview,
@@ -30,9 +34,10 @@ import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_CLOSE, I_EXCEL, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
 import { HButton, ModalError, ST, StatusBadge } from "../design/ui";
-import { STATUS_LABEL, date, dateTime, som } from "../lib/cargo";
+import { STATUS_LABEL, date, dateTime, shortDateTime, som } from "../lib/cargo";
 import { emit } from "../lib/events";
 import ImportWaybill from "./ImportWaybill";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 type RowFilter = "all" | ImportRow["action"] | "warn";
@@ -41,10 +46,10 @@ const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 const CODE = MONO + ";letter-spacing:.02em";
 
 const ACTION: Record<ImportRow["action"], { label: string; fg: string; dot: string; grad: string }> = {
-  new: { label: "Новая", fg: "var(--green)", dot: "var(--green-dot)", grad: "linear-gradient(90deg,#34D399,#16A34A)" },
-  update: { label: "Обновится", fg: "var(--accent-strong)", dot: "var(--accent)", grad: "linear-gradient(90deg,#8FA6FF,#3E63DD)" },
-  duplicate: { label: "Дубликат", fg: "var(--text-3)", dot: "var(--text-4)", grad: "linear-gradient(90deg,#CBD5E1,#94A3B8)" },
-  error: { label: "Ошибка", fg: "var(--danger)", dot: "var(--danger-dot)", grad: "linear-gradient(90deg,#FB7185,#E5484D)" },
+  new: { label: "Новая", fg: "var(--ov-text)", dot: "var(--ov-ink)", grad: "var(--ov-ink)" },
+  update: { label: "Обновится", fg: "var(--ov-text)", dot: "color-mix(in srgb,var(--ov-text) 55%,transparent)", grad: "color-mix(in srgb,var(--ov-text) 55%,transparent)" },
+  duplicate: { label: "Дубликат", fg: "var(--ov-mute)", dot: "color-mix(in srgb,var(--ov-text) 22%,transparent)", grad: "color-mix(in srgb,var(--ov-text) 22%,transparent)" },
+  error: { label: "Ошибка", fg: "#9C3B2E", dot: "#9C3B2E", grad: "#9C3B2E" },
 };
 
 /** Какие колонки понимает импорт — подсказка до выбора файла. */
@@ -55,6 +60,52 @@ export default function Import({ toast }: { toast: Toast }) {
   const [params, setParams] = useSearchParams();
   const mode = params.get("mode") === "waybill" ? "waybill" : "orders";
   const [handoff, setHandoff] = useState<File | null>(null);
+  // сводка истории — справа от вкладок режима
+  const [hist, setHist] = useState<ImportBatch[] | null>(null);
+  const [ships, setShips] = useState<Shipment[] | null>(null);
+  useEffect(() => {
+    listImports()
+      .then(setHist)
+      .catch(() => setHist(null));
+    listShipments()
+      .then(setShips)
+      .catch(() => setShips(null));
+  }, []);
+  async function downloadTemplate() {
+    try {
+      const blob = await getImportTemplate();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Jetcargo — шаблон импорта.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch {
+      toast("error", "Не удалось скачать шаблон");
+    }
+  }
+  const ago = (iso?: string) => {
+    if (!iso) return "—";
+    const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return d <= 0 ? "сегодня" : d === 1 ? "вчера" : `${d} дн.`;
+  };
+  // сводка справа — своя для каждого режима
+  const sum: { icon: ReactNode; value: string; label: string; title?: string }[] | null =
+    mode === "waybill"
+      ? ships && [
+          { icon: <Icon name="batches" size={14} />, value: String(ships.length), label: "накладных" },
+          { icon: <Svg paths={I_EXCEL} size={14} sw={1.9} />, value: ships.reduce((a, x) => a + (x.stats?.items || 0), 0).toLocaleString("ru-RU"), label: "товаров" },
+          { icon: CLOCK, value: ago(ships[0]?.created_at), label: "последняя", title: ships[0] ? `${ships[0].filename} · ${dateTime(ships[0].created_at)}` : undefined },
+        ]
+      : hist &&
+        (() => {
+          const live = hist.filter((h) => !h.undone_at);
+          return [
+            { icon: <Icon name="batches" size={14} />, value: String(live.length), label: "импортов" },
+            { icon: <Svg paths={I_EXCEL} size={14} sw={1.9} />, value: live.reduce((a, h) => a + (h.alive_items || 0), 0).toLocaleString("ru-RU"), label: "товаров" },
+            { icon: CLOCK, value: ago(live[0]?.created_at), label: "последний", title: live[0] ? `${live[0].filename} · ${dateTime(live[0].created_at)}` : undefined },
+          ];
+        })();
   const setMode = (m: "orders" | "waybill") => {
     const next = new URLSearchParams(params);
     if (m === "waybill") next.set("mode", "waybill");
@@ -139,25 +190,47 @@ export default function Import({ toast }: { toast: Toast }) {
 
   return (
     <Page size="wide">
-      <div className="im-modes" role="tablist" aria-label="Что загружаем">
-        <button type="button" role="tab" aria-selected={mode === "orders"} className={"im-mode" + (mode === "orders" ? " on" : "")} onClick={() => setMode("orders")}>
-          <span className="im-mode-i" style={css("background:var(--green-tint);color:var(--green)")}>
-            <Svg paths={I_EXCEL} size={20} sw={1.7} />
-          </span>
-          <span style={css("min-width:0")}>
-            <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Заказы из таблицы</span>
-            <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>клиенты, товары, суммы и оплаты</span>
-          </span>
-        </button>
-        <button type="button" role="tab" aria-selected={mode === "waybill"} className={"im-mode sky" + (mode === "waybill" ? " on" : "")} onClick={() => setMode("waybill")}>
-          <span className="im-mode-i" style={css("background:var(--sky-tint);color:var(--sky)")}>
-            <Icon name="batches" size={20} />
-          </span>
-          <span style={css("min-width:0")}>
-            <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Накладная из Китая</span>
-            <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>найдёт товары по коду и отметит «В пути»</span>
-          </span>
-        </button>
+      <div className="ov im2">
+      <div className="wx-head im-top">
+        <HomeHead title="Импорт Excel" />
+        <span className="im-acts">
+          {mode === "orders" && (
+            <button type="button" className="im-act ink" onClick={downloadTemplate} title="Готовая таблица с нужными колонками и строкой-примером">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+              </svg>
+              Шаблон Excel
+            </button>
+          )}
+          <button
+            type="button"
+            className="im-act"
+            onClick={() => document.getElementById("im-history")?.scrollIntoView({ behavior: "smooth", block: "start" }) ?? window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })}
+            title="К истории загрузок"
+          >
+            {CLOCK}
+            История
+            {sum && <em>{sum[0].value}</em>}
+          </button>
+        </span>
+      </div>
+      <div className="im-modebar">
+        <div className={"im-sw" + (mode === "waybill" ? " r" : "")} role="tablist">
+          <span className="im-sw-th" aria-hidden />
+          <button type="button" role="tab" aria-selected={mode === "orders"} className={mode === "orders" ? "on" : ""} onClick={() => setMode("orders")}>
+            Заказы из таблицы
+          </button>
+          <button type="button" className="im-sw-mid" onClick={() => setMode(mode === "orders" ? "waybill" : "orders")} title="Переключить" aria-label="Переключить режим">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path className="a-r" d="M4 8h15 M15 4l4 4-4 4" />
+              <path className="a-l" d="M20 16H5 M9 12l-4 4 4 4" />
+            </svg>
+          </button>
+          <button type="button" role="tab" aria-selected={mode === "waybill"} className={mode === "waybill" ? "on" : ""} onClick={() => setMode("waybill")}>
+            Накладная из Китая
+          </button>
+        </div>
+        {mode === "waybill" ? <WaybillSteps /> : <Stepper step={step} />}
       </div>
 
       {mode === "waybill" ? (
@@ -165,10 +238,9 @@ export default function Import({ toast }: { toast: Toast }) {
       ) : (
         <>
           <input ref={inputRef} type="file" accept=".xlsx" style={css("display:none")} onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
-          <Stepper step={step} />
           {looksWaybill && (
             <section className="im-waybill-hint">
-              <span className="im-mode-i" style={css("background:var(--sky-tint);color:var(--sky)")}>
+              <span className="im-mode-i" style={css("background:var(--ov-stone);color:var(--ov-text)")}>
                 <Icon name="batches" size={18} />
               </span>
               <span style={css("flex:1;min-width:0")}>
@@ -411,11 +483,41 @@ export default function Import({ toast }: { toast: Toast }) {
           )}
         </>
       )}
+      </div>
     </Page>
   );
 }
 
 // --- Шаги ----------------------------------------------------------------------------------------
+
+const CLOCK = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5V12l3 2" />
+  </svg>
+);
+
+/** Шаги накладной — как у заказов, рядом с вкладками. */
+function WaybillSteps() {
+  const steps = [
+    ["Файл", "накладная .xlsx"],
+    ["Сверка", "найдём коды"],
+    ["В пути", "отметим товары"],
+  ];
+  return (
+    <div className="im-steps wb">
+      {steps.map(([t, h], i) => (
+        <div key={t} className={"im-step" + (i === 0 ? " now" : "")}>
+          <span className="im-step-n">{i + 1}</span>
+          <span style={css("min-width:0")}>
+            <span style={css("display:block;font-size:13.5px;font-weight:500")}>{t}</span>
+            <span style={css("display:block;font-size:12px;opacity:.75")}>{h}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function Stepper({ step }: { step: number }) {
   const steps = [
@@ -446,7 +548,7 @@ function Stepper({ step }: { step: number }) {
 function CardHead({ n, title, hint }: { n: number; title: string; hint: string }) {
   return (
     <div style={css("display:flex;align-items:center;gap:12px")}>
-      <span style={css(NUM + ";width:32px;height:32px;border-radius:10px;flex:none;display:grid;place-items:center;font-size:14px;font-weight:600;color:var(--accent-strong);background:var(--accent-tint)")}>{n}</span>
+      <span style={css(NUM + ";width:32px;height:32px;border-radius:10px;flex:none;display:grid;place-items:center;font-size:14px;font-weight:600;color:var(--ov-ink-fg);background:var(--ov-ink)")}>{n}</span>
       <span style={css("min-width:0")}>
         <span style={css("display:block;font-size:15px;font-weight:500;color:var(--text)")}>{title}</span>
         <span style={css("display:block;font-size:12.5px;color:var(--text-4)")}>{hint}</span>
@@ -503,6 +605,7 @@ function Start({ busy, fileName, onPick, onDrop }: { busy: boolean; fileName?: s
         tabIndex={0}
         onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && !busy && onPick()}
       >
+        <svg className="im-dash" aria-hidden><rect x="1" y="1" rx="19" /></svg>
         <span className="im-drop-icon">
           <Svg paths={I_EXCEL} size={36} sw={1.5} />
         </span>
@@ -523,33 +626,16 @@ function Start({ busy, fileName, onPick, onDrop }: { busy: boolean; fileName?: s
         )}
       </div>
 
-      <section className="im-card">
-        <div style={css("font-size:15px;font-weight:500;color:var(--text)")}>Как подготовить файл</div>
-        <div style={css("display:flex;flex-direction:column;gap:12px;margin-top:14px")}>
-          {[
-            ["Первая строка — заголовки", "Клиент, телефон, товар, сумма… — названия колонок мы узнаем сами, их можно поправить"],
-            ["Из Google Таблиц", "Файл → Скачать → Microsoft Excel (.xlsx)"],
-            ["Сначала превью", "покажем, что добавится, что пропустится и где ошибки — ничего не запишется без подтверждения"],
-            ["Можно отменить", "любой импорт отменяется в истории ниже одной кнопкой"],
-          ].map(([t, h], i) => (
-            <div key={t} style={css("display:flex;gap:12px;align-items:flex-start")}>
-              <span style={css(NUM + ";width:24px;height:24px;border-radius:8px;flex:none;display:grid;place-items:center;font-size:12px;font-weight:600;color:var(--green);background:var(--green-tint)")}>{i + 1}</span>
-              <span style={css("min-width:0")}>
-                <span style={css("display:block;font-size:13.5px;color:var(--text)")}>{t}</span>
-                <span style={css("display:block;font-size:12.5px;color:var(--text-4);margin-top:1px;line-height:1.45")}>{h}</span>
-              </span>
-            </div>
-          ))}
-        </div>
-        <div style={css("font-size:12px;color:var(--text-3);margin:16px 0 8px")}>Какие колонки понимаем</div>
-        <div style={css("display:flex;flex-wrap:wrap;gap:6px")}>
-          {KNOWN.map((k) => (
-            <span key={k} className="im-chip">
-              {k}
-            </span>
-          ))}
-        </div>
-      </section>
+      <ImportHelp
+        title="Как должен выглядеть файл"
+        sub="первая строка — заголовки"
+        cols={KNOWN}
+        tips={[
+          ["sheet", "Google Таблицы", "Файл → Скачать → .xlsx"],
+          ["eye", "Сначала превью", "без «Да» не запишется"],
+          ["undo", "Можно отменить", "одной кнопкой в истории"],
+        ]}
+      />
     </div>
   );
 }
@@ -647,6 +733,8 @@ function PreviewTable({ rows }: { rows: ImportRow[] }) {
 function History({ toast }: { toast: Toast }) {
   const [rows, setRows] = useState<ImportBatch[] | null>(null);
   const [undo, setUndo] = useState<ImportBatch | null>(null);
+  const [flt, setFlt] = useState<"all" | "live" | "undone">("all");
+  const [all, setAll] = useState(false);
   const load = () =>
     listImports()
       .then(setRows)
@@ -655,43 +743,150 @@ function History({ toast }: { toast: Toast }) {
     load();
   }, []);
 
+  // группы по дням: «Сегодня», «Вчера», «29 сентября»
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const hm = (iso: string) => {
+    const d = new Date(iso);
+    return p2(d.getHours()) + ":" + p2(d.getMinutes());
+  };
+  const dayOf = (iso: string) => {
+    const d = new Date(iso);
+    const t = new Date();
+    const y = new Date(t.getFullYear(), t.getMonth(), t.getDate() - 1);
+    if (d.toDateString() === t.toDateString()) return "Сегодня";
+    if (d.toDateString() === y.toDateString()) return "Вчера";
+    return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", ...(d.getFullYear() !== t.getFullYear() ? { year: "numeric" } : {}) });
+  };
+  const groups: [string, ImportBatch[]][] = [];
+  const nUndone = (rows ?? []).filter((r) => r.undone_at).length;
+  const nLive = (rows ?? []).length - nUndone;
+  const picked = (rows ?? []).filter((r) => (flt === "all" ? true : flt === "live" ? !r.undone_at : !!r.undone_at));
+  const LIMIT = 8;
+  const shown = all ? picked : picked.slice(0, LIMIT);
+  for (const r of shown) {
+    const d = dayOf(r.created_at);
+    const g = groups[groups.length - 1];
+    if (g && g[0] === d) g[1].push(r);
+    else groups.push([d, [r]]);
+  }
+  const n = (v: number) => v.toLocaleString("ru-RU");
+  const UNDO = (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M9 14L4 9l5-5 M4 9h11a5 5 0 0 1 0 10h-3" />
+    </svg>
+  );
+
   return (
-    <section className="im-card" style={css("margin-top:16px")}>
-      <div style={css("display:flex;align-items:baseline;gap:10px")}>
-        <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>История импортов</span>
-        {rows && <span style={css(NUM + ";font-size:12.5px;color:var(--text-4)")}>{rows.length}</span>}
+    <section id="im-history" className="im-card ihs" style={css("margin-top:16px;scroll-margin-top:90px")}>
+      <div className="ihs-head">
+        <span className="ihs-ttl">
+          История импортов
+          {rows && rows.length > 0 && <em>{rows.length}</em>}
+        </span>
+        {rows && rows.length > 0 && (
+          <span className="ihs-flt" role="tablist">
+            {(
+              [
+                ["all", "Все", rows.length],
+                ["live", "Активные", nLive],
+                ["undone", "Отменённые", nUndone],
+              ] as const
+            ).map(([k, l, c]) => (
+              <button key={k} type="button" role="tab" aria-selected={flt === k} className={flt === k ? "on" : ""} disabled={k !== "all" && !c} onClick={() => setFlt(k)}>
+                {l}
+                <em>{c}</em>
+              </button>
+            ))}
+          </span>
+        )}
       </div>
       {!rows || rows.length === 0 ? (
         <Empty icon="import" title="Импортов ещё не было" text="Здесь появится каждый импорт — его можно будет отменить" />
       ) : (
-        <div style={css("display:flex;flex-direction:column;gap:8px;margin-top:14px")}>
-          {rows.map((r) => (
-            <div key={r.id} className={"im-hist" + (r.undone_at ? " undone" : "")}>
-              <span className="im-hist-icon">
-                <Svg paths={I_EXCEL} size={18} sw={1.7} />
-              </span>
-              <span style={css("min-width:0")}>
-                <span style={css("display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.filename}</span>
-                <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-4)")}>
-                  {dateTime(r.created_at)} · лист «{r.sheet}» · {r.user_login ?? "—"}
-                </span>
-              </span>
-              <span style={css("display:flex;flex-wrap:wrap;gap:6px")}>
-                <Pill tone="green" n={r.created_items} label="новых" />
-                {r.updated_items > 0 && <Pill tone="accent" n={r.updated_items} label="обновлено" />}
-                {r.skipped > 0 && <Pill tone="muted" n={r.skipped} label="пропущено" />}
-                {r.errors > 0 && <Pill tone="danger" n={r.errors} label="ошибок" />}
-              </span>
-              <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);white-space:nowrap")}>{r.undone_at ? `отменён ${dateTime(r.undone_at)}` : `в системе ${r.alive_items}`}</span>
-              <span style={css("display:flex;justify-content:flex-end")}>
-                {!r.undone_at && (
-                  <HButton onClick={() => setUndo(r)} className="im-undo" s="" hover="">
-                    Отменить
-                  </HButton>
-                )}
-              </span>
+        <div className="ihs-list">
+          {groups.map(([day, list], gi) => (
+            <div key={day} className="ihs-day">
+              <div className="ihs-date">{day}</div>
+              {list.map((r, k) => {
+                const seg: [string, number, string][] = (
+                  [
+                    ["c", r.created_items, "новых"],
+                    ["u", r.updated_items, "обновлено"],
+                    ["s", r.skipped, "пропущено"],
+                    ["e", r.errors, plural(r.errors, "ошибка", "ошибки", "ошибок")],
+                  ] as [string, number, string][]
+                ).filter((x) => x[1] > 0);
+                return (
+                  <div key={r.id} className={"ihs-row" + (r.undone_at ? " undone" : "") + (gi === 0 && k === 0 ? " fresh" : "")} style={{ ["--k" as string]: k }}>
+                    <span className="ihs-time">{hm(r.created_at)}</span>
+                    <span className="ihs-rail">
+                      <i />
+                    </span>
+                    <span className="ihs-file">
+                      <span className="ihs-ic">
+                        <Svg paths={I_EXCEL} size={17} sw={1.7} />
+                      </span>
+                      <span className="ihs-fn">
+                        <b title={r.filename}>{r.filename}</b>
+                        <small>
+                          <span className="ihs-tm">{hm(r.created_at)} · </span>лист «{r.sheet}» · {r.user_login ?? "—"}
+                        </small>
+                      </span>
+                    </span>
+                    <span className="ihs-res">
+                      <span className="ihs-bar">
+                        {seg.map(([c, v]) => (
+                          <i key={c} className={c} style={{ flexGrow: v }} />
+                        ))}
+                      </span>
+                      <span className="ihs-leg">
+                        {seg.map(([c, v, l]) => (
+                          <span key={c} className={c}>
+                            <i />
+                            <b>{n(v)}</b> {l}
+                          </span>
+                        ))}
+                        <span className="tot">
+                          из {n(r.rows_total)}<span className="ihs-tw"> {plural(r.rows_total, "строки", "строк", "строк")}</span>
+                        </span>
+                      </span>
+                    </span>
+                    <span className={"ihs-live" + (!r.undone_at && r.alive_items >= r.created_items ? " full" : "")} title={r.undone_at ? "Отменён " + shortDateTime(r.undone_at) : undefined}>
+                      {r.undone_at && <Ring p={0} off />}
+                      {r.undone_at ? (
+                        <span>
+                          <b>отменён</b>
+                          <small>{shortDateTime(r.undone_at)}</small>
+                        </span>
+                      ) : (
+                        <span>
+                          <b>{n(r.alive_items)}</b>
+                          <small>в системе</small>
+                        </span>
+                      )}
+                    </span>
+                    <span className="ihs-act">
+                      {r.undone_at ? (
+                        <span className="ihs-gone" title="Импорт отменён">
+                          {UNDO}
+                        </span>
+                      ) : (
+                        <button type="button" className="ihs-undo" onClick={() => setUndo(r)}>
+                          {UNDO}
+                          Отменить
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           ))}
+          {picked.length > LIMIT && (
+            <button type="button" className="ihs-more" onClick={() => setAll(!all)}>
+              {all ? "Свернуть" : `Показать все · ещё ${picked.length - LIMIT}`}
+            </button>
+          )}
         </div>
       )}
       {undo && (
@@ -718,19 +913,15 @@ function History({ toast }: { toast: Toast }) {
   );
 }
 
-const PILL = {
-  green: ["var(--green-tint)", "var(--green)"],
-  accent: ["var(--accent-tint)", "var(--accent-strong)"],
-  muted: ["var(--hover)", "var(--text-3)"],
-  danger: ["var(--danger-tint)", "var(--danger)"],
-} as const;
-
-function Pill({ tone, n, label }: { tone: keyof typeof PILL; n: number; label: string }) {
-  const [bg, fg] = PILL[tone];
+/** Кольцо доли: сколько записей импорта ещё в системе; полное — с галочкой. */
+function Ring({ p, off }: { p: number; off?: boolean }) {
+  const v = Math.max(0, Math.min(1, p));
   return (
-    <span style={mix(NUM + ";display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:999px;font-size:12px;white-space:nowrap", { background: bg, color: fg })}>
-      <b style={css("font-weight:600")}>{n}</b> {label}
-    </span>
+    <svg className={"ihs-ring" + (off ? " off" : "")} width="30" height="30" viewBox="0 0 36 36" aria-hidden>
+      <circle cx="18" cy="18" r="15" className="bg" />
+      {!off && <circle cx="18" cy="18" r="15" className="fg" pathLength={100} strokeDasharray={`${v * 100} 100`} />}
+      {off ? <path d="M13.5 18.5l-3-3 3-3 M10.5 15.5h11a4 4 0 0 1 0 8h-2" className="ic" /> : v >= 1 ? <path d="M12.5 18.5l3.5 3.5 7.5-7.5" className="ic" /> : null}
+    </svg>
   );
 }
 

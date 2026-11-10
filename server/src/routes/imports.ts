@@ -409,6 +409,24 @@ function optionsOf(req: Request): Options {
   };
 }
 
+/** Шаблон для заполнения: заголовки, которые импорт узнаёт сам, и строка-пример. */
+importsRouter.get("/import/template", async (req, res) => {
+  requireAdmin(req);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Заказы");
+  ws.columns = FIELDS.map((f) => ({ header: f.label + (f.required ? " *" : ""), key: f.key, width: Math.max(14, f.label.length + 4) }));
+  ws.addRow({ customer_name: "Пример Клиентов", customer_phone: "+996 555 000 000", name: "Кроссовки", code: "YT0000000001", qty: 1, price: 3200, price_cny: 170, real_price: 2600, status: "Заказан", payment: "Не оплачено", paid_amount: 0, order_date: new Date().toISOString().slice(0, 10), split_with: "", comment: "строку-пример удалите" });
+  const head = ws.getRow(1);
+  head.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  head.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF141414" } };
+  head.height = 22;
+  ws.getRow(2).font = { italic: true, color: { argb: "FF77766F" } };
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("Jetcargo — шаблон импорта.xlsx")}`);
+  res.send(Buffer.from(await wb.xlsx.writeBuffer()));
+});
+
 importsRouter.post("/import/preview", upload.single("file"), async (req, res) => {
   requireAdmin(req);
   if (!req.file) throw badRequest("Выберите файл .xlsx");
