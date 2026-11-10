@@ -141,7 +141,7 @@ export function HomeHead({ waiting, title = "Обзор" }: { waiting?: number |
       <h1 className="ov-title" aria-label={title}>
         {[...title].map((ch, i) => (
           <span key={i} className="ov-ch" style={{ animationDelay: `${i * 45}ms` }} aria-hidden>
-            {ch}
+            {ch === " " ? "\u00a0" : ch}
           </span>
         ))}
       </h1>

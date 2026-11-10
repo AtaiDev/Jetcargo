@@ -1,16 +1,15 @@
 /**
- * Выдача товара клиенту.
+ * Выдача товара клиенту — «касса».
  *
- * Раскладка «очередь слева»:
- *  - слева — очередь «Ждут выдачи» (клиенты с товаром на складе) и поиск по телефону, имени
- *    или коду товара (можно отсканировать); колонка не выше экрана, список прокручивается;
- *  - справа — выдача выбранному клиенту: только товары на складе (галочками), внизу чек:
- *    сколько выбрано, долг по ним, вес посылки (кг × $ за кг × курс, до копеек), оплата и «Выдать»; пока клиент не выбран —
- *    подсказка и итоги выдач за сегодня;
- *  - ниже — история выдач за период.
- * Статус, дата, время и история пишутся сервером; финансы не меняются (кроме принятой оплаты).
+ *  - сверху табло кассы: очередь, что выдали сегодня, сколько приняли наличными и переводом, сколько в долг;
+ *  - слева — очередь выдачи: только уведомлённые клиенты, у которых на складе есть уведомлённый товар;
+ *    поиск по имени, телефону или коду товара — неуведомлённых найдёт, но выдать не даст;
+ *  - справа — касса выбранного клиента: уведомлённые товары галочками, вес из уведомления, долг за товар,
+ *    как платит (наличные / перевод) и сколько (весь долг / часть / в долг) — и «Выдать»;
+ *  - ниже — «Забрали в долг» (принять оплату) и история выдач на высоту экрана.
+ * Выдача в долг сохраняет долг: он виден здесь, в карточке клиента и в финансах, пока клиент не оплатит.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
@@ -18,74 +17,245 @@ import {
   getCustomer,
   issueItems,
   issueLookup,
-  listCustomers,
+  listCredit,
   listIssues,
+  listNotify,
+  payCustomer,
+  type CreditRow,
   type CustomerBrief,
   type CustomerCard,
-  type CustomerRow,
   type IssueList,
   type IssueRow,
   type Item,
+  type NotifyRow,
 } from "../api/domain";
-import { Confirm, Empty, Pager, PeriodPicker, periodOf, type Period } from "../components/cargo";
+import { Confirm, periodOf, type Period, type PeriodKey } from "../components/cargo";
 import ItemModal from "../components/ItemModal";
 import CountUp from "../design/CountUp";
-import { MONO, css, mix } from "../design/css";
-import { I_CHECK, I_CLOSE, I_MINUS, I_SEARCH, Icon, Svg } from "../design/icons";
-import { Page, SearchInput } from "../design/table";
-import { HButton, ModalError, ST, SkeletonRows } from "../design/ui";
-import { parseMoney, shortDateTime, som, todayIso } from "../lib/cargo";
+import { css } from "../design/css";
+import { I_SEARCH, Svg } from "../design/icons";
+import { Page } from "../design/table";
+import { ModalError } from "../design/ui";
+import { parseMoney, som, todayIso } from "../lib/cargo";
 import { emit, useDebounced, useRefresh } from "../lib/events";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
-type PathDef = [string, Record<string, unknown>][];
 
 const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
-const CODE = MONO + ";letter-spacing:.02em";
-const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:16px";
-const TITLE = "font-size:15px;font-weight:500;letter-spacing:-.01em;color:var(--text)";
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const fmtKg = (kg: number) => kg.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const letters = (name: string) =>
+  name
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}]/gu, ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
 
-const I_CHEVRON: PathDef = [["path", { d: "m9 6 6 6-6 6" }]];
+/** Значки кассы — линейные, в одном стиле. */
+const I = {
+  cash: ["M2 7h20v10H2z", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M6 12h.01M18 12h.01"],
+  card: ["M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7Z", "M2 10h20", "M6 15h4"],
+  bell: ["M10.27 21a2 2 0 0 0 3.46 0", "M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"],
+  check: ["M20 6 9 17l-5-5"],
+  close: ["M18 6 6 18", "M6 6l12 12"],
+  clock: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z", "M12 7v5l3 2"],
+  arrow: ["M5 12h14", "m13 6 6 6-6 6"],
+  box: ["M21 8 12 3 3 8v8l9 5 9-5V8Z", "m3 8 9 5 9-5", "M12 13v8"],
+};
+function Ico({ d, size = 16, sw = 1.8 }: { d: string[]; size?: number; sw?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {d.map((p) => (
+        <path key={p} d={p} />
+      ))}
+    </svg>
+  );
+}
+
+/** Карточки клиентов, уже открытые или наведённые в очереди: касса открывается сразу, без пустой паузы. */
+const cardCache = new Map<number, CustomerCard>();
+function prefetch(id: number) {
+  if (!cardCache.has(id)) getCustomer(id).then((c) => cardCache.set(id, c)).catch(() => undefined);
+}
+
+/** Сколько взять с уведомлённого клиента: вес по уведомлениям + долг за уведомлённый товар. */
+function dueOf(r: NotifyRow) {
+  const weight = r2(r.notices.reduce((s, n) => s + n.weight_som, 0));
+  const kg = r2(r.notices.reduce((s, n) => s + (n.weight_kg ?? 0), 0));
+  const items = r.items.filter((i) => i.notified);
+  const debt = r2(items.reduce((s, i) => s + i.debt, 0));
+  return { weight, kg, debt, total: r2(weight + debt), count: items.length };
+}
 
 export default function Issue({ toast }: { isDesktop: boolean; toast: Toast }) {
   const [params, setParams] = useSearchParams();
   const customerId = Number(params.get("customer")) || null;
-  const searchRef = useRef<HTMLInputElement>(null);
+  const [notify, setNotify] = useState<NotifyRow[] | null>(null);
+  const [today, setToday] = useState<IssueList | null>(null);
+  const [credit, setCredit] = useState<CreditRow[] | null>(null);
 
+  const load = useCallback(() => {
+    listNotify()
+      .then((d) => setNotify(d.rows))
+      .catch(() => setNotify([]));
+    listIssues({ since: dayStartIso(todayIso()), limit: 6, tz: -new Date().getTimezoneOffset() })
+      .then(setToday)
+      .catch(() => setToday(null));
+    listCredit()
+      .then(setCredit)
+      .catch(() => setCredit([]));
+  }, []);
+  useEffect(load, [load]);
+  useRefresh(load);
+
+  // В очереди — уведомлённые клиенты, у которых на складе есть уведомлённый товар.
+  const queue = (notify ?? []).filter((r) => r.notices.length > 0 && dueOf(r).count > 0);
   const pick = (id: number | null) => {
     setParams(id ? { customer: String(id) } : {}, { replace: true });
-    if (!id) searchRef.current?.focus();
+    // На узком экране касса ниже очереди — плавно подвозим к ней.
+    if (id && window.innerWidth <= 1180) setTimeout(() => document.querySelector(".is-k")?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
   };
+  const s = today?.summary;
+  const creditSum = r2((credit ?? []).reduce((a, r) => a + r.debt, 0));
 
   return (
     <Page size="wide">
-      <div className={"iss-grid" + (customerId ? " has-client" : "")}>
-        <Queue selected={customerId} onPick={pick} inputRef={searchRef} />
-        {customerId ? <IssuePanel key={customerId} customerId={customerId} toast={toast} onClose={() => pick(null)} /> : <Idle />}
+      <div className="ov is">
+        <HomeHead title="Выдача" />
+
+        {/* ===== Сводка кассы ===== */}
+        <section className="is-top">
+          <TopCard
+            icon={I.cash}
+            label="Принято сегодня"
+            value={today ? som(r2((s?.cash ?? 0) + (s?.transfer ?? 0))) : null}
+            foot={
+              today && (
+                <>
+                  <span className="is-tf-split">
+                    <i style={{ flexGrow: s?.cash || (s?.transfer ? 0 : 1) }} />
+                    <i className="t" style={{ flexGrow: s?.transfer ?? 0 }} />
+                  </span>
+                  <span className="is-tf-row">
+                    <span className="is-tf-k">
+                      <i />
+                      нал <b>{som(s?.cash ?? 0)}</b>
+                    </span>
+                    <span className="is-tf-k t">
+                      <i />
+                      перевод <b>{som(s?.transfer ?? 0)}</b>
+                    </span>
+                  </span>
+                </>
+              )
+            }
+          />
+          <TopCard
+            icon={I.bell}
+            label="Ждут выдачи"
+            value={notify ? `${queue.length} ${plural(queue.length, "клиент", "клиента", "клиентов")}` : null}
+            foot={
+              notify && (
+                <span className="is-tf-row">
+                  <span className="is-tf-avs">
+                    {queue.slice(0, 4).map((r) => (
+                      <i key={r.id}>{letters(r.name)}</i>
+                    ))}
+                    {!queue.length && <em>очередь пуста</em>}
+                  </span>
+                  <span className="is-tf-r">
+                    к оплате <b>{som(r2(queue.reduce((a, r) => a + dueOf(r).total, 0)))}</b>
+                  </span>
+                </span>
+              )
+            }
+            onClick={queue.length ? () => pick(queue[0].id) : undefined}
+          />
+          <TopCard
+            icon={I.check}
+            label="Выдано сегодня"
+            value={today ? `${s?.items ?? 0} ${plural(s?.items ?? 0, "товар", "товара", "товаров")}` : null}
+            foot={
+              today && (
+                <span className="is-tf-row">
+                  <span>
+                    клиентов <b>{s?.customers ?? 0}</b>
+                  </span>
+                  <span className="is-tf-r">
+                    на <b>{som(s?.sale ?? 0)}</b>
+                  </span>
+                </span>
+              )
+            }
+          />
+          <TopCard
+            icon={I.clock}
+            label="Забрали в долг"
+            value={credit ? som(creditSum) : null}
+            warn={creditSum > 0}
+            foot={
+              credit && (
+                <span className="is-tf-row">
+                  <span>{credit.length ? `${credit.length} ${plural(credit.length, "клиент", "клиента", "клиентов")} должны` : "никто не должен"}</span>
+                  {credit.length > 0 && <span className="is-tf-r">смотреть ↓</span>}
+                </span>
+              )
+            }
+            onClick={credit?.length ? () => document.querySelector(".is-cr")?.scrollIntoView({ behavior: "smooth", block: "start" }) : undefined}
+          />
+        </section>
+
+        <div className="is-grid">
+          <Queue rows={notify ? queue : null} selected={customerId} onPick={pick} />
+          {customerId ? (
+            <Kassa key={customerId} customerId={customerId} row={(notify ?? []).find((r) => r.id === customerId) ?? null} loading={!notify} toast={toast} onClose={() => pick(null)} onNext={() => pick(queue.find((r) => r.id !== customerId)?.id ?? null)} />
+          ) : (
+            <KassaIdle waiting={queue.length} />
+          )}
+        </div>
+
+        <CreditList rows={credit} toast={toast} onPaid={load} />
+        <IssueHistory toast={toast} />
       </div>
-      <IssueHistory toast={toast} />
     </Page>
   );
 }
 
-// --- Очередь слева ---------------------------------------------------------------------------
+// --- Табло ------------------------------------------------------------------------------------
 
-type QueueEntry = Pick<CustomerBrief, "id" | "name" | "phone" | "in_stock" | "debt" | "stock_debt">;
+function TopCard({ icon, label, value, foot, warn, onClick }: { icon: string[]; label: string; value: string | null; foot: ReactNode; warn?: boolean; onClick?: () => void }) {
+  const body = (
+    <>
+      <span className="is-tc-h">
+        <span className="is-tc-i">
+          <Ico d={icon} size={15} />
+        </span>
+        <small>{label}</small>
+        {warn && <span className="is-tc-dot" />}
+      </span>
+      {value === null ? <span className="sk" style={{ width: "50%", height: 26, margin: "3px 0" }} /> : <b className="is-tc-v">{<CountUp text={value} />}</b>}
+      <span className="is-tf">{foot || <span className="sk" style={{ width: "70%", height: 10 }} />}</span>
+    </>
+  );
+  return onClick ? (
+    <button type="button" className="is-tc link" onClick={onClick}>
+      {body}
+    </button>
+  ) : (
+    <div className="is-tc">{body}</div>
+  );
+}
 
-/** Клиенты с товаром на складе (больше товаров — выше); поиск — по телефону, имени или коду товара. */
-function Queue({ selected, onPick, inputRef }: { selected: number | null; onPick: (id: number) => void; inputRef: RefObject<HTMLInputElement> }) {
-  const [rows, setRows] = useState<CustomerRow[] | null>(null);
+// --- Очередь ----------------------------------------------------------------------------------
+
+function Queue({ rows, selected, onPick }: { rows: NotifyRow[] | null; selected: number | null; onPick: (id: number) => void }) {
+  const nav = useNavigate();
   const [query, setQuery] = useState("");
   const q = useDebounced(query.trim(), 250);
   const [found, setFound] = useState<CustomerBrief[] | null>(null);
-
-  const load = useCallback(() => {
-    listCustomers({ filter: "in_stock", limit: 200 })
-      .then((r) => setRows([...r.rows].sort((a, b) => b.in_stock - a.in_stock)))
-      .catch(() => setRows([]));
-  }, []);
-  useEffect(load, [load]);
-  useRefresh(load);
 
   useEffect(() => {
     if (q.length < 2) {
@@ -101,95 +271,65 @@ function Queue({ selected, onPick, inputRef }: { selected: number | null; onPick
     };
   }, [q]);
 
+  const ids = new Set((rows ?? []).map((r) => r.id));
+  const shown = found ? (rows ?? []).filter((r) => found.some((f) => f.id === r.id)) : (rows ?? []);
+  // Нашлись, но не уведомлены — выдать нельзя, пока не уведомили.
+  const notReady = (found ?? []).filter((f) => !ids.has(f.id) && f.in_stock > 0);
   const choose = (id: number) => {
     onPick(id);
     setQuery("");
-    setFound(null);
   };
 
-  // Enter: если найден ровно один клиент с товаром на складе (или вообще один) — сразу открываем.
-  function onEnter() {
-    const withStock = (found ?? []).filter((c) => c.in_stock > 0);
-    if (withStock.length === 1) choose(withStock[0].id);
-    else if (found?.length === 1) choose(found[0].id);
-  }
-
-  const searching = q.length >= 2;
-  const list: QueueEntry[] | null = searching ? found : rows;
-  const total = (rows ?? []).reduce((s, r) => s + r.in_stock, 0);
-
   return (
-    <aside className="iss-queue" style={css(CARD + ";overflow:hidden")}>
-      <div style={css("flex:none;padding:16px 16px 12px;display:flex;flex-direction:column;gap:12px")}>
-        <div>
-          <div style={css(TITLE)}>Ждут выдачи</div>
-          <div style={css(NUM + ";font-size:12px;color:var(--text-4);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-            {!rows
-              ? "загружаем…"
-              : rows.length
-                ? `${rows.length} ${plural(rows.length, "клиент", "клиента", "клиентов")} · ${total} ${plural(total, "товар", "товара", "товаров")} на складе`
-                : "на складе сейчас пусто"}
-          </div>
-        </div>
-        <label className="iss-search">
-          <span style={css("display:flex;flex:none;color:var(--text-4)")}>
-            <Svg paths={I_SEARCH} size={16} />
-          </span>
-          <input
-            ref={inputRef}
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onEnter();
-              if (e.key === "Escape") setQuery("");
-            }}
-            placeholder="Телефон, имя или код товара"
-            aria-label="Найти клиента"
-            style={css("flex:1;min-width:0;height:100%;border:none;outline:none;background:transparent;font-size:13.5px;color:var(--text);padding:0")}
-          />
-          {query && (
-            <HButton
-              onClick={() => {
-                setQuery("");
-                inputRef.current?.focus();
-              }}
-              title="Очистить"
-              s="width:28px;height:28px;flex:none;display:grid;place-items:center;border:none;border-radius:8px;background:transparent;color:var(--text-4);cursor:pointer"
-              hover="background:var(--hover);color:var(--text-2)"
-            >
-              <Svg paths={I_CLOSE} size={14} />
-            </HButton>
-          )}
-        </label>
+    <aside className="ov-card paper is-q">
+      <div className="is-q-h">
+        <h2 className="ov-card-title">Очередь</h2>
+        <span className="is-q-n">{rows ? rows.length : "…"}</span>
+        <small>уведомлены, ждут выдачи</small>
       </div>
-
-      <div className="thin-scroll" style={css("flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;border-top:1px solid var(--border-2)")}>
-        {!list ? (
-          <div style={css("padding:14px 16px")}>
-            <SkeletonRows rows={4} />
-          </div>
-        ) : list.length === 0 ? (
-          <div style={css("padding:32px 20px;text-align:center;font-size:12.5px;color:var(--text-4);line-height:1.5")}>
-            {searching ? "Никого не нашли — проверьте номер, имя или код товара" : "На складе пусто — клиенты появятся здесь, как только их товары примут сканером"}
-          </div>
+      <label className="rx-as-in">
+        <Svg paths={I_SEARCH} size={15} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && shown.length === 1 && choose(shown[0].id)}
+          placeholder="Имя, телефон или код товара"
+          aria-label="Поиск клиента"
+          autoComplete="off"
+        />
+      </label>
+      <div className="is-q-list thin-scroll">
+        {!rows ? (
+          <div className="nf-ghosts">{Array.from({ length: 6 }, (_, i) => <QGhost key={i} i={i} />)}</div>
         ) : (
           <>
-            {searching && (
-              <div style={css(NUM + ";flex:none;padding:9px 16px 7px;font-size:11px;color:var(--text-4);background:var(--surface-2);border-bottom:1px solid var(--border-2)")}>
-                Найдено: {list.length}
+            {shown.map((r, i) => (
+              <QRow key={r.id} r={r} n={i + 1} active={selected === r.id} onClick={() => choose(r.id)} onHover={() => prefetch(r.id)} />
+            ))}
+            {notReady.map((c) => (
+              <button key={c.id} type="button" className="is-qr off" onClick={() => nav("/notify")} title="Сначала уведомите клиента">
+                <span className="is-qr-stub">
+                  <Ico d={I.bell} size={15} />
+                </span>
+                <span className="is-qr-body">
+                  <span className="is-qr-top">
+                    <b>{c.name}</b>
+                  </span>
+                  <span className="is-qr-chips">
+                    <i>не уведомлён</i>
+                    <i>{c.in_stock} на складе</i>
+                  </span>
+                </span>
+                <span className="is-qr-go">уведомить →</span>
+              </button>
+            ))}
+            {shown.length === 0 && !notReady.length && (
+              <div className="nf-none">
+                <b>{found ? "Никого не нашли" : "Очередь пуста"}</b>
+                <small>{found ? "проверьте имя, телефон или код" : "клиенты появятся после уведомления в WhatsApp"}</small>
               </div>
             )}
-            <div style={css("flex:none")}>
-              {list.map((c) => (
-                <QueueRow key={c.id} c={c} active={c.id === selected} onClick={() => choose(c.id)} />
-              ))}
-            </div>
-            <div className="iss-qfill">
-              <span className="iss-qfill-msg" style={css("font-size:12px;color:var(--text-5);text-align:center;line-height:1.5")}>
-                {searching ? "Esc — вернуться к очереди" : "клиент появляется здесь, когда его товар принимают на склад"}
-              </span>
-            </div>
+            <div className="nf-ghosts">{Array.from({ length: Math.max(0, 8 - shown.length - notReady.length) }, (_, i) => <QGhost key={i} i={i} faded />)}</div>
           </>
         )}
       </div>
@@ -197,132 +337,104 @@ function Queue({ selected, onPick, inputRef }: { selected: number | null; onPick
   );
 }
 
-function QueueRow({ c, active, onClick }: { c: QueueEntry; active: boolean; onClick: () => void }) {
-  const none = c.in_stock === 0;
+function QRow({ r, n, active, onClick, onHover }: { r: NotifyRow; n: number; active: boolean; onClick: () => void; onHover: () => void }) {
+  const d = dueOf(r);
+  const sent = r.notices.reduce((a, x) => (x.sent_at < a ? x.sent_at : a), r.notices[0]?.sent_at ?? "");
+  const days = sent ? Math.max(0, Math.floor((Date.now() - new Date(sent).getTime()) / 86400000)) : 0;
   return (
-    <button onClick={onClick} className={"iss-qrow" + (active ? " on" : "")}>
-      <Avatar name={c.name} size={34} />
-      <span style={css("flex:1;min-width:0")}>
-        <span style={css("display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.name}</span>
-        <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.phone || "без телефона"}</span>
+    <button type="button" className={"is-qr" + (active ? " on" : "")} onClick={onClick} onPointerEnter={onHover} onFocus={onHover} style={{ animationDelay: `${Math.min(n, 10) * 25}ms` }}>
+      <span className="is-qr-stub">
+        <small>№</small>
+        <b>{String(n).padStart(2, "0")}</b>
       </span>
-      <span style={css("flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px")}>
-        <span
-          title={none ? "на складе ничего нет" : "товаров на складе"}
-          style={mix(NUM + ";display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 7px;border-radius:7px;font-size:12px;font-weight:500", {
-            background: none ? "var(--hover)" : "var(--accent-tint)",
-            color: none ? "var(--text-4)" : "var(--accent-strong)",
-          })}
-        >
-          <Icon name="stock" size={12} />
-          {c.in_stock}
+      <span className="is-qr-body">
+        <span className="is-qr-top">
+          <b>{r.name}</b>
+          {days > 0 && <em>ждёт {days} {plural(days, "день", "дня", "дней")}</em>}
         </span>
-        <span style={mix(NUM + ";font-size:11.5px;white-space:nowrap", { color: (c.stock_debt ?? c.debt) > 0 ? "var(--danger)" : "var(--green)" })}>
-          {(c.stock_debt ?? c.debt) > 0 ? `к оплате ${som(c.stock_debt ?? c.debt)}` : "оплачено"}
+        <span className="is-qr-chips">
+          <i>
+            {d.count} {plural(d.count, "товар", "товара", "товаров")}
+            {d.kg > 0 ? ` · ${fmtKg(d.kg)} кг` : ""}
+          </i>
+          {d.debt > 0 && <i className="debt">долг {som(d.debt)}</i>}
+          {r.status === "more" && <i title="Пришли после уведомления — их сначала уведомят">+{r.fresh}</i>}
         </span>
+      </span>
+      <span className="is-qr-r">
+        <b>{d.total > 0 ? som(d.total) : "0 с"}</b>
+        <small>{d.total > 0 ? "к оплате" : "забрать"}</small>
       </span>
     </button>
   );
 }
 
-// --- Справа, пока клиент не выбран -------------------------------------------------------------
-
-/** Подсказка, как выдать, и итоги выдач за сегодня — чтобы место не пустовало. */
-function Idle() {
-  const [today, setToday] = useState<IssueList | null>(null);
-  const load = useCallback(() => {
-    const d = todayIso();
-    listIssues({ since: dayStartIso(d), until: dayStartIso(d, 1), limit: 1 })
-      .then(setToday)
-      .catch(() => setToday(null));
-  }, []);
-  useEffect(load, [load]);
-  useRefresh(load);
-  const s = today?.summary;
-
+function QGhost({ i, faded }: { i: number; faded?: boolean }) {
   return (
-    <section className="iss-panel iss-idle" style={css(CARD + ";overflow:hidden;min-height:440px")}>
-      <div style={css("flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:40px 24px;text-align:center")}>
-        <span style={css("width:64px;height:64px;border-radius:20px;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent);margin-bottom:10px")}>
-          <Icon name="issue" size={30} />
-        </span>
-        <div style={css("font-size:16px;font-weight:500;color:var(--text)")}>Выберите клиента в очереди</div>
-        <div style={css("font-size:13px;color:var(--text-3);max-width:400px;line-height:1.5")}>
-          или найдите по телефону, имени или коду товара — код можно отсканировать, откроется владелец товара
-        </div>
-        <div style={css("display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:16px")}>
-          <Step n={1} text="выберите клиента" />
-          <Step n={2} text="отметьте товары" />
-          <Step n={3} text="примите оплату и выдайте" />
-        </div>
-      </div>
-      <div className="iss-facts">
-        <Fact label="Выдач сегодня" value={today ? String(today.total) : "—"} />
-        <Fact label="Клиентов" value={s ? String(s.customers) : "—"} />
-        <Fact label="Товаров" value={s ? String(s.items) : "—"} hint={s && s.qty !== s.items ? `${s.qty} шт` : undefined} />
-        <Fact label="На сумму" value={s ? som(s.sale) : "—"} color={s && s.sale > 0 ? "var(--green)" : undefined} />
-      </div>
-    </section>
+    <div className="is-qr ghost" style={faded ? { opacity: Math.max(0.2, 0.75 - i * 0.14) } : undefined} aria-hidden>
+      <span className="is-qr-stub" />
+      <span className="is-qr-body">
+        <span className="sk" style={{ width: `${[56, 44, 64, 50, 60, 42][i % 6]}%`, height: 10 }} />
+        <span className="sk" style={{ width: "40%", height: 16, marginTop: 6, borderRadius: 999 }} />
+      </span>
+      <span className="sk" style={{ width: 56, height: 10, marginRight: 4 }} />
+    </div>
   );
 }
 
-function Step({ n, text }: { n: number; text: string }) {
-  return (
-    <span style={css("display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 12px 0 5px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border-2);font-size:12px;color:var(--text-2);white-space:nowrap")}>
-      <span style={css(NUM + ";width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent-strong);font-size:11px;font-weight:600")}>{n}</span>
-      {text}
-    </span>
-  );
-}
+// --- Касса ------------------------------------------------------------------------------------
 
-// --- Выдача выбранному клиенту -----------------------------------------------------------------
+type PayMode = "full" | "part" | "none";
+type Method = "cash" | "transfer";
+type Done = { count: number; paid: number; left: number; kg: number; weightSom: number; method: Method };
 
-function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast: Toast; onClose: () => void }) {
+function Kassa({ customerId, row, loading, toast, onClose, onNext }: { customerId: number; row: NotifyRow | null; loading: boolean; toast: Toast; onClose: () => void; onNext: () => void }) {
   const nav = useNavigate();
-  const [card, setCard] = useState<CustomerCard | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [card, setCard] = useState<CustomerCard | null>(() => cardCache.get(customerId) ?? null);
+  const [selected, setSelected] = useState<Set<number> | null>(null);
   const [payMode, setPayMode] = useState<PayMode>("full");
+  const [method, setMethod] = useState<Method>("cash");
   const [partial, setPartial] = useState("");
   const partRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
-  /** Что выдали только что: пока клиент открыт, показываем итог. */
   const [done, setDone] = useState<Done | null>(null);
-
 
   const load = useCallback(() => {
     getCustomer(customerId)
       .then((c) => {
+        cardCache.set(customerId, c);
         setCard(c);
-        const stock = c.items.filter((i) => i.status === "in_stock").map((i) => i.id);
-        setSelected((prev) => new Set(prev.size ? [...prev].filter((id) => stock.includes(id)) : stock));
+        setError("");
       })
       .catch((e) => setError(apiError(e, "Не удалось загрузить клиента")));
   }, [customerId]);
   useEffect(load, [load]);
   useRefresh(load);
 
-  const stock = useMemo(() => card?.items.filter((i) => i.status === "in_stock") ?? [], [card]);
-  const chosen = stock.filter((i) => selected.has(i.id));
-  const stockSale = stock.reduce((s, i) => s + i.sale, 0);
-  const stockDebt = stock.reduce((s, i) => s + i.debt, 0);
-  const sum = chosen.reduce((s, i) => s + i.sale, 0);
-  const debt = chosen.reduce((s, i) => s + i.debt, 0);
-  // Оплата при выдаче: весь долг, часть (сумму вводим) или ничего; больше долга сервер не примет.
+  // Выдаём только уведомлённое: новые товары сначала уведомляют (взвешивают).
+  const notified = useMemo(() => new Set((row?.items ?? []).filter((i) => i.notified).map((i) => i.id)), [row]);
+  const stock = useMemo(() => (card?.items ?? []).filter((i) => i.status === "in_stock" && notified.has(i.id)), [card, notified]);
+  const hidden = (card?.items ?? []).filter((i) => i.status === "in_stock" && !notified.has(i.id)).length;
+  // По умолчанию отмечено всё уведомлённое.
+  useEffect(() => {
+    setSelected((prev) => (prev ? new Set([...prev].filter((id) => stock.some((i) => i.id === id))) : stock.length ? new Set(stock.map((i) => i.id)) : prev));
+  }, [stock]);
+  const sel = selected ?? new Set<number>();
+  const chosen = stock.filter((i) => sel.has(i.id));
+  const sum = r2(chosen.reduce((s, i) => s + i.sale, 0));
+  const debt = r2(chosen.reduce((s, i) => s + i.debt, 0));
   const parsed = parseMoney(partial);
   const badPay = payMode === "part" && parsed !== null && (Number.isNaN(parsed) || parsed > debt);
   const pay = payMode === "full" ? debt : payMode === "part" && !badPay ? (parsed ?? 0) : 0;
-  const remaining = Math.max(0, debt - pay);
-  // Вес — из уведомления клиенту (страница «Уведомления»): берётся при выдаче целиком.
-  const pending = card?.pending_weight;
-  const kg = pending?.kg ?? 0;
-  const weightSom = pending?.som ?? 0;
-  /** Сколько взять с клиента сейчас: вес по уведомлению + оплата товара. */
-  const takeNow = Math.round((weightSom + pay) * 100) / 100;
+  const remaining = r2(Math.max(0, debt - pay));
+  const kg = card?.pending_weight?.kg ?? 0;
+  const weightSom = card?.pending_weight?.som ?? 0;
+  /** Сколько взять сейчас: вес по уведомлению (всегда сразу) + оплата товара. */
+  const takeNow = r2(weightSom + pay);
 
-  // Сменился выбор товаров — снова «весь долг».
   useEffect(() => {
     setPayMode("full");
     setPartial("");
@@ -333,7 +445,7 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
 
   const toggle = (id: number) =>
     setSelected((s) => {
-      const n = new Set(s);
+      const n = new Set(s ?? []);
       if (n.has(id)) n.delete(id);
       else n.add(id);
       return n;
@@ -341,18 +453,12 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
 
   async function doIssue() {
     setError("");
-    if (badPay) throw new Error("Некорректная сумма оплаты");
-    const r = await issueItems({
-      customer_id: customerId,
-      item_ids: chosen.map((i) => i.id),
-      payment_amount: pay || undefined,
-      weight_som: weightSom,
-    });
-    toast("success", `Выдано товаров: ${r.items.length}${takeNow ? `, взято ${som(takeNow)}` : ""}`);
-    setDone({ count: r.items.length, paid: pay, left: remaining, kg, weightSom });
-    load();
+    const r = await issueItems({ customer_id: customerId, item_ids: chosen.map((i) => i.id), payment_amount: pay || undefined, weight_som: weightSom, method });
+    toast("success", `Выдано товаров: ${r.items.length}${takeNow ? `, взято ${som(takeNow)}` : ""}${remaining ? `, в долг ${som(remaining)}` : ""}`);
+    setDone({ count: r.items.length, paid: pay, left: remaining, kg, weightSom, method });
     setConfirm(false);
-    setSelected(new Set());
+    setSelected(null);
+    load();
     emit("cargo:changed");
   }
 
@@ -368,253 +474,204 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
       .finally(() => setBusy(false));
   }
 
-  if (!card) {
-    return (
-      <section className="iss-panel" style={css(CARD + ";padding:18px")}>
-        {error ? <ModalError text={error} /> : <SkeletonRows rows={4} />}
-      </section>
-    );
+  if (!card || loading) {
+    return <section className="ov-card paper is-k">{error ? <ModalError text={error} /> : <div className="nf-sk">{[40, 140, 120].map((h, i) => <span key={i} className="sk" style={{ height: h, width: i ? undefined : "40%" }} />)}</div>}</section>;
   }
 
   const c = card.customer;
   const allOn = stock.length > 0 && chosen.length === stock.length;
-  const someOn = chosen.length > 0 && !allOn;
-  const after = !chosen.length
-    ? { value: "—", color: "var(--text-4)" }
-    : badPay
-      ? { value: parsed !== null && parsed > debt ? "сумма больше долга" : "проверьте сумму", color: "var(--danger)" }
-      : debt === 0
-        ? { value: "всё оплачено", color: "var(--green)" }
-        : remaining > 0
-          ? { value: `останется долг ${som(remaining)}`, color: "var(--amber)" }
-          : { value: "✓ долг закрыт", color: "var(--green)" };
-
+  // Когда ушло последнее уведомление — видно в шапке кассы.
+  const last = row?.notices.reduce((a, n) => (n.sent_at > a ? n.sent_at : a), "") ?? "";
+  const sentAt = last ? new Date(last).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(",", " ·") : "";
+  const status = !chosen.length ? "отметьте товары" : badPay ? "сумма больше долга" : remaining > 0 ? `в долг останется ${som(remaining)}` : debt > 0 || weightSom > 0 ? `${method === "transfer" ? "переводом" : "наличными"} · долг закрыт` : "всё оплачено заранее";
   return (
-    <section className="iss-panel" style={css(CARD + ";overflow:hidden")}>
-      {/* Клиент: имя, под ним телефон; справа — что у клиента */}
-      <div className="iss-chead" style={css("position:relative;flex:none;display:flex;align-items:center;gap:12px 18px;flex-wrap:wrap;padding:16px 18px;border-bottom:1px solid var(--border-2)")}>
-        <span style={css("display:flex;align-items:center;gap:12px;flex:1 1 240px;min-width:0")}>
-          <Avatar name={c.name} size={44} />
-          <span style={css("min-width:0")}>
-            <HButton
-              onClick={() => nav(`/customers/${c.id}`)}
-              title="Открыть карточку клиента"
-              s="display:block;max-width:100%;border:none;background:transparent;padding:0;cursor:pointer;font:inherit;font-size:17px;font-weight:500;letter-spacing:-.01em;line-height:1.3;color:var(--text);text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
-              hover="color:var(--accent)"
-            >
-              {c.name}
-            </HButton>
-            <span style={css(NUM + ";display:block;font-size:13.5px;color:var(--text-2);margin-top:2px")}>{c.phone || "без телефона"}</span>
+    <section className="ov-card paper is-k">
+      <header className="is-kh">
+        <span className="nf-head-av">{letters(c.name)}</span>
+        <span className="nf-head-id">
+          <button type="button" onClick={() => nav(`/customers/${c.id}`)} title="Открыть клиента">
+            {c.name}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M7 17 17 7M8 7h9v9" />
+            </svg>
+          </button>
+          <span>{c.phone || "без телефона"}</span>
+        </span>
+        {sentAt && (
+          <span className="is-kh-chip" title="Когда ушло уведомление в WhatsApp">
+            <Ico d={I.bell} size={13} />
+            уведомлён {sentAt}
           </span>
-        </span>
-        {/* Только то, что уже пришло на склад: сколько, на какую сумму и сколько из этого не оплачено */}
-        <span className="iss-cstats">
-          <CountChip label="на складе" value={stock.length} dot={ST.in_stock.dot} />
-          {stock.length > 0 && (
-            <span style={css("display:inline-flex;align-items:baseline;gap:8px;height:34px;line-height:34px;padding:0 13px;border-radius:10px;border:1px solid var(--border);background:var(--surface);white-space:nowrap")}>
-              <span style={css("font-size:12px;color:var(--text-3)")}>на сумму</span>
-              <span style={css(NUM + ";font-size:15px;font-weight:500;color:var(--text)")}>{som(stockSale)}</span>
-            </span>
-          )}
-          {stock.length > 0 && (
-            <span
-              style={mix("display:inline-flex;align-items:baseline;gap:8px;height:34px;line-height:34px;padding:0 13px;border-radius:10px;white-space:nowrap", {
-                background: stockDebt > 0 ? "var(--danger-tint)" : "var(--green-tint)",
-                color: stockDebt > 0 ? "var(--danger)" : "var(--green)",
-              })}
-            >
-              <span style={css("font-size:12px")}>{stockDebt > 0 ? "не оплачено" : "всё оплачено"}</span>
-              {stockDebt > 0 && <span style={css(NUM + ";font-size:15px;font-weight:500")}>{som(stockDebt)}</span>}
-            </span>
-          )}
-        </span>
-        <HButton
-          className="iss-close"
-          onClick={onClose}
-          title="Закрыть и выбрать другого клиента"
-          aria-label="Закрыть"
-          s="width:34px;height:34px;flex:none;display:grid;place-items:center;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-3);cursor:pointer"
-          hover="border-color:var(--accent);color:var(--accent)"
-        >
-          <Svg paths={I_CLOSE} size={15} />
-        </HButton>
-      </div>
+        )}
+        <button type="button" className="is-x" onClick={onClose} title="Закрыть" aria-label="Закрыть">
+          <Ico d={I.close} size={15} sw={2} />
+        </button>
+      </header>
 
-      {done && stock.length > 0 && (
-        <div style={css("flex:none;display:flex;align-items:center;gap:10px;padding:10px 18px;background:var(--green-tint);color:var(--green);font-size:12.5px;border-bottom:1px solid var(--border-2)")}>
-          <Svg paths={I_CHECK} size={15} sw={2.4} />
-          <span style={css(NUM + ";flex:1;min-width:0")}>{doneText(done)}</span>
-          <HButton onClick={() => setDone(null)} title="Скрыть" s="width:24px;height:24px;display:grid;place-items:center;border:none;border-radius:7px;background:transparent;color:inherit;cursor:pointer" hover="background:var(--surface)">
-            <Svg paths={I_CLOSE} size={13} />
-          </HButton>
+      {done && !stock.length ? (
+        <div className="is-done">
+          <span className="is-done-i">
+            <Ico d={I.check} size={26} sw={2.4} />
+          </span>
+          <b>
+            Выдано {done.count} {plural(done.count, "товар", "товара", "товаров")}
+          </b>
+          <small>
+            {done.paid + done.weightSom > 0 ? `принято ${som(done.paid + done.weightSom)} · ${done.method === "transfer" ? "переводом" : "наличными"}` : "оплата не нужна"}
+            {done.left ? ` · в долг ${som(done.left)}` : ""}
+          </small>
+          <button type="button" className="ov-btn sm dark" onClick={onNext}>
+            Следующий в очереди
+          </button>
         </div>
-      )}
-
-      {stock.length === 0 ? (
-        <div style={css("flex:1;display:flex;flex-direction:column")}>
-          {done ? (
-            <div style={css("flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:40px 24px;text-align:center")}>
-              <span style={css("width:64px;height:64px;border-radius:50%;display:grid;place-items:center;background:var(--green-dot);color:#fff;margin-bottom:10px;animation:pop .25s ease")}>
-                <Svg paths={I_CHECK} size={30} sw={2.6} />
-              </span>
-              <div style={css("font-size:17px;font-weight:500;color:var(--text)")}>
-                Выдано {done.count} {plural(done.count, "товар", "товара", "товаров")}
-              </div>
-              <div style={css(NUM + ";font-size:13px;color:var(--text-3)")}>
-                {done.paid ? `оплата принята ${som(done.paid)}` : done.left ? "без оплаты" : "всё было оплачено заранее"}
-                {done.weightSom ? ` · вес ${fmtKg(done.kg)} кг — ${som(done.weightSom)}` : ""}
-                {done.left ? ` · остался долг ${som(done.left)}` : ""}
-              </div>
-              <div style={css("font-size:12.5px;color:var(--text-4);margin-top:8px")}>Выберите следующего клиента в очереди</div>
-            </div>
-          ) : (
-            <Empty
-              icon="issue"
-              title="На складе у клиента ничего нет"
-              text="Выдать можно только то, что принято на склад."
-            />
+      ) : !row || !stock.length ? (
+        <div className="is-done">
+          <span className="is-done-i off">
+            <Ico d={I.bell} size={22} />
+          </span>
+          <b>{hidden ? "Товар ещё не уведомлён" : "На складе у клиента ничего нет"}</b>
+          <small>{hidden ? `${hidden} ${plural(hidden, "товар", "товара", "товаров")} на складе — сначала уведомите клиента и посчитайте вес` : "выдать можно только то, что принято на склад"}</small>
+          {hidden > 0 && (
+            <button type="button" className="ov-btn sm dark" onClick={() => nav("/notify")}>
+              Перейти к уведомлению
+            </button>
           )}
         </div>
       ) : (
-        <div className="thin-scroll" style={css("flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column")}>
-          <div style={css("flex:none")}>
-            <div className="iss-row iss-head">
-              <span style={css("display:flex;justify-content:center")}>
-                <HButton
-                  onClick={() => setSelected(allOn ? new Set() : new Set(stock.map((i) => i.id)))}
-                  title={allOn ? "Снять все" : "Выбрать все"}
-                  aria-label={allOn ? "Снять все" : "Выбрать все"}
-                  s="display:flex;border:none;background:transparent;padding:0;cursor:pointer"
-                >
-                  <Check on={allOn} half={someOn} />
-                </HButton>
-              </span>
-              <span>Товар</span>
-              <span className="iss-hide" style={css("text-align:center")}>
-                Кол-во
-              </span>
-              <span style={css("text-align:right")}>Сумма</span>
-              <span className="iss-hide">Оплата</span>
-              <span className="iss-hide" />
+        <div className="is-k2">
+          {/* Что отдаём */}
+          <div className="is-items">
+            <div className="is-items-h">
+              <button type="button" className={"is-check" + (allOn ? " on" : chosen.length ? " half" : "")} onClick={() => setSelected(allOn ? new Set() : new Set(stock.map((i) => i.id)))} aria-label={allOn ? "Снять все" : "Выбрать все"}>
+                <Ico d={allOn ? I.check : ["M6 12h12"]} size={12} sw={3} />
+              </button>
+              <h3>Отдаём клиенту</h3>
+              <small>
+                {chosen.length} из {stock.length}
+              </small>
             </div>
-            {stock.map((it) => (
-              <StockRow key={it.id} it={it} on={selected.has(it.id)} onToggle={() => toggle(it.id)} onOpen={() => setOpen(it.id)} />
-            ))}
-          </div>
-          <PanelFill />
-        </div>
-      )}
-
-      {/* Чек: слева — что выдаём и что будет с долгом, справа — оплата и кнопка */}
-      {stock.length > 0 && (
-        <div className="iss-foot">
-          <div className="iss-receipt">
-            <ReceiptRow label="К выдаче" value={`${chosen.length} из ${stock.length} ${plural(stock.length, "товара", "товаров", "товаров")}`} />
-            <ReceiptRow label="Сумма" value={chosen.length ? som(sum) : "—"} />
-            <ReceiptRow label="Долг по ним" value={debt > 0 ? som(debt) : "нет"} color={debt > 0 ? "var(--danger)" : "var(--text-3)"} />
-            {weightSom > 0 && <ReceiptRow label="Вес · из уведомления" value={`${fmtKg(kg)} кг · ${som(weightSom)}`} color="var(--violet)" />}
-            {weightSom > 0 && <ReceiptRow label="Взять сейчас" value={chosen.length ? som(takeNow) : "—"} color={chosen.length ? "var(--green)" : "var(--text-4)"} strong />}
-            <ReceiptRow label="После выдачи" {...after} strong />
-          </div>
-
-          <div style={css("min-width:0;display:flex;flex-direction:column;gap:10px")}>
-            {debt > 0 ? (
-              <>
-                <PaySeg
-                  value={payMode}
-                  onChange={(m) => {
-                    setPayMode(m);
-                    if (m === "part") setPartial("");
-                  }}
-                />
-                {payMode === "part" ? (
-                  <label className="iss-amount" style={badPay ? css("border-color:var(--danger);box-shadow:0 0 0 3px var(--danger-tint)") : undefined}>
-                    <span style={css("font-size:12.5px;color:var(--text-3);white-space:nowrap")}>Принимаем</span>
-                    <input
-                      ref={partRef}
-                      value={partial}
-                      onChange={(e) => setPartial(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && issue()}
-                      inputMode="decimal"
-                      placeholder={`до ${som(debt)}`}
-                      aria-label="Сколько принимаем"
-                      style={css(NUM + ";flex:1;min-width:0;height:100%;border:none;outline:none;background:transparent;padding:0;text-align:right;font-size:17px;font-weight:500;color:var(--text)")}
-                    />
-                    <span style={css("font-size:13px;color:var(--text-4)")}>с</span>
-                  </label>
-                ) : (
-                  <HButton
-                    onClick={() => {
-                      setPartial(payMode === "full" ? String(debt) : "");
-                      setPayMode("part");
-                    }}
-                    title="Изменить сумму"
-                    className="iss-amount"
-                    s="width:100%;cursor:text;font:inherit;text-align:left"
-                    hover="border-color:var(--accent)"
-                  >
-                    <span style={css("font-size:12.5px;color:var(--text-3);white-space:nowrap")}>{payMode === "full" ? "Принимаем весь долг" : "Оплату не принимаем"}</span>
-                    <span style={mix(NUM + ";margin-left:auto;font-size:17px;font-weight:500;white-space:nowrap", { color: payMode === "full" ? "var(--green)" : "var(--text-4)" })}>
-                      {som(pay)}
+            <div className="is-items-list thin-scroll">
+              {stock.map((it, i) => (
+                <ItemLine key={it.id} i={i} it={it} on={sel.has(it.id)} onToggle={() => toggle(it.id)} onOpen={() => setOpen(it.id)} />
+              ))}
+              <div className="nf-ghosts">
+                {Array.from({ length: Math.max(0, 6 - stock.length) }, (_, k) => (
+                  <div key={k} className="is-il ghost" aria-hidden style={{ opacity: Math.max(0.2, 0.75 - k * 0.15) }}>
+                    <span className="sk" style={{ width: 22, height: 22, borderRadius: 7 }} />
+                    <span className="is-il-n">
+                      <span className="sk" style={{ width: `${[58, 44, 64, 50, 40, 56][k]}%`, height: 9 }} />
+                      <span className="sk" style={{ width: "32%", height: 7, marginTop: 6 }} />
                     </span>
-                  </HButton>
-                )}
-              </>
-            ) : (
-              <div
-                style={mix("flex:1;min-height:88px;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px 14px;border-radius:12px;font-size:13px;text-align:center;line-height:1.4", {
-                  background: chosen.length ? "var(--green-tint)" : "var(--surface)",
-                  color: chosen.length ? "var(--green)" : "var(--text-3)",
-                  border: chosen.length ? "1px solid transparent" : "1px dashed var(--border-strong)",
-                })}
-              >
-                {chosen.length ? <Svg paths={I_CHECK} size={16} sw={2.4} /> : null}
-                {!chosen.length ? "Отметьте товары, которые клиент забирает" : weightSom ? `Товар оплачен — берём только вес ${som(weightSom)}` : "Оплата не нужна — всё выбранное уже оплачено"}
+                    <span className="sk" style={{ width: 56, height: 9 }} />
+                  </div>
+                ))}
               </div>
+            </div>
+            {hidden > 0 && (
+              <button type="button" className="is-hidden" onClick={() => nav("/notify")}>
+                <Ico d={I.bell} size={14} />
+                ещё {hidden} {plural(hidden, "товар", "товара", "товаров")} без уведомления — не выдаём
+              </button>
             )}
-
-            {error && <ModalError text={error} />}
-            <HButton
-              disabled={!chosen.length || busy || badPay}
-              onClick={issue}
-              s={mix(
-                "width:100%;height:48px;padding:0 18px;border-radius:12px;font-size:14.5px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;transition:filter .15s,background .15s",
-                !chosen.length || badPay
-                  ? { background: "var(--hover)", color: "var(--text-4)", border: "1px solid var(--border)", cursor: "not-allowed" }
-                  : { background: remaining > 0 ? "var(--amber-dot)" : "var(--green-dot)", color: "#fff", border: "1px solid transparent", cursor: busy ? "wait" : "pointer" }
-              )}
-              hover={chosen.length && !badPay ? "filter:brightness(.95)" : undefined}
-            >
-              {chosen.length > 0 && !badPay && <Svg paths={I_CHECK} size={17} sw={2.4} />}
-              {!chosen.length
-                ? "Выберите товары"
-                : remaining > 0
-                    ? takeNow
-                      ? `Выдать с долгом · взять ${som(takeNow)}`
-                      : `Выдать с долгом · ${chosen.length}`
-                    : takeNow
-                      ? `Выдать · взять ${som(takeNow)}`
-                      : `Выдать ${chosen.length} ${plural(chosen.length, "товар", "товара", "товаров")}`}
-            </HButton>
           </div>
+
+          {/* Чек к оплате */}
+          <aside className="is-bill">
+            <div className="is-bill-paper">
+              <div className="is-bill-h">
+                <b>Чек выдачи</b>
+                <small>{chosen.length ? `${chosen.length} ${plural(chosen.length, "товар", "товара", "товаров")}` : "ничего не выбрано"}</small>
+              </div>
+              <div className="is-bill-rows">
+                <div className="nf-pay-r">
+                  <span>Сумма товаров</span>
+                  <i />
+                  <b>{chosen.length ? som(sum) : "—"}</b>
+                </div>
+                <div className="nf-pay-r">
+                  <span>Долг за товар</span>
+                  <i />
+                  <b>{debt > 0 ? som(debt) : "нет"}</b>
+                </div>
+                <div className="nf-pay-r">
+                  <span>{kg ? `Вес · ${fmtKg(kg)} кг` : "Вес"}</span>
+                  <i />
+                  <b>{weightSom > 0 ? som(weightSom) : "—"}</b>
+                </div>
+                {remaining > 0 && (
+                  <div className="nf-pay-r credit">
+                    <span>Остаётся в долг</span>
+                    <i />
+                    <b>{som(remaining)}</b>
+                  </div>
+                )}
+              </div>
+              <div className="is-bill-total">
+                <span>
+                  <small>Взять сейчас</small>
+                  <em>{status}</em>
+                </span>
+                <b key={takeNow}>{som(chosen.length ? takeNow : 0)}</b>
+              </div>
+            </div>
+
+            <div className="is-method" role="radiogroup" aria-label="Как платит">
+              {(
+                [
+                  ["cash", "Наличные", I.cash],
+                  ["transfer", "Перевод", I.card],
+                ] as [Method, string, string[]][]
+              ).map(([k, label, icon]) => (
+                <button key={k} type="button" role="radio" aria-checked={method === k} className={method === k ? "on" : ""} onClick={() => setMethod(k)}>
+                  <Ico d={icon} size={17} />
+                  {label}
+                </button>
+              ))}
+            </div>
+            {debt > 0 && (
+              <Seg
+                value={payMode}
+                onChange={(m) => {
+                  setPayMode(m as PayMode);
+                  if (m === "part") setPartial("");
+                }}
+                options={[
+                  ["full", "Весь долг"],
+                  ["part", "Часть"],
+                  ["none", "В долг"],
+                ]}
+              />
+            )}
+            {debt > 0 && payMode === "part" && (
+              <label className={"is-part" + (badPay ? " bad" : "")}>
+                <span>Принимаем за товар</span>
+                <input ref={partRef} value={partial} onChange={(e) => setPartial(e.target.value)} onKeyDown={(e) => e.key === "Enter" && issue()} inputMode="decimal" placeholder={`до ${som(debt)}`} aria-label="Сколько принимаем" />
+                <small>с</small>
+              </label>
+            )}
+            {error && <ModalError text={error} />}
+            <button type="button" className={"is-go" + (remaining > 0 ? " credit" : "")} disabled={!chosen.length || busy || badPay} onClick={issue}>
+              {busy ? "Выдаю…" : !chosen.length ? "Выберите товары" : remaining > 0 ? "Выдать в долг" : `Выдать ${chosen.length} ${plural(chosen.length, "товар", "товара", "товаров")}`}
+              <Ico d={I.arrow} size={15} sw={2.2} />
+            </button>
+          </aside>
         </div>
       )}
 
       {confirm && (
         <Confirm
-          title="Выдать с долгом?"
+          title="Выдать в долг?"
           danger={false}
-          confirmLabel="Выдать"
+          confirmLabel="Выдать в долг"
           text={
             <>
               {takeNow > 0 && (
                 <>
-                  Сейчас берём <b style={css(NUM + ";font-weight:500")}>{som(takeNow)}</b>
-                  {weightSom ? <> (вес {fmtKg(kg ?? 0)} кг — {som(weightSom)})</> : null}.{" "}
+                  Сейчас берём <b style={css(NUM + ";font-weight:500")}>{som(takeNow)}</b> {method === "transfer" ? "переводом" : "наличными"}
+                  {weightSom ? <> (вес {fmtKg(kg)} кг — {som(weightSom)})</> : null}.{" "}
                 </>
               )}
-              После выдачи у клиента останется долг <b style={css(NUM + ";font-weight:500")}>{som(remaining)}</b> по выбранным товарам. Долг сохранится и будет виден в карточке клиента и в
-              финансах.
+              В долг остаётся <b style={css(NUM + ";font-weight:500")}>{som(remaining)}</b>. Клиент попадёт в «Забрали в долг» — долг виден в его карточке и в финансах, пока он не оплатит.
             </>
           }
           onClose={() => setConfirm(false)}
@@ -626,275 +683,524 @@ function IssuePanel({ customerId, toast, onClose }: { customerId: number; toast:
   );
 }
 
-type Done = { count: number; paid: number; left: number; kg: number; weightSom: number };
-
-function doneText(d: Done): string {
+function ItemLine({ it, i, on, onToggle, onOpen }: { it: Item; i: number; on: boolean; onToggle: () => void; onOpen: () => void }) {
   return (
-    `Выдано ${d.count} ${plural(d.count, "товар", "товара", "товаров")}` +
-    (d.paid ? ` · оплата ${som(d.paid)}` : "") +
-    (d.weightSom ? ` · вес ${fmtKg(d.kg)} кг — ${som(d.weightSom)}` : "") +
-    (d.left ? ` · остался долг ${som(d.left)}` : "")
-  );
-}
-
-/** Строка товара со склада: галочка, название с кодом, количество, сумма, оплата, карточка. */
-function StockRow({ it, on, onToggle, onOpen }: { it: Item; on: boolean; onToggle: () => void; onOpen: () => void }) {
-  return (
-    <div
-      role="checkbox"
-      aria-checked={on}
-      tabIndex={0}
-      onClick={onToggle}
-      onKeyDown={(e) => {
-        if (e.key === " " || e.key === "Enter") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-      className={"iss-row iss-item" + (on ? " on" : "")}
-    >
-      <span style={css("display:flex;justify-content:center")}>
-        <Check on={on} />
-      </span>
-      <span style={css("min-width:0")}>
-        <span style={css("display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{it.name}</span>
-        <span style={css("display:block;font-size:11.5px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-          <span style={css(CODE + ";font-size:11px")}>{it.code || "без кода"}</span>
-          {it.arrived_at ? <span className="iss-hide">{` · пришёл ${shortDateTime(it.arrived_at)}`}</span> : null}
-          <span className="iss-sm">{` · ${it.qty} шт`}</span>
-        </span>
-      </span>
-      <span className="iss-hide" style={css(NUM + ";text-align:center;color:var(--text-3)")}>
-        {it.qty} шт
-      </span>
-      <span style={css("min-width:0;text-align:right")}>
-        <span style={css(NUM + ";display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(it.sale)}</span>
-        <div className="iss-sm" style={mix(NUM + ";font-size:11.5px;white-space:nowrap;margin-top:2px", { color: PAY[it.pay_status].fg })}>
-          {it.debt > 0 ? `долг ${som(it.debt)}` : "оплачено"}
-        </div>
-      </span>
-      <span className="iss-hide">
-        <PayCell status={it.pay_status} sale={it.sale} debt={it.debt} />
-      </span>
-      <span className="iss-hide" style={css("display:flex;justify-content:flex-end")}>
-        <HButton
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpen();
-          }}
-          title="Карточка товара"
-          aria-label="Карточка товара"
-          s="width:28px;height:28px;display:grid;place-items:center;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--text-4);cursor:pointer"
-          hover="border-color:var(--border);background:var(--surface);color:var(--accent)"
-        >
-          <Svg paths={I_CHEVRON} size={14} sw={2.2} />
-        </HButton>
+    <div className={"is-il" + (on ? " on" : "")} style={{ animationDelay: `${60 + Math.min(i, 8) * 35}ms` }}>
+      <button type="button" className={"is-check" + (on ? " on" : "")} onClick={onToggle} aria-label={on ? "Не выдавать" : "Выдать"}>
+        {on && <Ico d={I.check} size={12} sw={3} />}
+      </button>
+      <button type="button" className="is-il-n" onClick={onOpen} title="Открыть товар">
+        <b>{it.name}</b>
+        <small>
+          {it.code || "без кода"} · {it.qty} шт
+        </small>
+      </button>
+      <span className="is-il-s">
+        <b>{it.sale > 0 ? som(it.sale) : "—"}</b>
+        <small>{it.sale <= 0 ? "только вес" : it.debt > 0 ? `долг ${som(it.debt)}` : "оплачено"}</small>
       </span>
     </div>
   );
 }
 
-
-/** Пустое место под товарами: бледные строки и подсказка, чтобы панель не выглядела пустой. */
-function PanelFill() {
+function Seg({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: [string, string, string[]?][] }) {
+  const ix = Math.max(0, options.findIndex(([k]) => k === value));
   return (
-    <div className="ghost-fill">
-      <div className="ghost-rows" aria-hidden>
-        {Array.from({ length: 8 }, (_, i) => (
-          <div key={i} className="iss-row">
-            <span className="sk" style={css("width:18px;height:18px;border-radius:6px;margin:0 auto")} />
-            <span style={css("display:flex;flex-direction:column;gap:7px")}>
-              <span className="sk" style={mix("height:8px", { width: `${[52, 66, 44, 58][i % 4]}%` })} />
-              <span className="sk" style={css("width:34%;height:6px")} />
-            </span>
-            <span className="sk iss-hide" style={css("width:30px;height:8px;margin:0 auto")} />
-            <span style={css("display:flex;justify-content:flex-end")}>
-              <span className="sk" style={css("width:56px;height:8px")} />
-            </span>
-            <span className="iss-hide" style={css("display:flex;flex-direction:column;gap:7px")}>
-              <span className="sk" style={css("width:64px;height:8px")} />
-              <span className="sk" style={css("width:100%;max-width:96px;height:3px")} />
-            </span>
-            <span className="iss-hide" />
-          </div>
+    <div className="is-seg" role="radiogroup" style={{ "--i": ix, "--n": options.length } as CSSProperties}>
+      <span className="is-seg-thumb" aria-hidden />
+      {options.map(([k, label, icon]) => (
+        <button key={k} type="button" role="radio" aria-checked={value === k} className={value === k ? "on" : ""} onClick={() => onChange(k)}>
+          {icon && <Ico d={icon} size={14} />}
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// --- Пока клиент не выбран: касса свободна --------------------------------------------------------
+
+function KassaIdle({ waiting }: { waiting: number }) {
+  return (
+    <section className="ov-card paper is-k is-idle">
+      <div className="is-orb" aria-hidden>
+        <i />
+        <i />
+        <i />
+        <span className="is-orb-ring" />
+        <span className="is-orb-core">
+          <Ico d={I.box} size={26} />
+        </span>
+      </div>
+      <b>Касса свободна</b>
+      <small>{waiting ? `В очереди ${waiting} ${plural(waiting, "клиент", "клиента", "клиентов")} — выберите слева, откроется чек выдачи` : "Очередь пуста — клиенты появятся после уведомления в WhatsApp"}</small>
+      <div className="is-steps">
+        {["Клиент", "Товары", "Оплата", "Выдать"].map((t, i) => (
+          <span key={t} style={{ animationDelay: `${i * 0.6}s` }}>
+            <em>{i + 1}</em>
+            {t}
+          </span>
         ))}
       </div>
-      <div className="ghost-msg">
-        <span style={css("width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-          <Svg paths={I_CHECK} size={16} sw={2.2} />
+    </section>
+  );
+}
+
+// --- Забрали в долг ---------------------------------------------------------------------------
+
+function CreditList({ rows, toast, onPaid }: { rows: CreditRow[] | null; toast: Toast; onPaid: () => void }) {
+  if (rows && !rows.length) return null;
+  const total = r2((rows ?? []).reduce((a, r) => a + r.debt, 0));
+  return (
+    <section className="ov-card paper is-cr">
+      <div className="is-cr-h">
+        <span className="is-cr-i">
+          <Ico d={I.clock} size={18} />
         </span>
-        <span style={css("min-width:0")}>
-          <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text)")}>Это все товары клиента на складе</span>
-          <span style={css("display:block;font-size:12px;color:var(--text-4);margin-top:2px")}>снимите галочку с того, что клиент сейчас не забирает</span>
+        <span className="is-cr-t">
+          <h2 className="ov-card-title">Забрали в долг</h2>
+          <small>товар у клиента, оплата ещё не поступила — примите, когда клиент рассчитается</small>
+        </span>
+        {rows && (
+          <span className="is-cr-sum">
+            <small>
+              {rows.length} {plural(rows.length, "клиент", "клиента", "клиентов")} должны
+            </small>
+            <b>{som(total)}</b>
+          </span>
+        )}
+      </div>
+      <div className="is-cr-list">
+        {!rows ? Array.from({ length: 4 }, (_, i) => <DebtGhost key={i} i={i} />) : rows.map((r, i) => <DebtCard key={r.id} r={r} i={i} toast={toast} onPaid={onPaid} />)}
+        {/* Пустые места ряда — бледными карточками */}
+        {rows && Array.from({ length: (4 - (rows.length % 4)) % 4 }, (_, i) => <DebtGhost key={"g" + i} i={i} faded />)}
+      </div>
+    </section>
+  );
+}
+
+function DebtGhost({ i, faded }: { i: number; faded?: boolean }) {
+  return (
+    <div className="is-dc ghost" aria-hidden style={faded ? { opacity: Math.max(0.25, 0.7 - i * 0.18) } : undefined}>
+      <div className="is-dc-top">
+        <span className="sk rx-sk-av" />
+        <span className="is-dc-who">
+          <span className="sk" style={{ width: `${[58, 46, 64][i % 3]}%`, height: 10 }} />
+          <span className="sk" style={{ width: "44%", height: 8, marginTop: 6 }} />
         </span>
       </div>
+      <div className="is-dc-mid">
+        <span>
+          <span className="sk" style={{ width: 34, height: 8 }} />
+          <span className="sk" style={{ width: 90, height: 18, marginTop: 6 }} />
+        </span>
+      </div>
+      <span className="sk" style={{ height: 38, borderRadius: 11 }} />
     </div>
   );
 }
 
-/** Строка чека: подпись слева, значение справа; strong — итоговая строка. */
-// --- Вес посылки ---------------------------------------------------------------------------------
+function DebtCard({ r, i, toast, onPaid }: { r: CreditRow; i: number; toast: Toast; onPaid: () => void }) {
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(String(r.debt));
+  const [method, setMethod] = useState<Method>("cash");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const days = Math.max(0, Math.floor((Date.now() - new Date(r.since).getTime()) / 86400000));
+  const d = new Date(r.since);
+  const parsed = parseMoney(amount);
+  const bad = parsed === null || Number.isNaN(parsed) || parsed <= 0 || parsed > r.debt + 0.001;
+  const half = Math.ceil(r.debt / 2);
 
-/** Вес для показа: 1,07. */
-const fmtKg = (kg: number) => kg.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  async function pay() {
+    if (bad || busy || parsed === null) return;
+    setBusy(true);
+    setError("");
+    try {
+      await payCustomer(r.id, { amount: parsed, item_ids: r.item_ids, method, comment: "долг после выдачи" });
+      toast("success", `${r.name.split(/\s+/)[0]} — принято ${som(parsed)}${method === "transfer" ? " переводом" : " наличными"}`);
+      emit("cargo:changed");
+      onPaid();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
-function ReceiptRow({ label, value, color, strong }: { label: string; value: string; color?: string; strong?: boolean }) {
   return (
-    <div className="iss-rrow">
-      <span style={mix("font-size:12.5px;white-space:nowrap", { color: strong ? "var(--text-2)" : "var(--text-3)" })}>{label}</span>
-      <span style={mix(NUM + ";white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: color ?? "var(--text)", fontSize: strong ? "15px" : "14px", fontWeight: strong ? 500 : 400 })}>
-        {value}
-      </span>
-    </div>
-  );
-}
+    <div className={"is-dc" + (open ? " open" : "") + (days >= 7 ? " late" : "")} style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+      <div className="is-dc-top">
+        <span className="rx-av">{letters(r.name)}</span>
+        <button type="button" className="is-dc-who" onClick={() => nav(`/customers/${r.id}`)} title="Открыть клиента">
+          <b>{r.name}</b>
+          <small>{r.phone}</small>
+        </button>
+        <span className="is-dc-age" title={`Забрал ${d.toLocaleDateString("ru-RU")}`}>
+          {days === 0 ? "сегодня" : `${days} ${plural(days, "день", "дня", "дней")}`}
+        </span>
+      </div>
 
-type PayMode = "full" | "part" | "none";
+      <div className="is-dc-mid">
+        <span>
+          <small>Долг</small>
+          <b>{som(r.debt)}</b>
+        </span>
+        <em>
+          {r.items} {plural(r.items, "товар", "товара", "товаров")} · забрал {d.getDate()} {MON[d.getMonth()]}
+        </em>
+      </div>
 
-const PAY_MODES: { key: PayMode; label: string; color: string }[] = [
-  { key: "full", label: "Весь долг", color: "var(--green)" },
-  { key: "part", label: "Частично", color: "var(--amber)" },
-  { key: "none", label: "Без оплаты", color: "var(--danger)" },
-];
-
-/** Сколько принимаем при выдаче — как «Оплата» в кассе нового заказа. */
-function PaySeg({ value, onChange }: { value: PayMode; onChange: (m: PayMode) => void }) {
-  return (
-    <div role="radiogroup" aria-label="Оплата при выдаче" style={css("display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px;border-radius:12px;border:1px solid var(--border-2);background:var(--surface)")}>
-      {PAY_MODES.map((o) => {
-        const on = o.key === value;
-        return (
-          <button
-            key={o.key}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            onClick={() => onChange(o.key)}
-            style={mix(
-              "height:34px;padding:0 6px;border-radius:9px;border:1px solid transparent;font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s",
-              {
-                background: on ? `color-mix(in srgb, ${o.color} 10%, var(--surface))` : "transparent",
-                borderColor: on ? `color-mix(in srgb, ${o.color} 45%, transparent)` : "transparent",
-                color: on ? o.color : "var(--text-3)",
-                fontWeight: 500,
-              }
+      {!open ? (
+        <button
+          type="button"
+          className="is-dc-go"
+          onClick={() => {
+            setOpen(true);
+            setAmount(String(r.debt));
+          }}
+        >
+          Принять оплату
+          <Ico d={I.arrow} size={14} sw={2.2} />
+        </button>
+      ) : (
+        <div className="is-dc-pay">
+          <div className="is-method">
+            {(
+              [
+                ["cash", "Наличные", I.cash],
+                ["transfer", "Перевод", I.card],
+              ] as [Method, string, string[]][]
+            ).map(([k, label, icon]) => (
+              <button key={k} type="button" className={method === k ? "on" : ""} onClick={() => setMethod(k)}>
+                <Ico d={icon} size={15} />
+                {label}
+              </button>
+            ))}
+          </div>
+          <label className={"is-part" + (bad && amount ? " bad" : "")}>
+            <span>Сумма</span>
+            <input value={amount} onChange={(e) => setAmount(e.target.value)} onKeyDown={(e) => e.key === "Enter" && pay()} inputMode="decimal" aria-label="Сумма оплаты" autoFocus />
+            <small>с</small>
+          </label>
+          <div className="is-dc-quick">
+            <button type="button" className={parsed === r.debt ? "on" : ""} onClick={() => setAmount(String(r.debt))}>
+              весь долг
+            </button>
+            {r.debt >= 2 && (
+              <button type="button" className={parsed === half ? "on" : ""} onClick={() => setAmount(String(half))}>
+                половина
+              </button>
             )}
-          >
-            <span style={mix("width:6px;height:6px;border-radius:50%;flex:none", { background: on ? o.color : "var(--text-5)" })} />
-            {o.label}
-          </button>
-        );
-      })}
+          </div>
+          {error && <ModalError text={error} />}
+          <div className="is-dc-actions">
+            <button type="button" className="is-dc-cancel" onClick={() => setOpen(false)}>
+              Отмена
+            </button>
+            <button type="button" className="is-go" disabled={bad || busy} onClick={pay}>
+              {busy ? "Сохраняю…" : `Принять ${parsed && !bad ? som(parsed) : ""}`}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/** Галочка выбора: квадрат с галкой; half — выбрана часть (для «выбрать все»). */
-function Check({ on, half }: { on: boolean; half?: boolean }) {
-  const lit = on || half;
+// --- История выдач -----------------------------------------------------------------------------
+
+const PERIODS: [PeriodKey, string][] = [
+  ["today", "Сегодня"],
+  ["7", "7 дней"],
+  ["month", "Месяц"],
+  ["30", "30 дней"],
+  ["90", "90 дней"],
+  ["year", "Год"],
+];
+const WD = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const MON = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+/** Выдач на одной странице истории. */
+const fit = 10;
+
+type DayStat = { day: string; issues: number; items: number; sale: number };
+
+/** Столбики по дням периода; длинный период — по неделям. */
+function bars(from: string, to: string, byDay: DayStat[]): { key: string; label: string; date: string; sale: number; issues: number; items: number }[] {
+  const map = new Map(byDay.map((d) => [d.day, d]));
+  const days: string[] = [];
+  for (let d = new Date(`${from}T00:00:00`); localDay(d) <= to; d.setDate(d.getDate() + 1)) days.push(localDay(d));
+  const step = days.length > 31 ? 7 : 1;
+  const out = [];
+  for (let i = 0; i < days.length; i += step) {
+    const part = days.slice(i, i + step);
+    const sale = part.reduce((a, k) => a + (map.get(k)?.sale ?? 0), 0);
+    const issues = part.reduce((a, k) => a + (map.get(k)?.issues ?? 0), 0);
+    const items = part.reduce((a, k) => a + (map.get(k)?.items ?? 0), 0);
+    const d0 = new Date(`${part[0]}T00:00:00`);
+    const d1 = new Date(`${part[part.length - 1]}T00:00:00`);
+    out.push({
+      key: part[0],
+      label: step === 1 && days.length <= 7 ? WD[d0.getDay()] : "",
+      date: step > 1 ? `${d0.getDate()} ${MON[d0.getMonth()]} — ${d1.getDate()} ${MON[d1.getMonth()]}` : `${d0.getDate()} ${MONTHS[d0.getMonth()]}, ${WD[d0.getDay()]}`,
+      sale,
+      issues,
+      items,
+    });
+  }
+  return out;
+}
+
+/** «сегодня», «вчера» или «4 ноя». */
+function dayShort(iso: string): string {
+  const day = localDay(new Date(iso));
+  if (day === todayIso()) return "сегодня";
+  if (day === todayIso(-1)) return "вчера";
+  const d = new Date(iso);
+  return `${d.getDate()} ${MON[d.getMonth()]}`;
+}
+
+function IssueHistory({ toast }: { toast: Toast }) {
+  const nav = useNavigate();
+  const [period, setPeriod] = useState<Period>(() => periodOf("7"));
+  const [query, setQuery] = useState("");
+  const q = useDebounced(query.trim(), 250);
+  const [page, setPage] = useState(0);
+  const [data, setData] = useState<IssueList | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
+  const load = useCallback(() => {
+    listIssues({ q, since: dayStartIso(period.date_from), until: dayStartIso(period.date_to, 1), limit: fit, offset: page * fit, tz: -new Date().getTimezoneOffset() })
+      .then(setData)
+      .catch(() => setData({ rows: [], total: 0, summary: { items: 0, qty: 0, sale: 0, customers: 0 }, by_day: [] }));
+  }, [q, period.date_from, period.date_to, page]);
+  useEffect(load, [load]);
+  useEffect(() => setPage(0), [q, period.date_from, period.date_to]);
+  useRefresh(load);
+
+  const s = data?.summary;
+  const credit = s?.credit ?? 0;
+  const now = s?.paid_now ?? 0;
+  const before = s ? Math.max(0, r2(s.sale - credit - now)) : 0;
+  const taken = r2((s?.cash ?? 0) + (s?.transfer ?? 0));
+  const list = bars(period.date_from, period.date_to, data?.by_day ?? []);
+  const max = Math.max(1, ...list.map((b) => b.sale));
+  const total = data?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / fit));
+  const rows = data?.rows ?? [];
+
   return (
-    <span
-      style={mix("width:18px;height:18px;border-radius:6px;flex:none;display:grid;place-items:center;color:#fff;transition:background .12s,border-color .12s", {
-        background: lit ? "var(--accent)" : "var(--surface)",
-        border: `1.5px solid ${lit ? "var(--accent)" : "var(--border-strong)"}`,
-      })}
-    >
-      {on ? <Svg paths={I_CHECK} size={12} sw={3} /> : half ? <Svg paths={I_MINUS} size={12} sw={3} /> : null}
-    </span>
+    <section className="ov-card paper hx">
+      <header className="hx-h">
+        <span className="hx-title">
+          <h2 className="ov-card-title">История выдач</h2>
+          <small>{periodText(period.date_from, period.date_to)}</small>
+        </span>
+        <div className="ih-periods">
+          {PERIODS.map(([k, label]) => (
+            <button key={k} type="button" className={period.key === k ? "on" : ""} onClick={() => setPeriod(periodOf(k))}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <label className="rx-as-in hx-search">
+          <Svg paths={I_SEARCH} size={15} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Клиент или телефон" aria-label="Поиск по истории" />
+        </label>
+      </header>
+
+      {/* Итоги периода и выдачи по дням */}
+      <div className="hx-kpis">
+        <div className="hx-k main">
+          <small>Выдано на сумму</small>
+          <b>{s ? <CountUp text={som(s.sale)} /> : "—"}</b>
+          <em>{data ? `${total} ${plural(total, "выдача", "выдачи", "выдач")} · ${s?.customers ?? 0} ${plural(s?.customers ?? 0, "клиент", "клиента", "клиентов")} · ${s?.items ?? 0} ${plural(s?.items ?? 0, "товар", "товара", "товаров")}` : "загружаю…"}</em>
+        </div>
+        <div className="hx-k">
+          <small>Принято при выдаче</small>
+          <b>{som(taken)}</b>
+          <span className="hx-split" title="наличные / перевод">
+            <i style={{ flexGrow: s?.cash || (s?.transfer ? 0 : 1) }} />
+            <i className="t" style={{ flexGrow: s?.transfer ?? 0 }} />
+          </span>
+          <em>
+            нал {som(s?.cash ?? 0)} · пер {som(s?.transfer ?? 0)}
+          </em>
+        </div>
+        <div className="hx-k">
+          <small>Оплачено заранее</small>
+          <b>{som(before)}</b>
+          <em>{s && s.sale ? `${Math.round((before / s.sale) * 100)}% от выданного` : "—"}</em>
+        </div>
+        <div className="hx-k">
+          <small>За вес</small>
+          <b>{som(s?.weight_som ?? 0)}</b>
+          <em>{s?.weight_kg ? `${fmtKg(s.weight_kg)} кг` : "без веса"}</em>
+        </div>
+        <div className={"hx-k" + (credit > 0 ? " credit" : "")}>
+          <small>Отдали в долг</small>
+          <b>{som(credit)}</b>
+          <em>{credit > 0 ? "ждём оплату" : "долгов нет"}</em>
+        </div>
+        <div className="hx-bars" aria-label="Выдачи по дням">
+          {list.map((b, i) => (
+            <span key={b.key} className={"hx-bar" + (b.key === todayIso() ? " now" : "") + (i < 2 ? " l" : i > list.length - 3 ? " r" : "")}>
+              <i style={{ height: `${b.sale ? Math.max(8, (b.sale / max) * 100) : 4}%` }} />
+              {b.label && <small>{b.label}</small>}
+              {/* Подсказка при наведении: день, сумма, сколько выдач и товаров, доля от лучшего дня */}
+              <span className="hx-tip" role="tooltip">
+                <small>{b.key === todayIso() ? "Сегодня" : b.date}</small>
+                <b>{b.sale ? som(b.sale) : "выдач не было"}</b>
+                {b.sale > 0 && (
+                  <>
+                    <em>
+                      {b.issues} {plural(b.issues, "выдача", "выдачи", "выдач")} · {b.items} {plural(b.items, "товар", "товара", "товаров")}
+                    </em>
+                    <span className="hx-tip-bar">
+                      <i style={{ width: `${Math.round((b.sale / max) * 100)}%` }} />
+                    </span>
+                  </>
+                )}
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Таблица выдач: ровно столько строк, сколько помещается */}
+      <div className="hx-table">
+        <div className="hx-tr hx-th">
+          <span>Когда</span>
+          <span>Клиент</span>
+          <span>Товары</span>
+          <span className="r">Вес</span>
+          <span className="r">Сумма</span>
+          <span>Оплата</span>
+        </div>
+        <div className="hx-body">
+          {!data
+            ? Array.from({ length: 6 }, (_, i) => <HxGhost key={i} i={i} />)
+            : rows.map((r, i) => <HxRow key={r.id} r={r} i={i} onClient={() => nav(`/customers/${r.customer_id}`)} onItem={setOpen} />)}
+          {data && !rows.length && (
+            <>
+              {Array.from({ length: 4 }, (_, i) => (
+                <HxGhost key={i} i={i} faded />
+              ))}
+              <div className="rx-ghost-msg">
+                <span className="rx-ghost-i">
+                  <Svg paths={I_SEARCH} size={16} />
+                </span>
+                <span>
+                  <b>{q ? "Ничего не нашли" : "Выдач за период нет"}</b>
+                  <small>{q ? "проверьте имя или телефон" : "выберите другой период"}</small>
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      <footer className="hx-foot">
+        <small>{total ? `${page * fit + 1}–${Math.min(total, (page + 1) * fit)} из ${total}` : "нет выдач"}</small>
+        <span className="hx-pages">
+          <button type="button" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} aria-label="Назад">
+            ‹
+          </button>
+          <b>
+            {page + 1} / {pages}
+          </b>
+          <button type="button" onClick={() => setPage((p) => Math.min(pages - 1, p + 1))} disabled={page >= pages - 1} aria-label="Дальше">
+            ›
+          </button>
+        </span>
+      </footer>
+      {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
+    </section>
   );
 }
 
-/** Таблетка «число + подпись» в строке клиента. */
-function CountChip({ label, value, dot }: { label: string; value: number; dot: string }) {
+function HxRow({ r, i, onClient, onItem }: { r: IssueRow; i: number; onClient: () => void; onItem: (id: number) => void }) {
+  const sale = r2(r.items.reduce((a, x) => a + x.sale, 0));
+  const paid = r2(r.paid_now ?? 0);
+  const credit = r2(r.items.reduce((a, x) => a + ((x as Item & { issue_credit?: number | null }).issue_credit ? x.debt : 0), 0));
+  const first = r.items[0];
   return (
-    <span style={css("display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border-2);white-space:nowrap")}>
-      <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: dot })} />
-      <span style={css("font-size:12px;color:var(--text-3)")}>{label}</span>
-      <span style={mix(NUM + ";font-size:15px;font-weight:500", { color: value ? "var(--text)" : "var(--text-5)" })}>{value}</span>
-    </span>
-  );
-}
-
-const PAY = {
-  paid: { fg: "var(--green)", dot: "var(--green-dot)" },
-  partial: { fg: "var(--amber)", dot: "var(--amber-dot)" },
-  unpaid: { fg: "var(--danger)", dot: "var(--danger-dot)" },
-} as const;
-
-/** Оплата товара: «оплачено» или «долг N с» и тонкая полоска оплаченной доли. */
-function PayCell({ status, sale, debt }: { status: keyof typeof PAY; sale: number; debt: number }) {
-  const t = PAY[status];
-  const share = sale > 0 ? Math.max(0, Math.min(100, Math.round(((sale - debt) / sale) * 100))) : 0;
-  return (
-    <span style={css("display:flex;flex-direction:column;gap:4px;min-width:0")}>
-      <span style={mix(NUM + ";display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap", { color: t.fg })}>
-        {status === "paid" ? (
+    <div className={"hx-tr" + (credit > 0 ? " credit" : "")} style={{ animationDelay: `${i * 25}ms` }}>
+      <span className="hx-when">
+        <b>{hhmm(r.issued_at)}</b>
+        <small>{dayShort(r.issued_at)}</small>
+      </span>
+      <button type="button" className="hx-who" onClick={onClient} title="Открыть клиента">
+        <span className="rx-av">{letters(r.customer_name)}</span>
+        <span>
+          <b>{r.customer_name}</b>
+          <small>
+            {r.customer_phone}
+            {r.user_login ? ` · ${r.user_login}` : ""}
+          </small>
+        </span>
+      </button>
+      <span className="hx-items">
+        {first && (
+          <button type="button" onClick={() => onItem(first.id)} title={r.items.map((x) => x.name).join(", ")}>
+            {first.name}
+            {first.qty > 1 ? ` × ${first.qty}` : ""}
+          </button>
+        )}
+        {r.items.length > 1 && <em>+{r.items.length - 1}</em>}
+      </span>
+      <span className="hx-num r">
+        {r.weight_kg ? (
           <>
-            <Svg paths={I_CHECK} size={12} sw={2.6} />
-            оплачено
+            <b>{fmtKg(r.weight_kg)} кг</b>
+            <small>+{som(r.weight_som ?? 0)}</small>
           </>
         ) : (
-          <>долг {som(debt)}</>
+          <small>—</small>
         )}
       </span>
-      <span style={css("height:3px;border-radius:2px;background:var(--border-2);overflow:hidden;width:100%;max-width:96px")}>
-        <span style={mix("display:block;height:100%;border-radius:2px", { width: `${share}%`, background: t.dot })} />
+      <span className="hx-num r">
+        <b>{som(sale)}</b>
+        <small>
+          {r.items.length} {plural(r.items.length, "товар", "товара", "товаров")}
+        </small>
       </span>
-    </span>
-  );
-}
-
-/** Итог одной цифрой: подпись мелкими заглавными, значение ровным шрифтом. */
-function Fact({ label, value, hint, color }: { label: string; value: string; hint?: string; color?: string }) {
-  return (
-    <div style={css("min-width:0;padding:12px 18px 13px;display:flex;flex-direction:column;gap:5px")}>
-      <span style={css("font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
-      <span style={css("display:flex;align-items:baseline;gap:6px;min-width:0")}>
-        <span style={mix(NUM + ";font-size:18px;font-weight:500;line-height:1.2;white-space:nowrap", { color: color ?? "var(--text)" })}>
-          <CountUp text={value} />
-        </span>
-        {hint && <span style={css(NUM + ";font-size:12px;color:var(--text-4);white-space:nowrap")}>{hint}</span>}
-      </span>
+      <span className={"rx-pill-st " + (credit > 0 ? "bad" : paid > 0 ? "ok" : "info")}>{credit > 0 ? `в долг ${som(credit)}` : paid > 0 ? `принято ${som(paid)}` : "оплачено заранее"}</span>
     </div>
   );
 }
 
-/** Аватар-буква; цвет — от имени, как на «Приёме», чтобы у клиента он всегда был один и тот же. */
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
-
-function Avatar({ name, size }: { name: string; size: number }) {
-  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+function HxGhost({ i, faded }: { i: number; faded?: boolean }) {
   return (
-    <span
-      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:600", {
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.4),
-        background: AVATAR_BG[n % AVATAR_BG.length],
-      })}
-    >
-      {name.trim().slice(0, 1).toUpperCase()}
-    </span>
+    <div className="hx-tr ghost" aria-hidden style={faded ? { opacity: Math.max(0.15, 0.8 - i * 0.1) } : undefined}>
+      <span className="sk" style={{ width: 38, height: 10 }} />
+      <span className="hx-who">
+        <span className="sk rx-sk-av" />
+        <span>
+          <span className="sk" style={{ width: `${[60, 46, 70, 52, 64, 44, 56, 50][i % 8]}%`, height: 10 }} />
+          <span className="sk" style={{ width: "40%", height: 8, marginTop: 6 }} />
+        </span>
+      </span>
+      <span className="sk" style={{ width: "55%", height: 18, borderRadius: 999 }} />
+      <span className="sk" style={{ width: 50, height: 10, marginLeft: "auto" }} />
+      <span className="sk" style={{ width: 60, height: 10, marginLeft: "auto" }} />
+      <span className="sk" style={{ width: 90, height: 10 }} />
+    </div>
   );
 }
 
+// --- Мелочи ---------------------------------------------------------------------------------------
+
 function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  const a = n % 10;
+  const b = n % 100;
+  if (a === 1 && b !== 11) return one;
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few;
   return many;
 }
 
-// --- История выдач: слева сводка периода, справа лента выдач по дням ------------------------------
-
-/** Локальная полночь дня YYYY-MM-DD в ISO (UTC) — граница для сервера. */
+/** Локальная полночь дня (YYYY-MM-DD) в ISO; addDays — сдвиг. */
 function dayStartIso(d: string, addDays = 0): string {
   const x = new Date(`${d}T00:00:00`);
   x.setDate(x.getDate() + addDays);
@@ -904,595 +1210,11 @@ function dayStartIso(d: string, addDays = 0): string {
 const p2 = (n: number) => String(n).padStart(2, "0");
 /** YYYY-MM-DD по местному времени. */
 const localDay = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 
-const hhmm = (iso: string) => {
-  const d = new Date(iso);
-  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
-};
-
-const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
-const MONTHS_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
-const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
-const WEEKDAYS = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
-const WD_SHORT = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
-
-/** «5 октября» или «29 сентября — 5 октября» — подпись периода. */
 function periodText(from: string, to: string): string {
   const a = new Date(`${from}T00:00:00`);
   const b = new Date(`${to}T00:00:00`);
-  const one = (d: Date, year: boolean) => `${d.getDate()} ${MONTHS[d.getMonth()]}${year ? ` ${d.getFullYear()}` : ""}`;
-  if (from === to) return one(a, false);
-  const years = a.getFullYear() !== b.getFullYear();
-  return `${one(a, years)} — ${one(b, years)}`;
-}
-
-/** Заголовок дня: «Сегодня · 5 октября», «Вчера · …» или «3 октября · пятница». */
-function dayTitle(day: string): { title: string; sub: string } {
-  const d = new Date(`${day}T00:00:00`);
-  const words = `${d.getDate()} ${MONTHS[d.getMonth()]}`;
-  if (day === todayIso()) return { title: "Сегодня", sub: words };
-  if (day === todayIso(-1)) return { title: "Вчера", sub: words };
-  return { title: words, sub: WEEKDAYS[d.getDay()] };
-}
-
-type DayStat = { day: string; issues: number; items: number; sale: number };
-type Bucket = { key: string; label: string; tip: string; issues: number; sale: number; now: boolean };
-
-/** Столбики графика: по дням (до месяца), по неделям (до ~4 месяцев), дальше — по месяцам. */
-function buckets(from: string, to: string, byDay: DayStat[]): { unit: "day" | "week" | "month"; list: Bucket[] } {
-  const stat = new Map(byDay.map((d) => [d.day, d]));
-  const start = new Date(`${from}T00:00:00`);
-  const end = new Date(`${to}T00:00:00`);
-  const days = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
-  const unit = days <= 31 ? "day" : days <= 120 ? "week" : "month";
-  const today = todayIso();
-  const out = new Map<string, Bucket>();
-  for (const d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const day = localDay(d);
-    let key: string, label: string, tip: string;
-    if (unit === "day") {
-      key = day;
-      label = days <= 7 ? WD_SHORT[d.getDay()] : String(d.getDate());
-      tip = `${d.getDate()} ${MONTHS[d.getMonth()]}, ${WEEKDAYS[d.getDay()]}`;
-    } else if (unit === "week") {
-      const mon = new Date(d);
-      mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-      const first = mon < start ? start : mon;
-      key = localDay(mon);
-      label = `${p2(first.getDate())}.${p2(first.getMonth() + 1)}`;
-      tip = `неделя с ${first.getDate()} ${MONTHS[first.getMonth()]}`;
-    } else {
-      key = day.slice(0, 7);
-      label = MONTHS_SHORT[d.getMonth()];
-      tip = `${MONTHS_NOM[d.getMonth()]} ${d.getFullYear()}`;
-    }
-    const b = out.get(key) ?? { key, label, tip, issues: 0, sale: 0, now: false };
-    const s = stat.get(day);
-    if (s) {
-      b.issues += s.issues;
-      b.sale += s.sale;
-    }
-    if (day === today) b.now = true;
-    out.set(key, b);
-  }
-  return { unit, list: [...out.values()] };
-}
-
-/**
- * График выдач за период: столбики на светлых дорожках, высота — сумма.
- * Над лучшим днём — его доля; при наведении — дата, сумма, доля от всего периода и число выдач.
- */
-function HistoryChart({ period, byDay }: { period: Period; byDay: DayStat[] }) {
-  const { unit, list } = useMemo(() => buckets(period.date_from, period.date_to, byDay), [period.date_from, period.date_to, byDay]);
-  const total = list.reduce((a, b) => a + b.sale, 0);
-  const max = Math.max(1, ...list.map((b) => b.sale));
-  const best = list.reduce<Bucket | null>((a, b) => (b.sale > (a?.sale ?? 0) ? b : a), null);
-  const pct = (v: number) => (total ? Math.round((v / total) * 100) : 0);
-  // Подписи: не больше ~7, последняя — всегда.
-  const every = Math.max(1, Math.ceil(list.length / 7));
-  const shown = (i: number) => (list.length - 1 - i) % every === 0;
-  return (
-    <div className="iss-chart">
-      <div style={css("display:flex;align-items:baseline;gap:8px;margin-bottom:6px")}>
-        <span style={css("font-size:12.5px;font-weight:500;color:var(--text)")}>Выдачи {unit === "day" ? "по дням" : unit === "week" ? "по неделям" : "по месяцам"}</span>
-        <span style={css(NUM + ";margin-left:auto;font-size:11.5px;color:var(--text-4);white-space:nowrap")}>{total ? `всего ${som(total)}` : "выдач не было"}</span>
-      </div>
-      <div className="iss-cols">
-        {list.map((b, i) => {
-          const h = b.issues ? Math.max(7, Math.round((b.sale / max) * 100)) : 0;
-          return (
-            <div
-              key={b.key}
-              tabIndex={0}
-              aria-label={`${b.tip}: ${b.issues ? `${b.issues} ${plural(b.issues, "выдача", "выдачи", "выдач")}, ${som(b.sale)}, ${pct(b.sale)}%` : "выдач не было"}`}
-              className={"iss-col" + (b.now ? " now" : "") + (i < 2 ? " first" : i >= list.length - 2 ? " last" : "")}
-            >
-              {best && best.key === b.key && b.sale > 0 && (
-                <span className="iss-col-top" style={{ bottom: `calc(${h}% + 5px)` }}>
-                  {pct(b.sale)}%
-                </span>
-              )}
-              {h > 0 && <span className="iss-col-fill" style={{ height: `${h}%` }} />}
-              <span className="iss-tip">
-                <span style={css("display:block;font-size:11px;color:rgba(255,255,255,.65)")}>{b.tip}</span>
-                {b.issues ? (
-                  <>
-                    <span style={css(NUM + ";display:flex;align-items:center;gap:7px;margin-top:3px;font-size:14px;font-weight:600")}>
-                      {som(b.sale)}
-                      <span style={css("font-size:11px;font-weight:600;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,.16)")}>{pct(b.sale)}% периода</span>
-                    </span>
-                    <span style={css(NUM + ";display:block;font-size:11px;color:rgba(255,255,255,.65);margin-top:1px")}>
-                      {b.issues} {plural(b.issues, "выдача", "выдачи", "выдач")}
-                    </span>
-                  </>
-                ) : (
-                  <span style={css("display:block;margin-top:2px")}>выдач не было</span>
-                )}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-      <div className="iss-cols iss-xl">
-        {list.map((b, i) => (
-          <span key={b.key} style={mix(b.now ? "color:var(--accent-strong);font-weight:600" : "")}>
-            {shown(i) ? b.label : ""}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/** Цвета денег выданного: оплачено заранее, принято при выдаче, долг — одни и те же в кольце, полосе, строках и точках ленты. */
-const MONEY = {
-  before: "var(--accent)",
-  now: "var(--green-dot)",
-  debt: "var(--danger-dot)",
-} as const;
-/** Те же доли — градиентом для кольца и полосы. */
-const MONEY_GRAD = {
-  before: ["#6A8BFF", "#3E63DD"],
-  now: ["#4ADE80", "#16A34A"],
-  debt: ["#F87171", "#DC2626"],
-} as const;
-
-/**
- * Кольцо: из чего сложилась сумма выданного; в центре — сколько оплачено.
- * Каждая доля — точная дуга с прямыми концами и ровным промежутком 3px; маленькая доля
- * получает хотя бы 6° (за счёт самой большой), чтобы её было видно и она ни к чему не липла.
- */
-const RING = { size: 116, r: 46, w: 12 };
-
-function ringPoint(deg: number): string {
-  const a = ((deg - 90) * Math.PI) / 180;
-  const c = RING.size / 2;
-  return `${(c + RING.r * Math.cos(a)).toFixed(3)} ${(c + RING.r * Math.sin(a)).toFixed(3)}`;
-}
-
-function ringArc(from: number, to: number): string {
-  return `M ${ringPoint(from)} A ${RING.r} ${RING.r} 0 ${to - from > 180 ? 1 : 0} 1 ${ringPoint(to)}`;
-}
-
-function IssueRing({ before, now, debt }: { before: number; now: number; debt: number }) {
-  const total = before + now + debt;
-  const parts = (
-    [
-      { k: "before", v: before },
-      { k: "now", v: now },
-      { k: "debt", v: debt },
-    ] as const
-  ).filter((p) => p.v > 0);
-  const gap = parts.length > 1 ? (3 / RING.r) * (180 / Math.PI) : 0;
-  const minSpan = 6 + gap;
-  // Доли в градусах; слишком маленькие дотягиваем до minSpan, разницу забираем у самой большой.
-  const spans = parts.map((p) => (p.v / total) * 360);
-  let extra = 0;
-  spans.forEach((s, i) => {
-    if (s < minSpan) {
-      extra += minSpan - s;
-      spans[i] = minSpan;
-    }
-  });
-  if (extra > 0) spans[spans.indexOf(Math.max(...spans))] -= extra;
-  let at = 0;
-  const arcs = parts.map((p, i) => {
-    const from = at + gap / 2;
-    const to = at + spans[i] - gap / 2;
-    at += spans[i];
-    return { k: p.k, d: ringArc(from, to) };
-  });
-  const paid = total > 0 ? Math.round(((before + now) / total) * 100) : 0;
-  const c = RING.size / 2;
-  return (
-    <div style={mix("position:relative;flex:none", { width: RING.size, height: RING.size })}>
-      <svg width={RING.size} height={RING.size} viewBox={`0 0 ${RING.size} ${RING.size}`} shapeRendering="geometricPrecision" style={css("display:block")}>
-        <defs>
-          {(Object.keys(MONEY_GRAD) as (keyof typeof MONEY_GRAD)[]).map((k) => (
-            <linearGradient key={k} id={`issRing-${k}`} gradientUnits="userSpaceOnUse" x1="0" y1="0" x2={RING.size} y2={RING.size}>
-              <stop offset="0%" stopColor={MONEY_GRAD[k][0]} />
-              <stop offset="100%" stopColor={MONEY_GRAD[k][1]} />
-            </linearGradient>
-          ))}
-          <radialGradient id="issRing-inner" cx="50%" cy="35%" r="70%">
-            <stop offset="0%" style={{ stopColor: "color-mix(in srgb, var(--accent) 10%, var(--surface))" }} />
-            <stop offset="100%" style={{ stopColor: "var(--surface)" }} />
-          </radialGradient>
-        </defs>
-        <circle cx={c} cy={c} r={RING.r - RING.w / 2 - 1} fill="url(#issRing-inner)" />
-        <circle cx={c} cy={c} r={RING.r} fill="none" stroke="var(--border-2)" strokeWidth={RING.w} />
-        {parts.length === 1 ? (
-          <circle cx={c} cy={c} r={RING.r} fill="none" stroke={`url(#issRing-${parts[0].k})`} strokeWidth={RING.w} />
-        ) : (
-          arcs.map((a) => (
-            <path key={a.k} className="ring-grow" d={a.d} fill="none" stroke={`url(#issRing-${a.k})`} strokeWidth={RING.w} strokeLinecap="butt" pathLength={100} strokeDasharray="100 100" />
-          ))
-        )}
-      </svg>
-      <div style={css("position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center")}>
-        <span style={mix(NUM + ";font-size:25px;font-weight:600;letter-spacing:-.02em;line-height:1", { color: total > 0 ? "var(--text)" : "var(--text-4)" })}>
-          {total > 0 ? <CountUp text={`${paid}%`} /> : "—"}
-        </span>
-        <span style={css("font-size:11px;color:var(--text-4);margin-top:3px")}>оплачено</span>
-      </div>
-    </div>
-  );
-}
-
-/** Полоса долей: оплачено заранее / при выдаче / долг. */
-function SplitBar({ parts }: { parts: { k: keyof typeof MONEY_GRAD; v: number }[] }) {
-  const total = parts.reduce((a, p) => a + p.v, 0);
-  return (
-    <div className="iss-split bar-grow">
-      {total > 0 &&
-        parts
-          .filter((p) => p.v > 0)
-          .map((p) => (
-            <span key={p.k} style={{ flex: `${p.v} 1 0`, minWidth: 6, background: `linear-gradient(90deg, ${MONEY_GRAD[p.k][0]}, ${MONEY_GRAD[p.k][1]})` }} />
-          ))}
-    </div>
-  );
-}
-
-function MoneyLine({ dot, label, value, share }: { dot: string; label: string; value: number; share: number }) {
-  return (
-    <div style={css("display:grid;grid-template-columns:auto minmax(0,1fr) auto 44px;align-items:center;gap:8px;min-width:0")}>
-      <span style={mix("width:8px;height:8px;border-radius:50%", { background: dot })} />
-      <span style={css("font-size:12.5px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
-      <b style={mix(NUM + ";font-size:13px;font-weight:500;white-space:nowrap", { color: value ? "var(--text)" : "var(--text-4)" })}>
-        <CountUp text={som(value)} />
-      </b>
-      <span
-        style={mix(NUM + ";justify-self:end;font-size:11px;font-weight:500;padding:2px 6px;border-radius:6px", {
-          background: value ? `color-mix(in srgb, ${dot} 14%, transparent)` : "var(--hover)",
-          color: value ? dot : "var(--text-4)",
-        })}
-      >
-        {share}%
-      </span>
-    </div>
-  );
-}
-
-const I_RECEIPT: PathDef = [
-  ["path", { d: "M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" }],
-  ["path", { d: "M8 8h8" }],
-  ["path", { d: "M8 12h8" }],
-  ["path", { d: "M8 16h5" }],
-];
-const I_TROPHY: PathDef = [
-  ["path", { d: "M8 21h8" }],
-  ["path", { d: "M12 17v4" }],
-  ["path", { d: "M7 4h10v5a5 5 0 0 1-10 0V4Z" }],
-  ["path", { d: "M17 5h3v2a3 3 0 0 1-3 3" }],
-  ["path", { d: "M7 5H4v2a3 3 0 0 0 3 3" }],
-];
-
-const TILE_GRAD = {
-  violet: "linear-gradient(135deg,#A78BFA,#7C3AED)",
-  accent: "linear-gradient(135deg,#6A8BFF,#3E63DD)",
-  green: "linear-gradient(135deg,#34D399,#0EA5E9)",
-  amber: "linear-gradient(135deg,#FBBF24,#F97316)",
-} as const;
-
-/** Плитка итога: яркий значок, подпись, число и пояснение. */
-function SumTile({ icon, tone, label, value, sub }: { icon: ReactNode; tone: keyof typeof TILE_GRAD; label: string; value: string; sub: string }) {
-  return (
-    <div className="iss-tile">
-      <div style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
-        <span style={mix("width:26px;height:26px;border-radius:8px;flex:none;display:grid;place-items:center;color:#fff;box-shadow:0 4px 10px -4px rgba(15,18,25,.35)", { background: TILE_GRAD[tone] })}>
-          {icon}
-        </span>
-        <span style={css("font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
-      </div>
-      <div>
-        <div style={mix(NUM + ";font-size:18px;font-weight:500;letter-spacing:-.01em;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: value === "—" ? "var(--text-5)" : "var(--text)" })}>
-          <CountUp text={value} />
-        </div>
-        <div style={css("font-size:11px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>
-      </div>
-    </div>
-  );
-}
-
-const LIMIT = 20;
-
-function IssueHistory({ toast }: { toast: Toast }) {
-  const [period, setPeriod] = useState<Period>(() => periodOf("7"));
-  const [query, setQuery] = useState("");
-  const q = useDebounced(query.trim(), 250);
-  const [offset, setOffset] = useState(0);
-  const [data, setData] = useState<IssueList | null>(null);
-  const [open, setOpen] = useState<number | null>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  const load = useCallback(() => {
-    listIssues({
-      q,
-      since: dayStartIso(period.date_from),
-      until: dayStartIso(period.date_to, 1),
-      limit: LIMIT,
-      offset,
-      tz: -new Date().getTimezoneOffset(),
-    })
-      .then(setData)
-      .catch(() => setData({ rows: [], total: 0, summary: { items: 0, qty: 0, sale: 0, customers: 0 }, by_day: [] }));
-  }, [q, period.date_from, period.date_to, offset]);
-  useEffect(load, [load]);
-  useEffect(() => setOffset(0), [q, period.date_from, period.date_to]);
-  // Новая страница или период — лента снова с начала.
-  // В фигурных скобках: свежий Chrome возвращает из scrollTo промис, а эффект должен вернуть ничего.
-  useEffect(() => {
-    listRef.current?.scrollTo({ top: 0 });
-  }, [offset, q, period.date_from, period.date_to]);
-  useRefresh(load);
-
-  const byDay = useMemo(() => data?.by_day ?? [], [data]);
-  // Строки этой страницы — по дням; итоги дня берём с сервера (весь день, а не только эта страница).
-  const groups = useMemo(() => {
-    const g: { day: string; rows: IssueRow[] }[] = [];
-    for (const r of data?.rows ?? []) {
-      const day = localDay(new Date(r.issued_at));
-      const last = g[g.length - 1];
-      if (last && last.day === day) last.rows.push(r);
-      else g.push({ day, rows: [r] });
-    }
-    return g;
-  }, [data]);
-
-  const s = data?.summary;
-  const debt = s?.debt ?? 0;
-  const now = s?.paid_now ?? 0;
-  const before = s ? Math.max(0, s.sale - debt - now) : 0;
-  const share = (v: number) => (s && s.sale ? Math.round((v / s.sale) * 100) : 0);
-  const avg = s && data.total ? Math.round(s.sale / data.total) : 0;
-  const best = byDay.reduce<DayStat | null>((a, d) => (d.sale > (a?.sale ?? 0) ? d : a), null);
-  const bestDate = best ? new Date(`${best.day}T00:00:00`) : null;
-
-  return (
-    <section className="iss-hist" style={css(CARD + ";overflow:hidden")}>
-      {/* Слева — сводка за период */}
-      <aside className="iss-hist-side">
-        <div style={css("display:flex;align-items:center;gap:11px;min-width:0")}>
-          <span style={css("width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#6A8BFF,#7C3AED);box-shadow:0 8px 18px -8px rgba(62,99,221,.7)")}>
-            <Icon name="issue" size={18} />
-          </span>
-          <div style={css("min-width:0")}>
-            <div style={css(TITLE)}>История выдач</div>
-            <div style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{periodText(period.date_from, period.date_to)}</div>
-          </div>
-        </div>
-
-        <div className="iss-hero">
-          <div style={css("position:relative;display:flex;align-items:center;gap:16px;min-width:0")}>
-            <IssueRing before={before} now={now} debt={debt} />
-            <div style={css("flex:1;min-width:0")}>
-              <div style={css("font-size:12px;color:var(--text-3)")}>Выдано на сумму</div>
-              <div style={css(NUM + ";font-size:27px;font-weight:500;letter-spacing:-.02em;line-height:1.15;margin-top:2px;white-space:nowrap")}>{s ? <CountUp text={som(s.sale)} /> : "—"}</div>
-              <div style={css(NUM + ";font-size:11.5px;color:var(--text-4);margin-top:3px")}>
-                {data ? `${data.total} ${plural(data.total, "выдача", "выдачи", "выдач")}${byDay.length ? ` за ${byDay.length} ${plural(byDay.length, "день", "дня", "дней")}` : ""}` : "…"}
-              </div>
-            </div>
-          </div>
-          <div style={css("position:relative;display:flex;flex-direction:column;gap:9px;margin-top:16px")}>
-            <SplitBar
-              parts={[
-                { k: "before", v: before },
-                { k: "now", v: now },
-                { k: "debt", v: debt },
-              ]}
-            />
-            <MoneyLine dot={MONEY.before} label="Оплачено заранее" value={before} share={share(before)} />
-            <MoneyLine dot={MONEY.now} label="Принято при выдаче" value={now} share={share(now)} />
-            <MoneyLine dot={MONEY.debt} label="Долг по выданным" value={debt} share={share(debt)} />
-          </div>
-        </div>
-
-        <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:10px")}>
-          <SumTile icon={<Icon name="customers" size={14} />} tone="violet" label="Клиентов" value={s ? String(s.customers) : "—"} sub="забрали товар" />
-          <SumTile icon={<Icon name="stock" size={14} />} tone="accent" label="Товаров" value={s ? String(s.items) : "—"} sub={s ? `${s.qty} шт` : " "} />
-          <SumTile icon={<Svg paths={I_RECEIPT} size={14} sw={2} />} tone="green" label="В среднем" value={avg ? som(avg) : "—"} sub="на одну выдачу" />
-          <SumTile
-            icon={<Svg paths={I_TROPHY} size={14} sw={2} />}
-            tone="amber"
-            label="Лучший день"
-            value={best ? som(best.sale) : "—"}
-            sub={bestDate ? `${bestDate.getDate()} ${MONTHS[bestDate.getMonth()]} · ${best!.issues} ${plural(best!.issues, "выдача", "выдачи", "выдач")}` : "выдач не было"}
-          />
-        </div>
-
-        <HistoryChart period={period} byDay={byDay} />
-      </aside>
-
-      {/* Справа — фильтры и лента выдач: ровно по высоте сводки, остальное — прокруткой */}
-      <div className="iss-hist-main">
-        <div style={css("flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:14px 18px;border-bottom:1px solid var(--border-2)")}>
-          <PeriodPicker value={period} onChange={setPeriod} />
-          <span style={css("flex:1")} />
-          <SearchInput value={query} onChange={setQuery} placeholder="Клиент или телефон…" width={220} />
-        </div>
-
-        <div ref={listRef} className="iss-hist-list thin-scroll">
-          {!data ? (
-            <HistFill />
-          ) : data.rows.length === 0 ? (
-            <HistFill title={q ? "Ничего не найдено" : "За этот период выдач нет"} text="выберите другой период или измените поиск" />
-          ) : (
-            <>
-              {groups.map((g) => {
-                const t = dayTitle(g.day);
-                const stat = byDay.find((d) => d.day === g.day);
-                const n = stat?.issues ?? g.rows.length;
-                const sale = stat?.sale ?? g.rows.reduce((a, r) => a + r.items.reduce((x, i) => x + i.sale, 0), 0);
-                return (
-                  <div key={g.day}>
-                    <div className="iss-tl-day">
-                      <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{t.title}</span>
-                      <span style={css("font-size:12px;color:var(--text-4)")}>{t.sub}</span>
-                      <span style={css("flex:1;min-width:12px;border-bottom:1px solid var(--border-2);transform:translateY(-4px)")} />
-                      <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
-                        {n} {plural(n, "выдача", "выдачи", "выдач")} · <span style={css("font-weight:500;color:var(--text-2)")}>{som(sale)}</span>
-                      </span>
-                    </div>
-                    {g.rows.map((r, i) => (
-                      <TimelineRow key={r.id} r={r} first={i === 0} last={i === g.rows.length - 1} onOpen={setOpen} />
-                    ))}
-                  </div>
-                );
-              })}
-              {/* Остаток ленты — бледные строки, чтобы не было пустоты */}
-              <HistFill title={data.total > LIMIT ? "Ещё выдачи — на следующих страницах" : "Это все выдачи за период"} text={data.total > LIMIT ? "переключите страницу ниже" : "выберите период шире, чтобы увидеть больше"} />
-              <div style={css("flex:none;padding:0 18px 22px")}>
-                <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-      {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
-    </section>
-  );
-}
-
-/**
- * Одна выдача в ленте: время, точка (цвет — как оплатили: заранее, при выдаче или в долг),
- * клиент и кто выдал, товары (первые четыре, остальное — по нажатию), сумма и оплата.
- */
-/** Пустое место ленты истории: бледные строки «время · точка · клиент · сумма» и подсказка по центру. */
-function HistFill({ title, text }: { title?: string; text?: string }) {
-  return (
-    <div className="ghost-fill iss-hfill">
-      <div className="ghost-rows" aria-hidden>
-        {Array.from({ length: 10 }, (_, i) => (
-          <div key={i} className="iss-tl iss-tl-ghost">
-            <span className="sk" style={css("width:34px;height:8px;margin-top:5px")} />
-            <span className="iss-tl-dot">
-              <i style={{ background: "var(--border-strong)" }} />
-            </span>
-            <span style={css("display:flex;flex-direction:column;gap:9px;padding-top:3px")}>
-              <span style={css("display:flex;gap:8px;align-items:center")}>
-                <span className="sk" style={mix("height:9px", { width: `${[26, 34, 22, 30, 38, 24][i % 6]}%` })} />
-                <span className="sk" style={css("width:18%;height:7px")} />
-              </span>
-              <span style={css("display:flex;gap:6px")}>
-                <span className="sk" style={mix("height:20px;border-radius:7px", { width: `${[120, 90, 140, 100][i % 4]}px` })} />
-                {i % 3 === 0 && <span className="sk" style={css("width:80px;height:20px;border-radius:7px")} />}
-              </span>
-            </span>
-            <span style={css("display:flex;flex-direction:column;align-items:flex-end;gap:8px;padding-top:3px")}>
-              <span className="sk" style={css("width:52px;height:9px")} />
-              <span className="sk" style={css("width:74px;height:7px")} />
-            </span>
-          </div>
-        ))}
-      </div>
-      {title && (
-        <div className="ghost-msg">
-          <span style={css("width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-            <Icon name="issue" size={16} />
-          </span>
-          <span style={css("min-width:0")}>
-            <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text)")}>{title}</span>
-            {text && <span style={css("display:block;font-size:12px;color:var(--text-4);margin-top:2px")}>{text}</span>}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TimelineRow({ r, first, last, onOpen }: { r: IssueRow; first: boolean; last: boolean; onOpen: (id: number) => void }) {
-  const [all, setAll] = useState(false);
-  const sum = r.items.reduce((acc, i) => acc + i.sale, 0);
-  const debt = r.items.reduce((acc, i) => acc + i.debt, 0);
-  const paidNow = r.paid_now ?? 0;
-  const tone = debt > 0 ? MONEY.debt : paidNow > 0 ? MONEY.now : MONEY.before;
-  const shown = all ? r.items : r.items.slice(0, 4);
-  const more = r.items.length - shown.length;
-  return (
-    <div className={"iss-tl" + (first ? " first" : "") + (last ? " last" : "")}>
-      <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);padding-top:1px")}>{hhmm(r.issued_at)}</span>
-      <span className="iss-tl-dot">
-        <i style={{ background: tone }} />
-      </span>
-      <div style={css("min-width:0")}>
-        <div style={css("display:flex;align-items:baseline;gap:8px;min-width:0")}>
-          <span style={css("font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0")}>{r.customer_name}</span>
-          <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>{r.customer_phone}</span>
-          {r.user_login && (
-            <span className="iss-hide" style={css("font-size:12px;color:var(--text-4);white-space:nowrap")}>
-              · выдал {r.user_login}
-            </span>
-          )}
-        </div>
-        <div className="iss-hide" style={css("display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;min-width:0")}>
-          {shown.map((i) => (
-            <HButton
-              key={i.id}
-              onClick={() => onOpen(i.id)}
-              title={i.code || undefined}
-              s="max-width:100%;display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 9px;border:1px solid var(--border-2);border-radius:7px;background:var(--surface-2);cursor:pointer;font:inherit;font-size:12px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
-              hover="border-color:var(--accent);color:var(--accent-strong)"
-            >
-              {i.name}
-              {i.qty > 1 && <span style={css(NUM + ";color:var(--text-4)")}>× {i.qty}</span>}
-            </HButton>
-          ))}
-          {more > 0 && (
-            <HButton
-              onClick={() => setAll(true)}
-              title={r.items
-                .slice(4)
-                .map((i) => i.name)
-                .join(", ")}
-              s="display:inline-flex;align-items:center;height:24px;padding:0 9px;border:1px dashed var(--border-strong);border-radius:7px;background:transparent;cursor:pointer;font:inherit;font-size:12px;color:var(--text-3);white-space:nowrap"
-              hover="border-color:var(--accent);color:var(--accent-strong)"
-            >
-              ещё {more}
-            </HButton>
-          )}
-        </div>
-        <div className="iss-sm" style={css("font-size:12px;color:var(--text-2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-          {r.items.map((i) => (i.qty > 1 ? `${i.name} × ${i.qty}` : i.name)).join(", ")}
-        </div>
-      </div>
-      <div style={css("text-align:right;min-width:0")}>
-        <div style={css(NUM + ";font-size:14px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(sum)}</div>
-        <div style={css(NUM + ";font-size:12px;white-space:nowrap;margin-top:2px")}>
-          {debt > 0 ? (
-            <span style={css("color:var(--danger)")}>долг {som(debt)}</span>
-          ) : paidNow > 0 ? (
-            <span style={css("color:var(--green)")}>принято {som(paidNow)}</span>
-          ) : (
-            <span style={css("color:var(--text-4)")}>оплачено заранее</span>
-          )}
-        </div>
-        {(r.weight_som ?? 0) > 0 && (
-          <div style={css(NUM + ";font-size:12px;white-space:nowrap;margin-top:2px;color:var(--violet)")} title="Вес посылки, оплачен при выдаче">
-            вес {fmtKg(r.weight_kg ?? 0)} кг · +{som(r.weight_som ?? 0)}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  if (from === to) return `${b.getDate()} ${MONTHS[b.getMonth()]}`;
+  return `${a.getDate()} ${MONTHS[a.getMonth()]} — ${b.getDate()} ${MONTHS[b.getMonth()]}`;
 }

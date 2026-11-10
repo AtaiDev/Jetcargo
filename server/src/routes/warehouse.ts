@@ -291,6 +291,8 @@ warehouseRouter.post("/issues", (req, res) => {
   const ids: number[] = Array.isArray(b.item_ids) ? b.item_ids.map(Number) : [];
   if (!ids.length) throw badRequest("Выберите товары для выдачи");
   let payment = num(b.payment_amount ?? 0, "Оплата при выдаче");
+  // Как платит: наличными или переводом — и за товар, и за вес.
+  const method = str(b.method, 20) === "transfer" ? "transfer" : "cash";
   // Вес — из уведомлений клиенту (страница «Уведомления»), которые ещё не взяли: берётся сразу,
   // целиком. Экран присылает сумму, которую видел кассир, — если она другая, уведомления поменялись.
   const pend = pendingNotices(customerId);
@@ -308,13 +310,15 @@ warehouseRouter.post("/issues", (req, res) => {
     }
     const debt = list.reduce((s, i) => s + i.debt, 0);
     if (payment > debt + 0.001) throw conflict(`Оплата больше долга по выбранным товарам (${debt})`);
+    // Не всё оплачено — выдача в долг: долг остаётся у клиента и виден в «Забрали в долг» и финансах.
+    const credit = Math.round((debt - payment) * 100) / 100;
 
     const at = nowIso();
     const issueId = run(
-      `INSERT INTO issues (customer_id, issued_at, comment, user_id, weight_kg, weight_rate_usd, weight_usd_rate, weight_som, weight_method)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO issues (customer_id, issued_at, comment, user_id, weight_kg, weight_rate_usd, weight_usd_rate, weight_som, weight_method, credit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       customerId, at, str(b.comment, 500), req.user!.id,
-      kg || null, weightSom ? pend.rate : null, weightSom ? pend.usd : null, weightSom, str(b.method, 20) || "cash"
+      kg || null, weightSom ? pend.rate : null, weightSom ? pend.usd : null, weightSom, method, credit > 0.001 ? credit : 0
     );
     if (pend.ids.length) run(`UPDATE notifications SET issue_id = ? WHERE id IN (${pend.ids.map(() => "?").join(",")})`, issueId, ...pend.ids);
     for (const it of list) {
@@ -322,7 +326,7 @@ warehouseRouter.post("/issues", (req, res) => {
         const part = Math.min(it.debt, payment);
         run(
           "INSERT INTO payments (order_item_id, amount, method, paid_at, comment, user_id) VALUES (?, ?, ?, ?, 'при выдаче', ?)",
-          it.id, part, str(b.method, 20) || "cash", at, req.user!.id
+          it.id, part, method, at, req.user!.id
         );
         payment -= part;
       }
@@ -332,6 +336,25 @@ warehouseRouter.post("/issues", (req, res) => {
   });
   audit(req, "issue", "customer", customerId, null, { issue_id: issueId, items: ids, ...(kg ? { weight_kg: kg, weight_som: weightSom } : {}) });
   res.json({ issue_id: issueId, items: items(`issue_id = ?`, [issueId]) });
+});
+
+/** Забрали в долг: клиенты, которым выдали товар без полной оплаты и которые ещё не рассчитались. */
+warehouseRouter.get("/issues/credit", (_req, res) => {
+  const list = items(
+    "status = 'issued' AND debt > 0 AND issue_id IN (SELECT id FROM issues WHERE credit > 0 AND deleted_at IS NULL)",
+    [],
+    "ORDER BY issued_at"
+  );
+  const by = new Map<number, { id: number; name: string; phone: string; items: number; debt: number; since: string; last: string; item_ids: number[] }>();
+  for (const i of list) {
+    const r = by.get(i.customer_id) ?? { id: i.customer_id, name: i.customer_name, phone: i.customer_phone, items: 0, debt: 0, since: i.issued_at ?? "", last: i.issued_at ?? "", item_ids: [] };
+    r.items += 1;
+    r.debt = Math.round((r.debt + i.debt) * 100) / 100;
+    r.last = i.issued_at ?? r.last;
+    r.item_ids.push(i.id);
+    by.set(i.customer_id, r);
+  }
+  res.json([...by.values()].sort((a, b) => b.debt - a.debt));
 });
 
 warehouseRouter.get("/issues", (req, res) => {
@@ -382,6 +405,19 @@ warehouseRouter.get("/issues", (req, res) => {
        FROM issues s JOIN customers c ON c.id = s.customer_id WHERE ${where}`,
     ...p
   )!;
+  // Наличные и перевод: оплата товара при выдаче и сумма за вес; в долг — что оставили неоплаченным.
+  const byMethod = all<{ method: string; som: number }>(
+    `SELECT m AS method, SUM(a) AS som FROM (
+        SELECT p.method AS m, p.amount AS a FROM issues s JOIN customers c ON c.id = s.customer_id
+          JOIN order_items i ON i.issue_id = s.id AND i.deleted_at IS NULL JOIN payments p ON p.order_item_id = i.id AND ${PAID_NOW}
+         WHERE ${where}
+        UNION ALL
+        SELECT s.weight_method, s.weight_som FROM issues s JOIN customers c ON c.id = s.customer_id WHERE ${where} AND s.weight_som > 0
+      ) GROUP BY m`,
+    ...p, ...p
+  );
+  const credit = get<{ som: number }>(`SELECT COALESCE(SUM(s.credit), 0) AS som FROM issues s JOIN customers c ON c.id = s.customer_id WHERE ${where}`, ...p)!.som;
+  const r2 = (n: number) => Math.round(n * 100) / 100;
   // По дням — для графика и итогов дня. Дни считаем в часовом поясе клиента (tz — минуты к UTC).
   const tz = Math.max(-840, Math.min(840, optInt(req.query.tz) ?? 0));
   const byDay = all<{ day: string; issues: number; items: number; sale: number }>(
@@ -402,7 +438,15 @@ warehouseRouter.get("/issues", (req, res) => {
   res.json({
     rows: rows.map((r) => ({ ...r, items: items("issue_id = ?", [r.id], "ORDER BY id") })),
     total,
-    summary: { ...summary, paid_now: paidNow, weight_kg: Math.round(weight.kg * 100) / 100, weight_som: Math.round(weight.som * 100) / 100 },
+    summary: {
+      ...summary,
+      paid_now: paidNow,
+      weight_kg: r2(weight.kg),
+      weight_som: r2(weight.som),
+      cash: r2(byMethod.filter((m) => m.method !== "transfer").reduce((a, m) => a + m.som, 0)),
+      transfer: r2(byMethod.find((m) => m.method === "transfer")?.som ?? 0),
+      credit: r2(credit),
+    },
     by_day: byDay,
   });
 });

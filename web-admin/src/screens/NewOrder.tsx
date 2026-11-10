@@ -13,16 +13,18 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiError } from "../api/client";
 import { createOrder, getCustomer, getSettings, listCustomers, type CustomerCard, type CustomerRow, type Item } from "../api/domain";
 import { MONO, css, mix } from "../design/css";
-import CountUp from "../design/CountUp";
 import { I_ARROW_RIGHT, I_BOX, I_CLOSE, I_PLUS, I_USER, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { HButton, ST, inputStyle } from "../design/ui";
+import { HButton, ST } from "../design/ui";
 import { cased, capFirst, parseMoney, som, todayIso, upper } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
 import PhoneInput from "../components/PhoneInput";
 import CustomerSearch from "../components/CustomerSearch";
 import DatePicker from "../components/DatePicker";
 import TimePicker from "../components/TimePicker";
+import SlideTabs from "../components/SlideTabs";
+import CountUp from "../design/CountUp";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 
@@ -58,6 +60,24 @@ const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, "0")}:${String(d.g
 /** Числа обычным шрифтом с цифрами одной ширины — аккуратнее «печатной машинки». */
 const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 const emptyRow = (code = ""): Row => ({ key: rowKey++, name: "", code, qty: "1", price: "", real: "" });
+
+/** Только для локальной проверки: /new-order?demo=20 — список сразу заполнен тестовыми товарами.
+ *  Работает лишь в dev-сборке (в прод не попадает), сохранить такой заказ нельзя. */
+const DEMO_NAMES = ["Клавиатура", "Мышка", "Наушники", "Кроссовки", "Рюкзак", "Куртка", "Часы", "Чехол для телефона", "Футболка", "Зарядка"];
+const demoCount = (): number => {
+  if (!import.meta.env.DEV) return 0;
+  const n = Number(new URLSearchParams(window.location.search).get("demo"));
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), 100) : 0;
+};
+const demoRows = (n: number): Row[] =>
+  Array.from({ length: n }, (_, i) => ({
+    key: rowKey++,
+    name: DEMO_NAMES[i % DEMO_NAMES.length] + (i >= DEMO_NAMES.length ? ` ${Math.floor(i / DEMO_NAMES.length) + 1}` : ""),
+    code: i % 3 === 0 ? `JT86244500${32545 + i}` : "",
+    qty: String(i % 5 === 0 ? 3 : 1),
+    price: String(600 + ((i * 370) % 4400)),
+    real: String(400 + ((i * 290) % 3000)),
+  }));
 const isBlank = (r: Row) => !r.name.trim() && !r.code.trim() && !r.price.trim() && !r.real.trim();
 const money = (s: string) => {
   const n = parseMoney(s);
@@ -76,21 +96,6 @@ function rowError(r: Row): { field: Field; text: string } | null {
   return null;
 }
 
-/** Цвета кассы — из темы, как у остальных карточек. */
-const K = {
-  text: "var(--text)",
-  mut: "var(--text-3)",
-  dim: "var(--text-4)",
-  line: "var(--border-2)",
-  soft: "var(--surface-2)",
-  border: "var(--border-strong)",
-  green: "var(--green)",
-  red: "var(--danger)",
-  amber: "var(--amber)",
-  blue: "var(--accent-strong)",
-};
-const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:16px";
-
 export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toast: Toast }) {
   const nav = useNavigate();
   const [params] = useSearchParams();
@@ -98,6 +103,10 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   // --- Клиент ---
   const [customer, setCustomer] = useState<CustomerCard | null>(null);
   const [newMode, setNewMode] = useState(false);
+  const [added, setAdded] = useState(0);
+  // список товаров: больше 10 — своя прокрутка; новый товар — плавно докрутить вниз
+  const listRef = useRef<HTMLDivElement>(null);
+  const prevCount = useRef(0);
   const [newName, setNewName] = useState("");
   const [newPhone, setNewPhone] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
@@ -122,7 +131,7 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   // Недавние клиенты — выбрать в один клик (обычно заказывают одни и те же).
   const [recent, setRecent] = useState<CustomerRow[]>([]);
   const loadRecent = useCallback(() => {
-    listCustomers({ sort: "recent", limit: 6 })
+    listCustomers({ sort: "recent", limit: 8 })
       .then((r) => setRecent(r.rows.filter((c) => c.last_order_date)))
       .catch(() => setRecent([]));
   }, []);
@@ -147,7 +156,13 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   };
 
   // --- Товары: список и строка быстрого ввода ---
-  const [rows, setRows] = useState<Row[]>([]);
+  const [demo] = useState(() => demoCount() > 0);
+  const [rows, setRows] = useState<Row[]>(() => (demo ? demoRows(demoCount()) : []));
+  useEffect(() => {
+    const el = listRef.current;
+    if (el && rows.length > prevCount.current && rows.length > 10) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    prevCount.current = rows.length;
+  }, [rows.length]);
   const [draft, setDraft] = useState<Row>(() => emptyRow(params.get("code") ?? ""));
   const [draftErr, setDraftErr] = useState<{ field: Field; text: string } | null>(null);
   const [fresh, setFresh] = useState<number | null>(null);
@@ -171,6 +186,7 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
     const r = { ...draft, key: rowKey++ };
     setRows((rs) => [...rs, r]);
     setFresh(r.key);
+    setAdded((n) => n + 1);
     setDraft(emptyRow());
     setDraftErr(null);
     focusDraft("name");
@@ -231,7 +247,12 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
     return () => window.clearInterval(t);
   }, []);
   const [status, setStatus] = useState<"ordered" | "in_stock">("ordered");
+  // «Частично» — сразу курсор в сумму оплаты
+  const paidRef = useRef<HTMLInputElement | null>(null);
   const [pay, setPay] = useState<"none" | "full" | "part">("none");
+  useEffect(() => {
+    if (pay === "part") window.setTimeout(() => paidRef.current?.focus(), 60);
+  }, [pay]);
   const [paid, setPaid] = useState("");
   const [comment, setComment] = useState("");
   const [rate, setRate] = useState<number | null>(null);
@@ -297,6 +318,10 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
 
   async function save() {
     if (busy) return;
+    if (demo) {
+      setError("Это тестовые товары (?demo) — такой заказ не сохраняется. Откройте страницу без ?demo.");
+      return;
+    }
     const err = validate();
     setError(err);
     if (err) return;
@@ -382,20 +407,21 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   const who = customer ? customer.customer.name : newName.trim() || newPhone.trim() ? newName.trim() || newPhone.trim() : "";
   const draftProfit = money(draft.price) !== null && money(draft.real) !== null ? (money(draft.price) ?? 0) - (money(draft.real) ?? 0) : null;
 
-  // Поля строки ввода: подпись над полем, ошибка — красной рамкой.
-  const QUICK = isDesktop ? "minmax(0,2fr) minmax(0,1.15fr) 62px 116px 116px auto" : "repeat(4,minmax(0,1fr))";
-  const qInput = (f: Field, extra = "") =>
-    mix(inputStyle + ";height:42px;border-radius:10px;font-size:13.5px;background:var(--surface);" + extra, draftErr?.field === f && "border-color:var(--danger)!important;box-shadow:0 0 0 3px var(--danger-tint)");
-  const qCell = (col: string, children: ReactNode, label: string) => (
-    <label style={mix("display:flex;flex-direction:column;gap:5px;min-width:0", !isDesktop && { gridColumn: col })}>
-      <span style={css("font-size:11px;font-weight:600;color:var(--text-3)")}>{label}</span>
-      {children}
-    </label>
-  );
+  const inCls = (f: Field, extra = "") => "no-in" + (extra ? " " + extra : "") + (draftErr?.field === f ? " bad" : "");
+  const bumpQty = (d: number) => setD({ qty: String(Math.max(1, (parseInt(draft.qty, 10) || (d > 0 ? 0 : 1)) + d)) });
+  const onQtyKey = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      bumpQty(e.key === "ArrowUp" ? 1 : -1);
+      return;
+    }
+    onDraftKey(e);
+  };
+  const draftMarkup = draftProfit !== null && (money(draft.real) ?? 0) > 0 ? Math.round((draftProfit / (money(draft.real) ?? 1)) * 100) : null;
 
   return (
     <Page size="wide">
-      <div style={css("display:flex;flex-direction:column;gap:14px")}>
+      <div className="ov no">
         {saved && details && (
           <OrderDetails
             saved={saved}
@@ -409,13 +435,22 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
           />
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "minmax(0,1fr) 384px" : "minmax(0,1fr)", gap: 16, alignItems: "stretch" }}>
-          {/* ================= Слева: клиент, ввод, список ================= */}
-          <div style={css("display:flex;flex-direction:column;gap:14px;min-width:0")}>
+        <div className="wx-head">
+          <HomeHead title="Новый заказ" />
+          {isDesktop && (
+            <div className="wx-head-r">
+              <span className="no-hint">
+                <Kbd>Enter</Kbd> — товар в список · <Kbd>Ctrl</Kbd> + <Kbd>Enter</Kbd> — сохранить заказ
+              </span>
+            </div>
+          )}
+        </div>
+
+        <div className="no-grid">
+          <div className="no-main">
             {saved && (
               <SavedBanner
                 saved={saved}
-                isDesktop={isDesktop}
                 onDetails={() => setDetails(true)}
                 onAgain={() => {
                   pickCustomer(saved.id);
@@ -425,168 +460,195 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
                 onClose={() => setSaved(null)}
               />
             )}
-            {/* --- Клиент --- */}
-            <section style={css(CARD + ";position:relative;padding:14px 16px;overflow:visible")}>
-              {customer ? (
-                <div style={css("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
-                  <Avatar name={customer.customer.name} size={46} />
-                  <div style={css("flex:1;min-width:140px")}>
-                    <div style={css("font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-4)")}>Клиент</div>
-                    <div style={css("font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{customer.customer.name}</div>
-                    <div style={css(MONO + ";font-size:12.5px;color:var(--text-3)")}>{customer.customer.phone || "без телефона"}</div>
-                  </div>
-                  <div style={css("display:flex;gap:6px;flex-wrap:wrap")}>
-                    <Fact label="заказано" value={String(customer.totals.ordered)} dot={ST.ordered.dot} />
-                    <Fact label="на складе" value={String(customer.totals.in_stock)} dot={ST.in_stock.dot} />
-                    <Fact label="долг" value={som(customer.totals.debt)} dot={customer.totals.debt > 0 ? ST.unpaid.dot : ST.paid.dot} danger={customer.totals.debt > 0} />
-                  </div>
-                  <HButton
-                    onClick={() => {
-                      setCustomer(null);
-                      setSaved(null);
-                    }}
-                    title="Выбрать другого клиента"
-                    s={mix(
-                      "width:36px;height:36px;display:grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-3);cursor:pointer",
-                      !isDesktop && "position:absolute;top:12px;right:12px"
-                    )}
-                    hover="border-color:var(--danger);color:var(--danger);background:var(--danger-tint)"
-                  >
-                    <Svg paths={I_CLOSE} size={15} sw={2} />
-                  </HButton>
-                </div>
-              ) : newMode ? (
-                <div style={css("display:flex;flex-direction:column;gap:8px")}>
-                  <div style={css("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
-                    <span style={css("width:46px;height:46px;border-radius:50%;flex:none;display:grid;place-items:center;border:1.5px dashed var(--accent);color:var(--accent);background:var(--accent-tint2)")}>
-                      <Svg paths={I_USER_PLUS} size={20} sw={1.9} />
+
+            {/* --- 1. Клиент --- */}
+            <section className="ov-card no-card">
+              <div className={"no-ch" + (customer ? " picked" : !newMode ? " find" : "")}>
+                {!customer && <span className={"no-step" + (who ? " done" : "")}>{who ? <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={12} sw={3} /> : "1"}</span>}
+                {!customer && <b>Клиент</b>}
+                {customer && (
+                  <div className="no-row">
+                    <span className="no-row-who">
+                      <span className="no-row-av">
+                        {initials(customer.customer.name)}
+                        <i>
+                          <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={10} sw={3.2} />
+                        </i>
+                      </span>
+                      <span className="no-row-id">
+                        <b>{customer.customer.name}</b>
+                        <small>
+                          {customer.customer.phone || "без телефона"}
+                          {customer.customer.code && <code>{customer.customer.code}</code>}
+                        </small>
+                      </span>
                     </span>
-                    <div style={{ flex: 1, minWidth: 200, display: "grid", gridTemplateColumns: isDesktop ? "minmax(0,1fr) minmax(0,1fr)" : "minmax(0,1fr)", gap: 10 }}>
-                      <input
-                        ref={nameRef}
-                        value={newName}
-                        onChange={(e) => setNewName(cased(e, capFirst))}
-                        placeholder="Имя нового клиента"
-                        style={css(inputStyle + ";height:42px;border-radius:10px;font-size:13.5px")}
-                      />
-                      <div ref={phoneBox}>
-                        <PhoneInput value={newPhone} onChange={setNewPhone} height={42} />
-                      </div>
-                    </div>
-                    <HButton
-                      onClick={cancelNew}
-                      s="height:42px;padding:0 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-2);font-size:12.5px;cursor:pointer"
-                      hover="border-color:var(--accent);color:var(--accent-strong)"
+                    <span className="no-row-st">
+                      <small>Заказано</small>
+                      <b>{customer.totals.ordered}</b>
+                    </span>
+                    <span className="no-row-st">
+                      <small>На складе</small>
+                      <b>{customer.totals.in_stock}</b>
+                    </span>
+                    <span className="no-row-st">
+                      <small>Выдано</small>
+                      <b>{customer.totals.issued}</b>
+                    </span>
+                    <span className={"no-row-st" + (customer.totals.debt > 0 ? " owe" : "")}>
+                      <small>Долг</small>
+                      <b>{customer.totals.debt > 0 ? som(customer.totals.debt) : "нет"}</b>
+                    </span>
+                    <button
+                      type="button"
+                      className="no-btn no-row-x"
+                      onClick={() => {
+                        setCustomer(null);
+                        setSaved(null);
+                      }}
+                      title="Выбрать другого клиента"
                     >
+                      <Svg paths={[["path", { d: "M4 7h13l-3-3M20 17H7l3 3" }]]} size={15} sw={2} />
+                      <span>Другой клиент</span>
+                    </button>
+                  </div>
+                )}
+                {!customer && !newMode && (
+                  <div className="no-search">
+                    <CustomerSearch autoFocus onPick={pickCustomer} onCreate={prefillNew} />
+                  </div>
+                )}
+                {!customer && !newMode && (
+                  <button type="button" className="no-btn no-ch-btn" onClick={openNew}>
+                    <Svg paths={I_USER_PLUS} size={15} sw={2} />
+                    {isDesktop ? "Новый клиент" : "Новый"}
+                  </button>
+                )}
+              </div>
+              {customer ? null : newMode ? (
+                <div className="no-new">
+                  <div className="no-new-row">
+                    <span className="no-av add">
+                      <Svg paths={I_USER_PLUS} size={18} sw={1.9} />
+                    </span>
+                    <input ref={nameRef} className="no-in" value={newName} onChange={(e) => setNewName(cased(e, capFirst))} placeholder="Имя нового клиента" />
+                    <div ref={phoneBox} className="no-phone">
+                      <PhoneInput value={newPhone} onChange={setNewPhone} height={44} />
+                    </div>
+                    <button type="button" className="no-btn" onClick={cancelNew}>
                       Найти в базе
-                    </HButton>
+                    </button>
                   </div>
-                  <div style={css("font-size:11.5px;color:var(--text-4);padding-left:58px")}>
-                    Новый клиент · если такой номер уже есть в базе, заказ добавится к этому клиенту
-                  </div>
+                  <small className="no-note">Новый клиент · если такой номер уже есть в базе, заказ добавится к этому клиенту</small>
                 </div>
               ) : (
-                <div style={css("display:flex;flex-direction:column;gap:10px")}>
-                  <div style={css("display:flex;gap:10px;align-items:center")}>
-                    <div style={css("flex:1;min-width:0")}>
-                      <CustomerSearch autoFocus onPick={pickCustomer} onCreate={prefillNew} />
+                recent.length > 0 && (
+                  <div className="no-sts">
+                    <div className="no-st lbl" aria-hidden="true">
+                      <span className="no-st-av">
+                        <Svg paths={[["circle", { cx: 12, cy: 12, r: 8.5 }], ["path", { d: "M12 7.5V12l3 2" }]]} size={17} sw={2} />
+                      </span>
+                      <b>Недавно</b>
+                      <small>заказывали</small>
                     </div>
-                    <HButton
-                      onClick={openNew}
-                      s="height:44px;padding:0 14px;border:1px dashed var(--border-strong);border-radius:10px;background:transparent;color:var(--text-2);font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;cursor:pointer;flex:none"
-                      hover="border-color:var(--accent);color:var(--accent);background:var(--accent-tint2)"
-                    >
-                      <Svg paths={I_USER_PLUS} size={16} sw={1.9} />
-                      {isDesktop ? "Новый клиент" : "Новый"}
-                    </HButton>
+                    {recent.map((c) => (
+                      <button key={c.id} type="button" className="no-st" onClick={() => pickCustomer(c.id)} title={c.phone || c.name}>
+                        <span className="no-st-av">{initials(c.name)}</span>
+                        <b>{c.name}</b>
+                        <small>{agoShort(c.last_order_date)}</small>
+                      </button>
+                    ))}
                   </div>
-                  {recent.length > 0 && (
-                    <div style={css("display:flex;align-items:center;gap:6px;flex-wrap:wrap")}>
-                      <span style={css("font-size:11.5px;color:var(--text-4);margin-right:2px")}>Недавние:</span>
-                      {recent.map((c) => (
-                        <HButton
-                          key={c.id}
-                          onClick={() => pickCustomer(c.id)}
-                          title={c.debt > 0 ? `${c.phone || c.name} · долг ${som(c.debt)}` : c.phone || c.name}
-                          s="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 3px;border:1px solid var(--border);border-radius:999px;background:var(--surface);font-size:12px;color:var(--text);cursor:pointer;max-width:200px"
-                          hover="border-color:var(--accent);background:var(--accent-tint2)"
-                        >
-                          <Avatar name={c.name} size={22} />
-                          <span style={css("white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.name}</span>
-                          {c.debt > 0 && <span style={css("flex:none;width:6px;height:6px;border-radius:50%;background:var(--danger-dot)")} />}
-                        </HButton>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                )
               )}
             </section>
 
-            {/* --- Строка быстрого ввода --- */}
-            <section
-              style={css(
-                "position:relative;border-radius:16px;padding:14px 16px 12px;background:linear-gradient(135deg,var(--accent-tint) 0%,var(--surface) 55%);border:1px solid var(--accent-border);box-shadow:0 8px 24px color-mix(in srgb,var(--accent) 9%,transparent)"
-              )}
-            >
-              <div style={css("display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap")}>
-                <span style={css("width:26px;height:26px;border-radius:8px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,var(--accent),var(--violet-dot));box-shadow:0 3px 8px color-mix(in srgb,var(--accent) 35%,transparent)")}>
-                  <Svg paths={I_PLUS} size={15} sw={2.4} />
+            {/* --- 2. Добавить товар --- */}
+            <section className="ov-card no-card no-add">
+              <div className="no-ch">
+                <span className={"no-step" + (rows.length ? " done" : "")}>{rows.length ? <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={12} sw={3} /> : "2"}</span>
+                <b>Добавить товар</b>
+                <span className="no-live-box">
+                  {draftErr ? (
+                    <span className="no-live err" key="err">
+                      <Svg paths={[["circle", { cx: 12, cy: 12, r: 9 }], ["path", { d: "M12 7.5v5.5M12 16.5h.01" }]]} size={15} sw={2.2} />
+                      {draftErr.text}
+                    </span>
+                  ) : draftProfit !== null ? (
+                    <span className={"no-qres" + (draftProfit < 0 ? " neg" : "")} key="res">
+                      <span className="no-qres-ic">
+                        <Svg paths={[["path", { d: draftProfit < 0 ? "M7 7l10 10M17 9v8H9" : "M7 17 17 7M9 7h8v8" }]]} size={12} sw={2.6} />
+                      </span>
+                      прибыль с товара
+                      <b>
+                        {draftProfit > 0 ? "+" : ""}
+                        {som(draftProfit)}
+                      </b>
+                      {draftMarkup !== null && (
+                        <em>
+                          наценка <b>{draftMarkup}%</b>
+                        </em>
+                      )}
+                    </span>
+                  ) : isDesktop ? (
+                    <TipTicker />
+                  ) : null}
                 </span>
-                <span style={css("font-size:14.5px;font-weight:700")}>Добавить товар</span>
-                {isDesktop && (
-                  <span style={css("margin-left:auto;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-4)")}>
-                    <Kbd>Enter</Kbd> — в список · можно вставить строки из Excel
-                  </span>
-                )}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: QUICK, gap: 8, alignItems: "end" }}>
-                {qCell(
-                  "1 / -1",
+              <div className="no-q3">
+                <label className="no-fd n">
+                  <span>Название</span>
                   <input
                     ref={(el) => {
                       draftRefs.current.name = el;
                     }}
+                    className={inCls("name")}
                     value={draft.name}
                     onChange={(e) => setD({ name: cased(e, capFirst) })}
                     onKeyDown={onDraftKey}
                     onPaste={pasteRows}
-                    placeholder="Название товара"
-                    style={qInput("name")}
-                  />,
-                  "Название"
-                )}
-                {qCell(
-                  "1 / 4",
+                    placeholder="Например, кроссовки Nike"
+                  />
+                </label>
+                <label className="no-fd c">
+                  <span>Код / трек</span>
                   <input
                     ref={(el) => {
                       draftRefs.current.code = el;
                     }}
+                    className={inCls("code", "mono")}
                     value={draft.code}
                     onChange={(e) => setD({ code: cased(e, upper) })}
                     onKeyDown={onDraftKey}
-                    placeholder="Трек"
+                    placeholder="необязательно"
                     autoCapitalize="characters"
                     spellCheck={false}
-                    style={qInput("code", MONO)}
-                  />,
-                  "Код / трек"
-                )}
-                {qCell(
-                  "4 / 5",
-                  <input
-                    ref={(el) => {
-                      draftRefs.current.qty = el;
-                    }}
-                    value={draft.qty}
-                    onChange={(e) => setD({ qty: e.target.value })}
-                    onKeyDown={onDraftKey}
-                    inputMode="numeric"
-                    style={qInput("qty", NUM + ";text-align:center;padding:0 6px")}
-                  />,
-                  "Шт"
-                )}
-                {qCell(
-                  "1 / 3",
+                  />
+                </label>
+                <div className="no-fd q">
+                  <span>Шт</span>
+                  <div className={"no-qty3" + (draftErr?.field === "qty" ? " bad" : "")}>
+                    <button type="button" tabIndex={-1} aria-label="Меньше" onClick={() => bumpQty(-1)}>
+                      <Svg paths={[["path", { d: "M6 12h12" }]]} size={12} sw={2.6} />
+                    </button>
+                    <input
+                      ref={(el) => {
+                        draftRefs.current.qty = el;
+                      }}
+                      className={inCls("qty", "ctr")}
+                      value={draft.qty}
+                      onChange={(e) => setD({ qty: e.target.value })}
+                      onKeyDown={onQtyKey}
+                      inputMode="numeric"
+                      aria-label="Количество"
+                    />
+                    <button type="button" tabIndex={-1} aria-label="Больше" onClick={() => bumpQty(1)}>
+                      <Svg paths={I_PLUS} size={12} sw={2.6} />
+                    </button>
+                  </div>
+                </div>
+                <label className="no-fd p">
+                  <span>Клиенту</span>
                   <MoneyCell
                     inputRef={(el) => {
                       draftRefs.current.price = el;
@@ -595,13 +657,11 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
                     onChange={(v) => setD({ price: v })}
                     onKeyDown={onDraftKey}
                     placeholder="0"
-                    height={42}
                     invalid={draftErr?.field === "price"}
-                  />,
-                  "Клиенту"
-                )}
-                {qCell(
-                  "3 / 5",
+                  />
+                </label>
+                <label className="no-fd r">
+                  <span>Выкуп</span>
                   <MoneyCell
                     inputRef={(el) => {
                       draftRefs.current.real = el;
@@ -610,63 +670,43 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
                     onChange={(v) => setD({ real: v })}
                     onKeyDown={onDraftKey}
                     placeholder="0"
-                    height={42}
                     invalid={draftErr?.field === "real"}
-                  />,
-                  "Выкуп"
-                )}
-                <HButton
-                  onClick={addDraft}
-                  title="Добавить в список (Enter)"
-                  s={mix(
-                    "height:42px;padding:0 16px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:7px;white-space:nowrap;box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 30%,transparent)",
-                    !isDesktop && "grid-column:1 / -1"
-                  )}
-                  hover="background:var(--accent-hover)"
-                >
-                  <Svg paths={I_PLUS} size={14} sw={2.4} />
+                  />
+                </label>
+                <button type="button" className="no-addbtn" onClick={addDraft} title="Добавить в список (Enter)">
+                  <Svg paths={I_PLUS} size={15} sw={2.4} />
                   Добавить
-                </HButton>
-              </div>
-              <div style={css("display:flex;align-items:center;gap:10px;min-height:18px;margin-top:8px;font-size:12px")}>
-                {draftErr ? (
-                  <span style={css("color:var(--danger);font-weight:500")}>⚠ {draftErr.text}</span>
-                ) : draftProfit !== null ? (
-                  <span style={mix("font-weight:600;" + NUM, { color: draftProfit < 0 ? "var(--danger)" : "var(--green)" })}>
-                    прибыль с товара {draftProfit > 0 ? "+" : ""}
-                    {som(draftProfit)}
-                  </span>
-                ) : (
-                  <span style={css("color:var(--text-4)")}>Впишите название и сумму — Enter добавит товар в заказ</span>
-                )}
+                  {added > 0 && (
+                    <span className="no-addok" key={added}>
+                      <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={15} sw={2.6} />
+                      Добавлено
+                    </span>
+                  )}
+                </button>
               </div>
             </section>
 
-            {/* --- Список товаров --- */}
-            <section style={css(CARD + ";display:flex;flex-direction:column;flex:1;min-height:220px;overflow:hidden")}>
-              <div style={css("display:flex;align-items:center;gap:10px;padding:14px 16px 12px")}>
-                <span style={css("width:30px;height:30px;border-radius:9px;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-                  <Svg paths={I_BOX} size={16} sw={1.9} />
-                </span>
-                <span style={css("font-size:15px;font-weight:700")}>Товары в заказе</span>
+            {/* --- 3. Товары в заказе --- */}
+            <section className="ov-card no-card no-items">
+              <div className="no-ch">
+                <span className="no-step">3</span>
+                <b>Товары в заказе</b>
                 {rows.length > 0 && (
-                  <span style={css("font-size:12px;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2);" + NUM)}>
+                  <small className="no-ch-r">
                     {rows.length} {plural(rows.length, "позиция", "позиции", "позиций")} · {totals.qty} шт
-                  </span>
+                  </small>
                 )}
               </div>
-
               {rows.length === 0 ? (
-                <OrderFill compact={!isDesktop} empty />
+                <EmptyItems />
               ) : (
-                <div style={css("display:flex;flex-direction:column;flex:none")}>
+                <div ref={listRef} className={"no-list" + (rows.length > 10 ? " scroll" : "")}>
                   {rows.map((r, i) =>
                     editing?.key === r.key ? (
                       <EditRow
                         key={r.key}
                         row={editing}
                         index={i}
-                        isDesktop={isDesktop}
                         error={editErr}
                         onChange={(patch) => {
                           setEditing((e) => (e ? { ...e, ...patch } : e));
@@ -676,140 +716,210 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
                         onCancel={() => setEditing(null)}
                       />
                     ) : (
-                      <ItemRow key={r.key} row={r} index={i} compact={!isDesktop} fresh={fresh === r.key} onEdit={() => startEdit(r)} onRemove={() => removeRow(r.key)} />
+                      <ItemRow key={r.key} row={r} index={i} fresh={fresh === r.key} onEdit={() => startEdit(r)} onRemove={() => removeRow(r.key)} />
                     )
                   )}
                 </div>
               )}
-              {/* Остаток панели — бледные строки, чтобы не было пустоты */}
-              {rows.length > 0 && <OrderFill compact={!isDesktop} />}
+              {rows.length > 0 && (
+                <div className="no-more">
+                  <Svg paths={I_PLUS} size={15} sw={2.2} />
+                  Добавьте ещё товар — строка выше и <Kbd>Enter</Kbd>
+                </div>
+              )}
             </section>
           </div>
 
-          {/* ================= Справа: касса ================= */}
-          <aside
-            style={mix(
-              CARD + ";position:relative;min-width:0;color:var(--text)",
-              // На высоте экрана: середина прокручивается, «Сохранить» всегда видна внизу.
-              isDesktop ? "align-self:start;position:sticky;top:16px;display:flex;flex-direction:column;max-height:calc(100vh - 112px)" : "display:flex;flex-direction:column"
-            )}
-          >
-            <div style={css("position:relative;flex:none;padding:18px 20px 0")}>
-              <div style={css("display:flex;align-items:center;gap:8px")}>
-                <Svg paths={I_RECEIPT} size={15} sw={2} />
-                <span style={mix("font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase", { color: K.mut })}>Касса</span>
-                <span style={mix("margin-left:auto;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:999px;" + NUM, { background: K.soft, color: K.mut })}>
-                  {rows.length} {plural(rows.length, "позиция", "позиции", "позиций")} · {totals.qty} шт
+          {/* ================= Справа: чек заказа ================= */}
+          <aside className="no-rc">
+            <div className="no-paper">
+              <div className="no-rc-h">
+                <span className="no-rc-ic">
+                  <Svg paths={I_RECEIPT} size={16} sw={2} />
+                </span>
+                <span className="no-rc-ttl">
+                  <b>Чек заказа</b>
+                  <small>
+                    {rows.length ? (
+                      <>
+                        <em key={rows.length}>{rows.length}</em> {plural(rows.length, "позиция", "позиции", "позиций")} · <em key={"q" + totals.qty}>{totals.qty}</em> шт
+                      </>
+                    ) : (
+                      "пока пусто"
+                    )}
+                  </small>
+                </span>
+                <span className="no-rc-when">
+                  <b>{time ?? clock}</b>
+                  <small>{orderDate === todayIso() ? "сегодня" : dateRu(orderDate).slice(0, 5)}</small>
                 </span>
               </div>
-              <div style={css("display:flex;align-items:center;gap:9px;margin-top:14px;min-width:0")}>
-                {who ? <Avatar name={who} size={28} /> : <span style={mix("width:28px;height:28px;border-radius:50%;flex:none;border:1.5px dashed", { borderColor: K.border })} />}
-                <span style={mix("font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: who ? K.text : K.dim })}>
-                  {who || "клиент не выбран"}
-                </span>
-                {!customer && who && <span style={mix("flex:none;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px", { background: "var(--accent-tint)", color: K.blue })}>новый</span>}
+
+              <div className="no-rc-who">
+                {who ? <Avatar name={who} size={30} /> : <span className="no-av empty" style={{ width: 30, height: 30 }} />}
+                <span className={who ? "" : "mu"}>{who || "клиент не выбран"}</span>
+                {!customer && who && <i className="no-newtag">новый</i>}
+                {customer ? (
+                  <small className="no-rc-ph">{customer.customer.phone || "без телефона"}</small>
+                ) : newMode && who ? (
+                  newPhone ? <small className="no-rc-ph">{newPhone}</small> : null
+                ) : !who ? (
+                  <button
+                    type="button"
+                    className="no-rc-pick"
+                    onClick={() => {
+                      const el = document.querySelector<HTMLInputElement>(".no-search input");
+                      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+                      el?.focus({ preventScroll: true });
+                    }}
+                  >
+                    <Svg paths={[["path", { d: "M12 19V5M5.5 11.5 12 5l6.5 6.5" }]]} size={13} sw={2.4} />
+                    выбрать
+                  </button>
+                ) : null}
               </div>
-              <div style={mix("font-size:12px;margin-top:14px", { color: K.mut })}>Сумма заказа</div>
-              <div style={css("font-size:42px;font-weight:700;letter-spacing:-.03em;line-height:1.1;white-space:nowrap;" + NUM)}>
-                <CountUp text={som(totals.sale)} duration={450} />
+
+              <div className="no-rc-sum">
+                <small>Сумма заказа</small>
+                <b>
+                  <CountUp text={som(totals.sale)} duration={450} />
+                </b>
+                {!isBlank(draft) && <em>+ товар в строке ввода — Enter, чтобы добавить</em>}
+                {(() => {
+                  const st = totals.sale > 0 && debt <= 0.001 ? "full" : pay === "part" && totals.paid > 0 ? "part" : "none";
+                  return <PayStamp st={st} label={st === "full" ? "Оплачен" : st === "part" ? "Частично" : "Не оплачен"} sub={st === "full" ? "полностью" : st === "part" ? `долг ${som(debt)}` : totals.sale > 0 ? "в долг" : "пока пусто"} />;
+                })()}
               </div>
-              {!isBlank(draft) && (
-                <div style={mix("font-size:11.5px;margin-top:4px", { color: K.amber })}>+ товар в строке ввода — Enter, чтобы добавить</div>
-              )}
-            </div>
 
-            <div style={css("position:relative;flex:none;display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:14px 20px 0")}>
-              <DarkStat label="Выкуп" value={totals.withCost ? som(totals.cost) : "—"} sub={totals.withCost && totals.sale > 0 ? `${Math.round((totals.cost / totals.sale) * 100)}% от суммы` : "впишите выкуп"} />
-              <DarkStat
-                label="Прибыль"
-                value={totals.withCost ? `${totals.profit > 0 ? "+" : ""}${som(totals.profit)}` : "—"}
-                color={totals.withCost ? (totals.profit < 0 ? K.red : K.green) : undefined}
-                badge={totals.withCost && totals.cost > 0 ? `${totals.profit >= 0 ? "+" : ""}${Math.round((totals.profit / totals.cost) * 100)}%` : undefined}
-                sub={totals.withCost ? "наценка на выкуп" : "появится с выкупом"}
-              />
-            </div>
+              {(() => {
+                const ok = totals.withCost && totals.sale > 0;
+                const share = ok ? Math.max(0, Math.min(100, Math.round((totals.cost / totals.sale) * 100))) : 0;
+                const neg = totals.withCost && totals.profit < 0;
+                return (
+                  <div className="no-cps">
+                    <div className="no-cp c">
+                      <span className="no-cp-main">
+                        <i className="ic">
+                          <Svg paths={[["rect", { x: 2.5, y: 6, width: 19, height: 12, rx: 2.5 }], ["circle", { cx: 12, cy: 12, r: 2.6 }], ["path", { d: "M6 9.5h.01M18 14.5h.01" }]]} size={15} sw={2} />
+                        </i>
+                        <span>
+                          <small>Выкуп</small>
+                          <b>{totals.withCost ? som(totals.cost) : "—"}</b>
+                        </span>
+                      </span>
+                      <span className="no-cp-stub">
+                        <b>{ok ? share + "%" : "—"}</b>
+                        <small>{ok ? "от суммы" : "впишите"}</small>
+                      </span>
+                    </div>
+                    <div className={"no-cp p" + (neg ? " neg" : "")}>
+                      <span className="no-cp-main">
+                        <i className="ic">
+                          <Svg paths={[["path", { d: neg ? "M4 8l5 5 4-4 7 7" : "M4 16l5-5 4 4 7-7" }], ["path", { d: neg ? "M15 16h5v-5" : "M15 8h5v5" }]]} size={15} sw={2} />
+                        </i>
+                        <span>
+                          <small>Прибыль</small>
+                          <b>{totals.withCost ? `${totals.profit > 0 ? "+" : ""}${som(totals.profit)}` : "—"}</b>
+                        </span>
+                      </span>
+                      <span className="no-cp-stub">
+                        <b>{totals.withCost && totals.cost > 0 ? Math.round((totals.profit / totals.cost) * 100) + "%" : "—"}</b>
+                        <small>наценка</small>
+                      </span>
+                    </div>
+                  </div>
+                );
+              })()}
 
-            <div className="thin-scroll" style={mix("position:relative;flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:16px 20px;margin-top:14px;border-top:1px solid", { borderColor: K.line })}>
-              <DField label="Когда оформлен">
-                <div style={css("display:grid;grid-template-columns:minmax(0,1fr) 118px;gap:8px")}>
-                  <DatePicker value={orderDate} onChange={setOrderDate} width="100%" height={38} words ariaLabel="Дата заказа" />
-                  <TimePicker value={time ?? clock} auto={time === null} onChange={setTime} onNow={() => setTime(null)} width="100%" height={38} ariaLabel="Время заказа" />
-                </div>
-              </DField>
-              <DField label="Статус товаров">
-                <DarkSeg
-                  value={status}
-                  onChange={setStatus}
-                  options={[
-                    { key: "ordered", label: "Заказан", color: K.amber },
-                    { key: "in_stock", label: "Уже на складе", color: K.blue },
-                  ]}
-                />
-              </DField>
-              <DField label="Оплата">
-                <DarkSeg
-                  value={pay}
-                  onChange={setPay}
-                  options={[
-                    { key: "none", label: "Не оплачено", color: K.red },
-                    { key: "full", label: "Полностью", color: K.green },
-                    { key: "part", label: "Частично", color: K.amber },
-                  ]}
-                />
-                {pay === "part" && (
-                  <div style={css("margin-top:8px")}>
-                    <MoneyCell value={paid} onChange={setPaid} placeholder={totals.sale > 0 ? `сколько оплатил из ${totals.sale.toLocaleString("ru-RU")}` : "сколько оплатил"} height={38} />
-                  </div>
-                )}
-                <div style={css("margin-top:10px")}>
-                  <div style={mix("height:6px;border-radius:4px;overflow:hidden", { background: totals.sale > 0 ? "var(--danger-tint)" : K.soft })}>
-                    <div style={mix("height:100%;border-radius:4px;transition:width .3s ease", { width: `${paidShare}%`, background: K.green })} />
-                  </div>
-                  <div style={mix("display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;white-space:nowrap", { color: K.mut })}>
-                    <span>
-                      оплачено <b style={mix(NUM, { color: K.green })}>{som(totals.paid)}</b>
-                    </span>
-                    <span>
-                      долг <b style={mix(NUM, { color: debt > 0 ? K.red : K.mut })}>{som(debt)}</b>
-                    </span>
+              <div className="no-rc-f">
+                <div className="no-rf">
+                  <span>Когда оформлен</span>
+                  <div className="no-dt">
+                    <DatePicker value={orderDate} onChange={setOrderDate} width="100%" height={40} words ariaLabel="Дата заказа" popClass="ovp" />
+                    <TimePicker value={time ?? clock} auto={time === null} onChange={setTime} onNow={() => setTime(null)} width="100%" height={40} ariaLabel="Время заказа" popClass="ovp" />
                   </div>
                 </div>
-              </DField>
-              <DField label="Комментарий">
-                <input
-                  value={comment}
-                  onChange={(e) => setComment(cased(e, capFirst))}
-                  placeholder="необязательно — например, «доставка до двери»"
-                  style={css(inputStyle + ";height:38px;border-radius:10px")}
-                />
-              </DField>
-            </div>
+                <div className="no-rf">
+                  <span>Оплата</span>
+                  {pay === "part" ? (
+                    <div className="no-pay-part">
+                      <MoneyCell
+                        inputRef={(el) => {
+                          paidRef.current = el;
+                        }}
+                        value={paid}
+                        onChange={setPaid}
+                        placeholder="сколько оплатил"
+                      />
+                      <button type="button" className="no-pay-q" disabled={!totals.sale} onClick={() => setPaid(String(Math.round(totals.sale / 2)))} title="Половина суммы заказа">
+                        50%
+                      </button>
+                      {totals.withCost && totals.cost > 0 && totals.cost < totals.sale && (
+                        <button type="button" className="no-pay-q" onClick={() => setPaid(String(Math.round(totals.cost)))} title="Оплатил выкуп — остальное при выдаче">
+                          = выкуп
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="no-pay-x"
+                        onClick={() => {
+                          setPay("none");
+                          setPaid("");
+                        }}
+                        title="Отменить частичную оплату"
+                        aria-label="Отменить частичную оплату"
+                      >
+                        <Svg paths={I_CLOSE} size={14} sw={2.4} />
+                      </button>
+                    </div>
+                  ) : (
+                    <SlideTabs<"none" | "full" | "part">
+                      value={pay}
+                      onChange={setPay}
+                      counts={false}
+                      options={[
+                        ["none", "Не оплачено"],
+                        ["full", "Полностью"],
+                        ["part", "Частично"],
+                      ]}
+                    />
+                  )}
+                  <div className="no-paybar">
+                    <span>
+                      <i style={{ width: `${paidShare}%` }} />
+                    </span>
+                    <small>
+                      оплачено <b>{som(totals.paid)}</b>
+                    </small>
+                    <small>
+                      долг <b className={debt > 0 ? "owe" : ""}>{som(debt)}</b>
+                    </small>
+                  </div>
+                </div>
+                <div className="no-rf">
+                  <span>Комментарий</span>
+                  <input className="no-in" value={comment} onChange={(e) => setComment(cased(e, capFirst))} placeholder="необязательно — например, «доставка до двери»" />
+                </div>
+              </div>
 
-            <div style={mix("position:relative;flex:none;display:flex;flex-direction:column;gap:10px;padding:14px 20px 18px;border-top:1px solid", { borderColor: K.line })}>
               {error && (
-                <div role="alert" style={mix("padding:9px 12px;border-radius:10px;font-size:12.5px;line-height:1.4", { background: "var(--danger-tint)", border: "1px solid var(--danger-border)", color: "var(--danger)" })}>
+                <div role="alert" className="no-err">
                   {error}
                 </div>
               )}
-              <HButton
-                disabled={busy}
-                onClick={save}
-                title="Сохранить заказ (Ctrl+Enter)"
-                s="height:54px;width:100%;border:none;border-radius:14px;background:linear-gradient(135deg,#5B7CFA 0%,#7C5CF6 100%);color:#fff;font-size:15.5px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;box-shadow:0 12px 28px rgba(91,124,250,.45),inset 0 1px 0 rgba(255,255,255,.25);transition:transform .12s,box-shadow .12s,filter .12s"
-                hover="filter:brightness(1.08);box-shadow:0 14px 34px rgba(91,124,250,.55),inset 0 1px 0 rgba(255,255,255,.25)"
-              >
+              <button type="button" className="no-save" disabled={busy} onClick={save} title="Сохранить заказ (Ctrl+Enter)">
                 {busy ? (
                   "Сохраняю…"
                 ) : (
                   <>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                       <path d="M20 6 9 17l-5-5" />
                     </svg>
                     Сохранить заказ
-                    {isDesktop && <span style={css("font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.18)")}>Ctrl+Enter</span>}
+                    {isDesktop && <kbd>Ctrl+Enter</kbd>}
                   </>
                 )}
-              </HButton>
+              </button>
             </div>
           </aside>
         </div>
@@ -828,122 +938,66 @@ function payState(s: Saved) {
 
 const dateRu = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}`;
 
-/**
- * Карточка «Заказ сохранён» над формой: кому, сколько, оплата, что в заказе —
- * и дальше: детали, ещё заказ этому клиенту или карточка клиента.
- */
-function SavedBanner({
-  saved,
-  isDesktop,
-  onDetails,
-  onAgain,
-  onOpen,
-  onClose,
-}: {
-  saved: Saved;
-  isDesktop: boolean;
-  onDetails: () => void;
-  onAgain: () => void;
-  onOpen: () => void;
-  onClose: () => void;
-}) {
+/** Плашка «Заказ сохранён»: кому, сколько, оплата, что в заказе — и дальше: детали, ещё заказ, клиент. */
+function SavedBanner({ saved, onDetails, onAgain, onOpen, onClose }: { saved: Saved; onDetails: () => void; onAgain: () => void; onOpen: () => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [saved]);
   const pay = payState(saved);
+  const debt = Math.max(0, saved.sum - saved.paid);
   const names = saved.items.map((i) => i.name);
   const preview = names.slice(0, 3).join(" · ") + (names.length > 3 ? ` и ещё ${names.length - 3}` : "");
-  const chip = "display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap";
-
   return (
-    <div
-      ref={ref}
-      role="status"
-      style={mix(
-        "position:relative;overflow:hidden;display:flex;align-items:center;flex-wrap:wrap;gap:12px 16px;padding:16px 18px;border-radius:16px;animation:slideUp .25s ease",
-        {
-          border: "1px solid color-mix(in srgb, var(--green-dot) 40%, var(--border))",
-          background: "radial-gradient(circle at 0 50%, color-mix(in srgb, var(--green-dot) 16%, transparent), transparent 40%), var(--surface)",
-          boxShadow: "0 10px 30px color-mix(in srgb, var(--green-dot) 12%, transparent)",
-        }
-      )}
-    >
-      {/* Галочка с пульсирующим кольцом */}
-      <span className="saved-check" style={css("position:relative;width:48px;height:48px;border-radius:50%;flex:none;display:grid;place-items:center;background:linear-gradient(135deg,var(--green-dot),color-mix(in srgb,var(--green-dot) 70%,var(--accent)));color:#fff")}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M20 6 9 17l-5-5" style={css("stroke-dasharray:24;stroke-dashoffset:24;animation:checkDraw .4s .15s ease forwards")} />
+    <div ref={ref} role="status" className="ov-card no-saved">
+      <span className="no-saved-ic">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M20 6 9 17l-5-5" style={{ strokeDasharray: 24, strokeDashoffset: 24, animation: "checkDraw .4s .15s ease forwards" }} />
         </svg>
       </span>
-
-      <div style={css("flex:1;min-width:220px")}>
-        <div style={css("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
-          <span style={css("font-size:16px;font-weight:700;color:var(--text)")}>Заказ сохранён</span>
+      <div className="no-saved-t">
+        <b>
+          Заказ сохранён
           {saved.isNew && (
-            <span style={css(chip + ";height:22px;padding:0 8px;font-size:11px;background:var(--accent-tint);color:var(--accent-strong)")}>
+            <i>
               <Svg paths={I_USER} size={11} sw={2.4} />
               новый клиент
-            </span>
+            </i>
           )}
-        </div>
-        <div style={css("font-size:13px;color:var(--text-2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-          <b style={css("font-weight:600;color:var(--text)")}>{saved.name}</b>
-          {saved.phone && <span style={css(MONO + ";font-size:12px;color:var(--text-4)")}> · {saved.phone}</span>}
-        </div>
-        <div style={css("display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px")}>
-          <span style={css(chip + ";background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2)")}>
-            <Svg paths={I_BOX} size={12} sw={2} />
+        </b>
+        <small>
+          <span>{saved.name}</span>
+          {saved.phone && <span className="ph"> · {saved.phone}</span>}
+        </small>
+        <span className="no-saved-chips">
+          <em>
             {saved.items.length} {plural(saved.items.length, "товар", "товара", "товаров")}
-          </span>
-          <span style={css(chip + ";background:var(--surface-2);border:1px solid var(--border-2);color:var(--text);" + NUM)}>{som(saved.sum)}</span>
-          <span style={mix(chip, { background: pay.bg, color: pay.fg })}>
-            <span style={mix("width:6px;height:6px;border-radius:50%", { background: pay.dot })} />
-            {pay.label}
-          </span>
-          <span style={css(chip + ";background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-3);font-weight:500")}>
+          </em>
+          <em className="b">{som(saved.sum)}</em>
+          <em className={debt > 0.001 ? "owe" : ""}>{pay.label}</em>
+          <em>
             {saved.date === todayIso() ? "сегодня" : dateRu(saved.date)} · {saved.time}
-          </span>
-        </div>
-        <div style={css("font-size:11.5px;color:var(--text-4);margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{preview}</div>
+          </em>
+        </span>
+        {preview && <span className="no-saved-pv">{preview}</span>}
       </div>
-
-      <div style={mix("display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto", !isDesktop && "width:100%")}>
-        <HButton
-          onClick={onDetails}
-          s="height:36px;padding:0 14px;border:none;border-radius:10px;background:var(--accent);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;box-shadow:0 4px 12px color-mix(in srgb,var(--accent) 30%,transparent)"
-          hover="background:var(--accent-hover)"
-        >
+      <div className="no-saved-a">
+        <button type="button" className="no-btn dark" onClick={onDetails}>
           <Svg paths={I_RECEIPT} size={14} sw={2} />
           Детали заказа
-        </HButton>
-        <HButton
-          onClick={onAgain}
-          title="Новый заказ этому же клиенту"
-          s="height:36px;padding:0 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text-2);font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap"
-          hover="border-color:var(--accent);color:var(--accent-strong)"
-        >
+        </button>
+        <button type="button" className="no-btn" onClick={onAgain} title="Новый заказ этому же клиенту">
           <Svg paths={I_PLUS} size={13} sw={2.2} />
           Ещё этому клиенту
-        </HButton>
-        <HButton
-          onClick={onOpen}
-          s="height:36px;padding:0 10px;border:none;border-radius:10px;background:transparent;color:var(--text-3);font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap"
-          hover="color:var(--accent-strong);background:var(--accent-tint2)"
-        >
+        </button>
+        <button type="button" className="no-btn ghost" onClick={onOpen}>
           Клиент
           <Svg paths={I_ARROW_RIGHT} size={13} sw={2.2} />
-        </HButton>
+        </button>
       </div>
-
-      <HButton
-        onClick={onClose}
-        aria-label="Скрыть"
-        title="Скрыть"
-        s="position:absolute;top:8px;right:8px;width:26px;height:26px;display:grid;place-items:center;padding:0;border:none;border-radius:7px;background:transparent;color:var(--text-5);cursor:pointer"
-        hover="background:var(--hover);color:var(--text)"
-      >
-        <Svg paths={I_CLOSE} size={13} sw={2} />
-      </HButton>
+      <button type="button" className="no-saved-x" onClick={onClose} aria-label="Скрыть" title="Скрыть">
+        <Svg paths={I_CLOSE} size={13} sw={2.2} />
+      </button>
     </div>
   );
 }
@@ -1114,152 +1168,193 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-/** Аватар-буква; цвет — от имени, чтобы у клиента он всегда был один и тот же. */
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
-function Avatar({ name, size }: { name: string; size: number }) {
-  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+const initials = (name: string) =>
+  name
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}]/gu, ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
+
+/** Кружок с инициалами (тёмный — для выбранного клиента). */
+/** Когда клиент последний раз заказывал — коротко. */
+function agoShort(d: string | null): string {
+  if (!d) return "без заказов";
+  const days = Math.round((new Date(todayIso()).getTime() - new Date(d.slice(0, 10)).getTime()) / 86400000);
+  if (days <= 0) return "сегодня";
+  if (days === 1) return "вчера";
+  if (days < 7) return `${days} дн. назад`;
+  if (days < 31) return `${Math.floor(days / 7)} нед. назад`;
+  return `${Math.floor(days / 30)} мес. назад`;
+}
+
+function Avatar({ name, size, dark }: { name: string; size: number; dark?: boolean }) {
   return (
-    <span
-      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:700", {
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.42),
-        background: AVATAR_BG[n % AVATAR_BG.length],
-      })}
-    >
-      {name.trim().slice(0, 1).toUpperCase()}
+    <span className={"no-av" + (dark ? " dark" : "")} style={{ width: size, height: size, fontSize: Math.round(size * 0.36) }}>
+      {initials(name)}
     </span>
   );
 }
 
-/** Сводка по выбранному клиенту: заказано / на складе / долг. */
-function Fact({ label, value, dot, danger }: { label: string; value: string; dot: string; danger?: boolean }) {
+/** Пустой список товаров: подсказка по центру. */
+function EmptyItems() {
   return (
-    <span
-      style={mix("display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:999px;font-size:12px;white-space:nowrap", {
-        background: danger ? "var(--danger-tint)" : "var(--surface-2)",
-        border: `1px solid ${danger ? "var(--danger-border)" : "var(--border-2)"}`,
-        color: danger ? "var(--danger)" : "var(--text-3)",
-      })}
-    >
-      <span style={mix("width:6px;height:6px;border-radius:50%", { background: dot })} />
-      {label}
-      <b style={mix(NUM, { color: danger ? "var(--danger)" : "var(--text)" })}>{value}</b>
-    </span>
-  );
-}
-
-/**
- * Пустое место под товарами заказа: бледные строки как у товара (номер, название, код,
- * сумма, кнопки) и подсказка по центру.
- */
-function OrderFill({ empty, compact }: { empty?: boolean; compact: boolean }) {
-  return (
-    <div className={"ghost-fill po-fill" + (empty ? " empty" : "")}>
-      <div className="ghost-rows" aria-hidden>
-        {Array.from({ length: 9 }, (_, i) => (
-          <div key={i} className="po-ghost" style={css(`gap:${compact ? 10 : 14}px;padding:11px ${compact ? 12 : 16}px`)}>
-            <span className="sk" style={css("width:30px;height:30px;border-radius:9px;flex:none")} />
-            <span style={css("flex:1;min-width:0;display:flex;flex-direction:column;gap:8px")}>
-              <span className="sk" style={mix("height:10px", { width: `${[34, 46, 28, 40, 52, 31][i % 6]}%` })} />
-              <span style={css("display:flex;align-items:center;gap:6px")}>
-                <span className="sk" style={mix("height:16px;border-radius:5px", { width: `${[112, 96, 124, 88][i % 4]}px` })} />
-                <span className="sk" style={css("width:30px;height:7px")} />
-                <span className="sk" style={css("width:64px;height:7px")} />
-              </span>
-            </span>
-            <span style={css("flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:8px")}>
-              <span className="sk" style={mix("height:11px", { width: `${[58, 46, 64, 50][i % 4]}px` })} />
-              <span className="sk" style={css("width:38px;height:8px")} />
-            </span>
-            {!compact && (
-              <span style={css("flex:none;display:flex;gap:4px")}>
-                <span className="sk sk-ring" style={css("width:32px;height:32px;border-radius:9px")} />
-                <span className="sk sk-ring" style={css("width:32px;height:32px;border-radius:9px")} />
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="ghost-msg">
-        <span style={css("width:38px;height:38px;border-radius:12px;flex:none;display:grid;place-items:center;background:var(--accent-tint);color:var(--accent)")}>
-          <Svg paths={empty ? I_BOX : I_PLUS} size={17} sw={1.9} />
-        </span>
-        <span style={css("min-width:0")}>
-          <span style={css("display:block;font-size:13.5px;font-weight:600;color:var(--text)")}>{empty ? "Пока пусто — добавьте первый товар" : "Добавьте ещё товар"}</span>
-          <span style={css("display:block;margin-top:2px;font-size:12px;color:var(--text-4)")}>
-            {empty ? "строка выше" : "впишите в строку выше"} → <Kbd>Enter</Kbd> · можно вставить список из Excel
-          </span>
-        </span>
-      </div>
+    <div className="no-empty">
+      <span className="no-empty-ic">
+        <Svg paths={I_BOX} size={22} sw={1.8} />
+      </span>
+      <b>Пока пусто — добавьте первый товар</b>
+      <small>
+        Впишите его в строку выше и нажмите <Kbd>Enter</Kbd> · можно вставить сразу список из Excel
+      </small>
     </div>
   );
 }
 
-function Kbd({ children }: { children: ReactNode }) {
+/** Подсказки по клавишам — сменяются по кругу в шапке «Добавить товар». */
+const TIPS: ReactNode[] = [
+  <>
+    <Kbd>Enter</Kbd> — добавить товар в заказ
+  </>,
+  <>
+    <Kbd>Ctrl</Kbd>+<Kbd>V</Kbd> — вставить строки из Excel
+  </>,
+  <>
+    <Kbd>↑</Kbd>
+    <Kbd>↓</Kbd> — количество в поле «Шт»
+  </>,
+  <>
+    <Kbd>Tab</Kbd> — к следующему полю
+  </>,
+];
+
+function TipTicker() {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => setI((n) => (n + 1) % TIPS.length), 3800);
+    return () => window.clearInterval(t);
+  }, []);
   return (
-    <span style={css(MONO + ";font-size:10.5px;padding:1px 6px;border-radius:5px;border:1px solid var(--border-strong);border-bottom-width:2px;background:var(--surface);color:var(--text-2)")}>
-      {children}
+    <span className="no-live tip">
+      <span className="no-tip-t" key={i}>
+        {TIPS[i]}
+      </span>
+      <span className="no-tip-dots" aria-hidden="true">
+        {TIPS.map((_, k) => (
+          <i key={k} className={k === i ? "on" : undefined} />
+        ))}
+      </span>
     </span>
   );
 }
 
+/** «Печать» оплаты на чеке: при смене статуса старая печать исчезает, новая «ставится» с нажимом и чернильным следом. */
+function PayStamp({ st, label, sub }: { st: "full" | "part" | "none"; label: string; sub: string }) {
+  const seq = useRef(0);
+  const [list, setList] = useState([{ id: 0, st, label, sub }]);
+  useEffect(() => {
+    setList((l) => {
+      const last = l[l.length - 1];
+      if (last.st === st) return last.label === label && last.sub === sub ? l : [...l.slice(0, -1), { ...last, label, sub }];
+      seq.current += 1;
+      return [last, { id: seq.current, st, label, sub }];
+    });
+  }, [st, label, sub]);
+  useEffect(() => {
+    if (list.length < 2) return;
+    const t = window.setTimeout(() => setList((l) => l.slice(-1)), 420);
+    return () => window.clearTimeout(t);
+  }, [list]);
+  return (
+    <span className="no-stampbox" title="Оплата заказа">
+      {list.map((x, i) => (
+        <span key={x.id} className={"no-stamp " + x.st + (i < list.length - 1 ? " out" : " in")}>
+          <b>{x.label}</b>
+          <small>{x.sub}</small>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function Kbd({ children }: { children: ReactNode }) {
+  return <kbd className="no-kbd">{children}</kbd>;
+}
+
 /** Товар в списке: номер, название, код · шт · выкуп, сумма и прибыль; правка и удаление. */
-function ItemRow({ row, index, compact, fresh, onEdit, onRemove }: { row: Row; index: number; compact: boolean; fresh: boolean; onEdit: () => void; onRemove: () => void }) {
+function ItemRow({ row, index, fresh, onEdit, onRemove }: { row: Row; index: number; fresh: boolean; onEdit: () => void; onRemove: () => void }) {
   const price = money(row.price);
   const real = money(row.real);
   const profit = price !== null && real !== null ? price - real : null;
   const bad = rowError(row);
+  const [ask, setAsk] = useState(false);
+  const [out, setOut] = useState(false);
+  const remove = () => {
+    if (out) return;
+    setOut(true);
+    window.setTimeout(onRemove, 300);
+  };
+  useEffect(() => {
+    if (!ask) return;
+    const t = window.setTimeout(() => setAsk(false), 4000);
+    return () => window.clearTimeout(t);
+  }, [ask]);
   return (
-    <div className={"po-item" + (fresh ? " po-fresh" : "")} onDoubleClick={onEdit} style={css(`display:flex;align-items:center;gap:${compact ? 10 : 14}px;padding:11px ${compact ? 12 : 16}px;border-top:1px solid var(--border-2)`)}>
-      <span style={css("width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--accent-tint);color:var(--accent-strong);" + NUM)}>
-        {index + 1}
+    <div className={"no-it" + (fresh ? " fresh" : "") + (out ? " out" : "")} onDoubleClick={onEdit}>
+      <span className="no-it-name">
+        <i>{index + 1}</i>
+        <span>
+          <b>{row.name || "без названия"}</b>
+          {bad && <em className="err">{bad.text}</em>}
+        </span>
       </span>
-      <div style={css("flex:1;min-width:0")}>
-        <div style={css("font-size:14px;font-weight:600;color:var(--text);" + (compact ? "line-height:1.3" : "white-space:nowrap;overflow:hidden;text-overflow:ellipsis"))}>{row.name || "без названия"}</div>
-        <div style={css("display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden")}>
+      <span className="no-it-tags">
+        <span className={"no-it-code" + (row.code ? "" : " none")} title={row.code ? "Код / трек" : undefined}>
           {row.code ? (
-            <span style={css(MONO + ";font-size:11.5px;padding:0 6px;border-radius:5px;background:var(--surface-2);border:1px solid var(--border-2);color:var(--text-2)")}>{row.code}</span>
+            <>
+              <i>
+                <Svg paths={[["path", { d: "M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M8 7.5v9M12 7.5v9M16 7.5v9" }]]} size={12} sw={2} />
+              </i>
+              {row.code}
+            </>
           ) : (
-            <span>без кода</span>
+            <>
+              <i>
+                <Svg paths={[["path", { d: "M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M8.5 15.5l7-7" }]]} size={12} sw={2} />
+              </i>
+              без кода
+            </>
           )}
-          <span>·</span>
-          <span style={css(NUM)}>{row.qty} шт</span>
-          <span>·</span>
-          <span style={css(NUM)}>выкуп {real === null ? "—" : som(real)}</span>
-        </div>
-        {bad && <div style={css("font-size:11.5px;color:var(--danger);margin-top:2px")}>⚠ {bad.text}</div>}
-      </div>
-      <div style={css("text-align:right;flex:none")}>
-        <div style={css("font-size:15px;font-weight:700;color:var(--text);" + NUM)}>{price === null ? "—" : som(price)}</div>
-        <div style={mix("font-size:12px;font-weight:600;" + NUM, { color: profit === null ? "var(--text-5)" : profit < 0 ? "var(--danger)" : "var(--green)" })}>
-          {profit === null ? "прибыль —" : `${profit > 0 ? "+" : ""}${som(profit)}`}
-        </div>
-      </div>
-      <div className="po-actions" style={css("display:flex;gap:4px;flex:none" + (compact ? ";flex-direction:column" : ""))}>
-        <HButton
-          onClick={onEdit}
-          title="Изменить"
-          s="width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-3);cursor:pointer"
-          hover="border-color:var(--accent);color:var(--accent);background:var(--accent-tint2)"
-        >
+        </span>
+        <span className="no-it-qty" title="Количество">
+          {row.qty}
+          <small>шт</small>
+        </span>
+      </span>
+      <span className="no-it-flow" title="выкуп → цена клиенту">
+        <small>{real === null ? "—" : som(real)}</small>
+        <Svg paths={I_ARROW_RIGHT} size={12} sw={2.2} />
+        <b>{price === null ? "—" : som(price)}</b>
+      </span>
+      <span className={"no-it-pf" + (profit === null ? " none" : profit < 0 ? " neg" : "")} title="прибыль · наценка">
+        {profit === null ? "—" : `${profit > 0 ? "+" : ""}${som(profit)}`}
+        {profit !== null && real !== null && real > 0 && <small>{Math.round((profit / real) * 100)}%</small>}
+      </span>
+      <span className="no-it-act" onDoubleClick={(e) => e.stopPropagation()}>
+        <button type="button" onClick={onEdit} title="Изменить" aria-label="Изменить">
           <Svg paths={I_EDIT} size={14} sw={2} />
-        </HButton>
-        <HButton
-          onClick={onRemove}
-          title="Убрать из заказа"
-          s="width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-3);cursor:pointer"
-          hover="border-color:var(--danger);color:var(--danger);background:var(--danger-tint)"
-        >
-          <Svg paths={I_TRASH} size={14} sw={2} />
-        </HButton>
-      </div>
+        </button>
+        {ask ? (
+          <button type="button" className="del ok" onClick={remove} onBlur={() => setAsk(false)} autoFocus title="Нажмите ещё раз — удалить" aria-label="Подтвердить удаление">
+            <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={14} sw={2.8} />
+          </button>
+        ) : (
+          <button type="button" className="del" onClick={() => setAsk(true)} title="Убрать из заказа" aria-label="Убрать из заказа">
+            <Svg paths={I_TRASH} size={14} sw={2} />
+          </button>
+        )}
+      </span>
     </div>
   );
 }
@@ -1268,7 +1363,6 @@ function ItemRow({ row, index, compact, fresh, onEdit, onRemove }: { row: Row; i
 function EditRow({
   row,
   index,
-  isDesktop,
   error,
   onChange,
   onSave,
@@ -1276,7 +1370,6 @@ function EditRow({
 }: {
   row: Row;
   index: number;
-  isDesktop: boolean;
   error: string;
   onChange: (patch: Partial<Row>) => void;
   onSave: () => void;
@@ -1291,112 +1384,37 @@ function EditRow({
       onCancel();
     }
   };
-  const field = inputStyle + ";height:38px;border-radius:9px";
   return (
-    <div style={css("padding:12px 16px;border-top:1px solid var(--border-2);background:var(--accent-tint2)")}>
-      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "30px minmax(0,2fr) minmax(0,1.1fr) 58px 108px 108px auto" : "repeat(4,minmax(0,1fr))", gap: 8, alignItems: "center" }}>
-        {isDesktop && (
-          <span style={css("width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--accent);color:#fff;" + NUM)}>{index + 1}</span>
-        )}
-        <input autoFocus value={row.name} onChange={(e) => onChange({ name: cased(e, capFirst) })} onKeyDown={keys} placeholder="Название" style={mix(field, !isDesktop && "grid-column:1 / -1")} />
-        <input value={row.code} onChange={(e) => onChange({ code: cased(e, upper) })} onKeyDown={keys} placeholder="Код" style={mix(field + ";" + MONO, !isDesktop && "grid-column:1 / 4")} />
-        <input value={row.qty} onChange={(e) => onChange({ qty: e.target.value })} onKeyDown={keys} inputMode="numeric" aria-label="Количество" style={mix(field + ";text-align:center;padding:0 6px;" + NUM, !isDesktop && "grid-column:4 / 5")} />
-        <MoneyCell value={row.price} onChange={(v) => onChange({ price: v })} onKeyDown={keys} placeholder="клиенту" height={38} style={isDesktop ? undefined : { gridColumn: "1 / 3" }} />
-        <MoneyCell value={row.real} onChange={(v) => onChange({ real: v })} onKeyDown={keys} placeholder="выкуп" height={38} style={isDesktop ? undefined : { gridColumn: "3 / 5" }} />
-        <div style={mix("display:flex;gap:6px", !isDesktop && "grid-column:1 / -1")}>
-          <HButton
-            onClick={onSave}
-            title="Сохранить строку (Enter)"
-            s={mix("height:38px;border:none;border-radius:9px;background:var(--accent);color:#fff;cursor:pointer;display:grid;place-items:center", isDesktop ? "width:38px;padding:0" : "flex:1")}
-            hover="background:var(--accent-hover)"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+    <div className="no-ed">
+      <div className="no-ed-g">
+        <span className="no-it-n on">{index + 1}</span>
+        <input autoFocus className="no-in n" value={row.name} onChange={(e) => onChange({ name: cased(e, capFirst) })} onKeyDown={keys} placeholder="Название" />
+        <input className="no-in mono c" value={row.code} onChange={(e) => onChange({ code: cased(e, upper) })} onKeyDown={keys} placeholder="Код" />
+        <input className="no-in ctr q" value={row.qty} onChange={(e) => onChange({ qty: e.target.value })} onKeyDown={keys} inputMode="numeric" aria-label="Количество" />
+        <MoneyCell value={row.price} onChange={(v) => onChange({ price: v })} onKeyDown={keys} placeholder="клиенту" />
+        <MoneyCell value={row.real} onChange={(v) => onChange({ real: v })} onKeyDown={keys} placeholder="выкуп" />
+        <span className="no-ed-a">
+          <button type="button" className="ok" onClick={onSave} title="Сохранить строку (Enter)" aria-label="Сохранить строку">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M20 6 9 17l-5-5" />
             </svg>
-          </HButton>
-          <HButton
-            onClick={onCancel}
-            title="Отменить правку (Esc)"
-            s={mix("height:38px;border:1px solid var(--border);border-radius:9px;background:var(--surface);color:var(--text-3);cursor:pointer;display:grid;place-items:center", isDesktop ? "width:38px;padding:0" : "flex:1")}
-            hover="border-color:var(--danger);color:var(--danger)"
-          >
-            <Svg paths={I_CLOSE} size={15} sw={2.2} />
-          </HButton>
-        </div>
-      </div>
-      {error && <div style={css("font-size:12px;color:var(--danger);margin-top:6px")}>⚠ {error}</div>}
-    </div>
-  );
-}
-
-/** Поле кассы: подпись сверху. */
-function DField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <div style={mix("font-size:11.5px;font-weight:600;margin-bottom:7px", { color: K.mut })}>{label}</div>
-      {children}
-    </div>
-  );
-}
-
-/** Плитка кассы: подпись, число, пояснение; значок — наценка в процентах. */
-function DarkStat({ label, value, sub, color, badge }: { label: string; value: string; sub: string; color?: string; badge?: string }) {
-  return (
-    <div style={mix("min-width:0;padding:11px 12px;border-radius:12px;border:1px solid", { background: K.soft, borderColor: K.line })}>
-      <div style={css("display:flex;align-items:center;gap:6px")}>
-        <span style={mix("font-size:11.5px;font-weight:600", { color: K.mut })}>{label}</span>
-        {badge && <span style={mix("margin-left:auto;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;" + NUM, { background: "var(--green-tint)", color: K.green })}>{badge}</span>}
-      </div>
-      <div style={mix("font-size:18px;font-weight:700;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" + NUM, { color: value === "—" ? K.dim : color ?? K.text })}>{value}</div>
-      <div style={mix("font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: K.dim })}>{sub}</div>
-    </div>
-  );
-}
-
-/** Переключатель кассы: выбранный вариант подсвечен своим цветом. */
-function DarkSeg<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: { key: T; label: string; color: string }[] }) {
-  return (
-    <div
-      style={mix("display:grid;gap:4px;padding:4px;border-radius:12px;border:1px solid", {
-        gridTemplateColumns: `repeat(${options.length},minmax(0,1fr))`,
-        background: K.soft,
-        borderColor: K.line,
-      })}
-    >
-      {options.map((o) => {
-        const on = o.key === value;
-        return (
-          <button
-            key={o.key}
-            type="button"
-            aria-pressed={on}
-            onClick={() => onChange(o.key)}
-            style={mix(
-              "height:34px;padding:0 6px;border-radius:9px;border:1px solid transparent;font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s,border-color .15s",
-              {
-                background: on ? `color-mix(in srgb, ${o.color} 10%, var(--surface))` : "transparent",
-                borderColor: on ? `color-mix(in srgb, ${o.color} 45%, transparent)` : "transparent",
-                color: on ? o.color : K.mut,
-                fontWeight: on ? 700 : 500,
-              }
-            )}
-          >
-            <span style={mix("width:6px;height:6px;border-radius:50%;flex:none", { background: on ? o.color : K.dim })} />
-            {o.label}
           </button>
-        );
-      })}
+          <button type="button" onClick={onCancel} title="Отменить правку (Esc)" aria-label="Отменить правку">
+            <Svg paths={I_CLOSE} size={15} sw={2.2} />
+          </button>
+        </span>
+      </div>
+      {error && <em className="err">{error}</em>}
     </div>
   );
 }
 
+/** Поле суммы со знаком «с» справа. */
 function MoneyCell({
   value,
   onChange,
   placeholder,
   onKeyDown,
-  height = 36,
-  style,
   invalid,
   inputRef,
 }: {
@@ -1404,27 +1422,13 @@ function MoneyCell({
   onChange: (v: string) => void;
   placeholder?: string;
   onKeyDown?: (e: React.KeyboardEvent) => void;
-  height?: number;
-  style?: React.CSSProperties;
   invalid?: boolean;
   inputRef?: (el: HTMLInputElement | null) => void;
 }) {
   return (
-    <span style={mix("position:relative;display:block;min-width:0", style)}>
-      <input
-        ref={inputRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onKeyDown}
-        inputMode="decimal"
-        placeholder={placeholder}
-        style={mix(
-          "padding:0 26px 0 11px;border:1px solid var(--border-strong);border-radius:10px;font-size:13.5px;outline:none;background:var(--surface);width:100%;" + NUM,
-          { height },
-          invalid && "border-color:var(--danger)!important;box-shadow:0 0 0 3px var(--danger-tint)"
-        )}
-      />
-      <span style={mix("position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11.5px;pointer-events:none", { color: "var(--text-4)" })}>с</span>
+    <span className="no-money">
+      <input ref={inputRef} className={"no-in" + (invalid ? " bad" : "")} value={value} onChange={(e) => onChange(e.target.value)} onKeyDown={onKeyDown} inputMode="decimal" placeholder={placeholder} />
+      <i>с</i>
     </span>
   );
 }

@@ -7,12 +7,12 @@
  *   ④ Наценка      — Σ (Сумма − Реальная цена) по товарам   доход
  *   Прибыль партии = ③ + ④ − ① − ②  (в сомах, $ — по курсу)
  *
- * Раскладка: сверху лента партий «билетами» (прокрутка вбок, первая — «Новая партия»),
+ * Раскладка: заголовок с «Новой партией», лента партий «билетами» (прокрутка вбок),
  * ниже выбранная партия: шапка, расчёт прибыли формулой в одну строку, товары по клиентам.
  * Товары попадают в партию при приёме сканером (выбрать партию на «Приёме товара»)
  * или добавляются здесь из принятых без партии.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
@@ -31,23 +31,20 @@ import {
   type Item,
 } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
-import { Confirm, Empty, Tabs } from "../components/cargo";
+import { Confirm } from "../components/cargo";
 import DatePicker from "../components/DatePicker";
 import ItemModal from "../components/ItemModal";
+import SlideTabs from "../components/SlideTabs";
 import CountUp from "../design/CountUp";
-import { MONO, css, mix } from "../design/css";
 import { I_CHECK, I_MINUS, I_PLUS, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { HButton, ModalError, ModalCancel, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary } from "../design/ui";
+import { ModalCancel, ModalError, ModalShell } from "../design/ui";
 import { num, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 type BatchRow = Batch & { calc: BatchCalc };
-
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
-const CODE = MONO + ";letter-spacing:.02em";
-const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:18px";
 
 export default function Batches({ toast }: { isDesktop: boolean; toast: Toast }) {
   const nav = useNavigate();
@@ -81,27 +78,42 @@ export default function Batches({ toast }: { isDesktop: boolean; toast: Toast })
 
   return (
     <Page size="wide">
-      {error && <ModalError text={error} />}
-      <TicketStrip list={list} selected={selected} onPick={(bid) => nav(`/batches/${bid}`)} onCreate={create} />
-      {selected ? (
-        <BatchDetail
-          key={selected}
-          id={selected}
-          toast={toast}
-          onChanged={load}
-          onDeleted={() => {
-            load();
-            nav("/batches");
-          }}
-        />
-      ) : (
-        list &&
-        list.length === 0 && (
-          <div style={css(CARD)}>
-            <Empty icon="batches" title="Партий пока нет" text="Создайте партию и выберите её на «Приёме товара» — сканированные товары попадут в неё" />
+      <div className="ov bx">
+        <div className="wx-head">
+          <HomeHead title="Партии" />
+          <div className="wx-head-r">
+            <button type="button" className="od-new" onClick={create}>
+              <Svg paths={I_PLUS} size={15} sw={2.2} />
+              Новая партия
+            </button>
           </div>
-        )
-      )}
+        </div>
+        {error && <ModalError text={error} />}
+        <TicketStrip list={list} selected={selected} onPick={(bid) => nav(`/batches/${bid}`)} />
+        {selected ? (
+          <BatchDetail
+            key={selected}
+            id={selected}
+            toast={toast}
+            onChanged={load}
+            onDeleted={() => {
+              load();
+              nav("/batches");
+            }}
+          />
+        ) : (
+          list &&
+          list.length === 0 && (
+            <div className="ov-card paper bx-empty">
+              <span className="bx-empty-i">
+                <Icon name="batches" size={20} />
+              </span>
+              <b>Партий пока нет</b>
+              <small>Создайте партию и выберите её на «Приёме товара» — сканированные товары попадут в неё</small>
+            </div>
+          )
+        )}
+      </div>
     </Page>
   );
 }
@@ -114,48 +126,41 @@ const dayWords = (iso: string) => {
   return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 };
 
-function TicketStrip({ list, selected, onPick, onCreate }: { list: BatchRow[] | null; selected: number | null; onPick: (id: number) => void; onCreate: () => void }) {
+function TicketStrip({ list, selected, onPick }: { list: BatchRow[] | null; selected: number | null; onPick: (id: number) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   // Выбранный билет — всегда в поле зрения.
   useEffect(() => {
-    const el = ref.current?.querySelector<HTMLElement>(".bt-ticket.on");
+    const el = ref.current?.querySelector<HTMLElement>(".bx-tk.on");
     el?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [selected, list]);
   return (
-    <div ref={ref} className="bt-strip thin-scroll">
-      <HButton onClick={onCreate} className="bt-new" s="" hover="">
-        <span style={css("width:34px;height:34px;border-radius:11px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#6A8BFF,#3E63DD);box-shadow:0 8px 16px -8px rgba(62,99,221,.7)")}>
-          <Svg paths={I_PLUS} size={17} sw={2.4} />
-        </span>
-        <span style={css("font-size:13px;font-weight:500;color:var(--text)")}>Новая партия</span>
-        <span style={css("font-size:11.5px;color:var(--text-4);text-align:center;line-height:1.35")}>от сегодняшней даты</span>
-      </HButton>
+    <div ref={ref} className="bx-strip thin-scroll">
       {!list
-        ? [0, 1, 2].map((i) => <div key={i} className="bt-ticket" style={css("opacity:.5")} />)
-        : list.map((b) => {
+        ? [0, 1, 2, 3].map((i) => <div key={i} className="bx-tk ghost" />)
+        : list.map((b, i) => {
             const on = b.id === selected;
             const open = b.status === "open";
             const p = b.calc.profit_som;
             return (
-              <HButton key={b.id} onClick={() => onPick(b.id)} className={"bt-ticket" + (on ? " on" : "")} s="" hover="" aria-pressed={on}>
-                <span style={css("display:flex;align-items:center;gap:7px;min-width:0")}>
-                  <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: open ? "var(--green-dot)" : "var(--text-5)" })} />
-                  <span style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap")}>{open ? "принимает" : "закрыта"}</span>
-                  <span style={css("margin-left:auto;font-size:11.5px;color:var(--text-4);white-space:nowrap")}>{dayWords(b.created_at)}</span>
+              <button key={b.id} type="button" onClick={() => onPick(b.id)} className={"bx-tk" + (on ? " on" : "")} aria-pressed={on} style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}>
+                <span className="bx-tk-top">
+                  <i className={"od-dot " + (open ? "ok" : "")} />
+                  {open ? "принимает" : "закрыта"}
+                  <em>{dayWords(b.created_at)}</em>
                 </span>
-                <span style={css("display:block;margin-top:6px;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")} title={b.name}>
+                <b className="bx-tk-name" title={b.name}>
                   {b.name}
-                </span>
-                <span className="bt-cut" />
-                <span style={css("display:flex;align-items:baseline;justify-content:space-between;gap:8px")}>
-                  <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
+                </b>
+                <span className="bx-tk-cut" />
+                <span className="bx-tk-bot">
+                  <small>
                     {b.calc.items} {plural(b.calc.items, "товар", "товара", "товаров")}
-                  </span>
-                  <span style={mix(NUM + ";font-size:17px;font-weight:500;white-space:nowrap", { color: p < 0 ? "var(--danger)" : p > 0 ? "var(--green)" : "var(--text-4)" })}>
+                  </small>
+                  <strong className={p < 0 ? "neg" : p > 0 ? "" : "zero"}>
                     <CountUp text={`${p > 0 ? "+" : ""}${som(p)}`} />
-                  </span>
+                  </strong>
                 </span>
-              </HButton>
+              </button>
             );
           })}
     </div>
@@ -318,20 +323,14 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
   }
 
   if (error && !batch) return <ModalError text={error} />;
-  if (!batch || !draft || !live) {
-    return (
-      <div style={css(CARD + ";padding:18px")}>
-        <SkeletonRows rows={5} />
-      </div>
-    );
-  }
+  if (!batch || !draft || !live) return <DetailGhost />;
 
   /** Сумма в поле: сохраняется при уходе из поля или Enter; справа — переключатель $ / с. */
   const field = (k: NumField, label: string, cur?: CurField, placeholder = "0") => {
     const usd = cur ? batch[cur] === "usd" : false;
     return (
-      <div className="bt-field">
-        {usd && <span style={css("display:flex;align-items:center;padding-left:11px;color:var(--text-4);font-size:14px")}>$</span>}
+      <div className="bx-field">
+        {usd && <span className="bx-field-pre">$</span>}
         <input
           value={draft[k]}
           inputMode="decimal"
@@ -340,33 +339,17 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
           onChange={(e) => setDraft({ ...draft, [k]: e.target.value })}
           onBlur={() => save(k)}
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-          style={mix(NUM + ";flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:16px;font-weight:500;color:var(--text);box-shadow:none", {
-            padding: usd ? "0 8px 0 5px" : "0 8px 0 12px",
-          })}
         />
         {cur ? (
-          <span style={css("display:flex;gap:2px;padding:3px;background:var(--surface-2);border-left:1px solid var(--border-2)")}>
-            {(["usd", "som"] as const).map((c) => {
-              const on = batch[cur] === c;
-              return (
-                <button
-                  key={c}
-                  type="button"
-                  title={c === "usd" ? "в долларах" : "в сомах"}
-                  onClick={() => !on && patch({ [cur]: c } as BatchPatch)}
-                  style={mix("width:28px;border:none;border-radius:7px;font-size:12.5px;font-weight:500;cursor:pointer", {
-                    background: on ? "var(--surface)" : "transparent",
-                    color: on ? "var(--text)" : "var(--text-4)",
-                    boxShadow: on ? "0 1px 2px rgba(0,0,0,.1)" : "none",
-                  })}
-                >
-                  {c === "usd" ? "$" : "с"}
-                </button>
-              );
-            })}
+          <span className="bx-cur">
+            {(["usd", "som"] as const).map((c) => (
+              <button key={c} type="button" className={batch[cur] === c ? "on" : ""} title={c === "usd" ? "в долларах" : "в сомах"} onClick={() => batch[cur] !== c && patch({ [cur]: c } as BatchPatch)}>
+                {c === "usd" ? "$" : "с"}
+              </button>
+            ))}
           </span>
         ) : (
-          <span style={css("display:flex;align-items:center;padding-right:11px;color:var(--text-4);font-size:12.5px")}>с</span>
+          <span className="bx-field-post">с</span>
         )}
       </div>
     );
@@ -385,200 +368,196 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
   const allOn = items.length > 0 && items.every((i) => selected.has(i.id));
 
   return (
-    <div style={css("display:flex;flex-direction:column;gap:16px;min-width:0")}>
-      {/* Шапка накладной */}
-      <section className="bt-head">
-        <span className="bt-head-icon" style={css("width:46px;height:46px;border-radius:14px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#A78BFA,#6A8BFF);box-shadow:0 10px 22px -10px rgba(124,58,237,.7)")}>
+    <div className="bx-detail">
+      {/* Шапка партии */}
+      <section className="ov-card paper bx-head">
+        <span className="bx-head-i">
           <Icon name="batches" size={22} />
         </span>
-        <div style={css("flex:1 1 280px;min-width:0")}>
+        <div className="bx-head-t">
           <input
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             onBlur={() => save("name")}
             onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-            className="bt-name"
+            className="bx-name"
             title="Нажмите, чтобы переименовать"
             aria-label="Название партии"
           />
-          <div style={css(NUM + ";display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:3px;font-size:12.5px;color:var(--text-3)")}>
+          <span className="bx-meta">
             <span>создана {shortDateTime(batch.created_at)}</span>
             <span>
-              {items.length} {plural(items.length, "товар", "товара", "товаров")} · {live.customers} {plural(live.customers, "клиент", "клиента", "клиентов")}
+              <b>{items.length}</b> {plural(items.length, "товар", "товара", "товаров")} · <b>{live.customers}</b> {plural(live.customers, "клиент", "клиента", "клиентов")}
             </span>
             {items.length > 0 && (
-              <span style={css("display:inline-flex;gap:12px")}>
-                <span style={css("display:inline-flex;align-items:center;gap:5px")}>
-                  <span style={mix("width:6px;height:6px;border-radius:50%", { background: ST.in_stock.dot })} />
-                  на складе {live.inStock}
+              <>
+                <span>
+                  <i className="od-dot ok" />
+                  на складе <b>{live.inStock}</b>
                 </span>
-                <span style={css("display:inline-flex;align-items:center;gap:5px")}>
-                  <span style={mix("width:6px;height:6px;border-radius:50%", { background: ST.issued.dot })} />
-                  выдано {live.issued}
+                <span>
+                  <i className="od-dot ink" />
+                  выдано <b>{live.issued}</b>
                 </span>
-              </span>
+              </>
             )}
-          </div>
+          </span>
         </div>
-        <Tabs<"open" | "closed">
+        <SlideTabs<"open" | "closed">
           value={batch.status}
           onChange={(s) => s !== batch.status && setStatus(s)}
-          tabs={[
-            { key: "open", label: "Принимает товары", dot: "var(--green-dot)" },
-            { key: "closed", label: "Закрыта", dot: "var(--text-4)" },
+          options={[
+            ["open", "Принимает товары"],
+            ["closed", "Закрыта"],
           ]}
         />
         {user?.role === "admin" && items.length === 0 && (
-          <HButton onClick={() => setConfirmDelete(true)} s={btnGhost + ";height:34px;color:var(--danger);border-color:var(--danger-border)"} hover="background:var(--danger-tint)">
+          <button type="button" className="bx-del" onClick={() => setConfirmDelete(true)}>
             Удалить
-          </HButton>
+          </button>
         )}
       </section>
 
       {/* Формула прибыли */}
-      <section className="bt-formula-card">
-        <div style={css("display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px")}>
-          <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>Расчёт прибыли</span>
-          <span style={css("font-size:12px;color:var(--text-4)")}>доходы минус расходы — впишите суммы, итог считается сразу</span>
+      <section className="ov-card paper bx-calc">
+        <div className="bx-calc-h">
+          <b>Расчёт прибыли</b>
+          <small>доходы минус расходы — впишите суммы, итог считается сразу</small>
           {needRate && (
-            <span className="bt-rate" data-no-reveal style={css("margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-3)")}>
-              курс <span style={css("color:var(--text-4)")}>$1 =</span>
-              <span style={css("width:104px")}>{field("usd_rate", "Курс доллара")}</span>
+            <span className="bx-rate" data-no-reveal>
+              курс <em>$1 =</em>
+              <span className="bx-rate-f">{field("usd_rate", "Курс доллара")}</span>
             </span>
           )}
         </div>
-        <div className="bt-formula">
-          <Term sign="+" tone="green" title="Вес клиентам" hint="из «Уведомлений» + вручную" value={live.client} note={weightNote}>
-            <div ref={manualRef} className="bt-wfield-wrap">
-              <div className={"bt-field bt-wfield" + (live.auto > 0 ? " on" : "")} title="Сумма за вес из «Уведомлений» по товарам этой партии — считается сама">
-                <span className="bt-wfield-val">{calcSrv ? som(live.auto) : "…"}</span>
-                <span className="bt-wfield-side">
-                  <button
-                    type="button"
-                    onClick={() => setManualOpen((o) => !o)}
-                    className={"bt-manual" + (live.manual > 0 ? " set" : "") + (live.manual > 0 && live.auto > 0 ? " warn" : "") + (manualOpen ? " open" : "")}
-                    title={
-                      live.manual > 0
-                        ? `Вписано вручную: ${som(Math.round(live.manual))}${live.auto > 0 ? " — есть и вес из «Уведомлений», проверьте, не задвоено ли" : ""}`
-                        : "Добавить вес вручную — то, чего нет в «Уведомлениях»"
-                    }
-                  >
-                    {live.manual > 0 ? (
-                      <>
-                        <svg className="bt-manual-pen" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                          <path d="M12 20h9" />
-                          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                        </svg>
-                        <span className="bt-manual-text">{Math.round(live.manual).toLocaleString("ru-RU")}</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="bt-manual-plus" aria-hidden>
-                          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                            <path d="M6 1.5v9M1.5 6h9" />
-                          </svg>
-                        </span>
-                        <span className="bt-manual-text">вручную</span>
-                      </>
-                    )}
-                  </button>
-                </span>
+        <div className="bx-f2">
+          <Term icon={IC.weight} sign="+" title="Вес клиентам" hint="из «Уведомлений» + вручную" value={live.client} note={weightNote}>
+            <div ref={manualRef} className="bx-wrap">
+              <div className={"bx-wfield" + (live.auto > 0 ? " on" : "")} title="Сумма за вес из «Уведомлений» по товарам этой партии — считается сама">
+                <span className="bx-wval">{calcSrv ? som(live.auto) : "…"}</span>
+                <button
+                  type="button"
+                  onClick={() => setManualOpen((o) => !o)}
+                  className={"bx-manual" + (live.manual > 0 ? " set" : "") + (live.manual > 0 && live.auto > 0 ? " warn" : "") + (manualOpen ? " open" : "")}
+                  title={
+                    live.manual > 0
+                      ? `Вписано вручную: ${som(Math.round(live.manual))}${live.auto > 0 ? " — есть и вес из «Уведомлений», проверьте, не задвоено ли" : ""}`
+                      : "Добавить вес вручную — то, чего нет в «Уведомлениях»"
+                  }
+                >
+                  {live.manual > 0 ? (
+                    <>
+                      <Svg paths={[["path", { d: "M12 20h9" }], ["path", { d: "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" }]]} size={12} sw={2.2} />
+                      {Math.round(live.manual).toLocaleString("ru-RU")}
+                    </>
+                  ) : (
+                    <>
+                      <Svg paths={I_PLUS} size={11} sw={2.4} />
+                      вручную
+                    </>
+                  )}
+                </button>
               </div>
               {manualOpen && (
-                <div className="bt-pop" data-no-reveal>
-                  <div style={css("font-size:13px;font-weight:500;color:var(--text)")}>Вес клиентам вручную</div>
-                  <div style={css("margin:3px 0 10px;font-size:12px;line-height:1.45;color:var(--text-3)")}>
-                    Только то, чего нет в «Уведомлениях» — например, вес, взятый до них. Иначе задвоится.
-                  </div>
-                  {field("client_amount", "Вес клиентам вручную", "client_cur")}
-                  <div style={css("display:flex;justify-content:flex-end;gap:6px;margin-top:10px")}>
-                    {live.manual > 0 && (
-                      <button
-                        type="button"
-                        className="bt-pop-btn ghost"
-                        onClick={() => {
-                          setDraft({ ...draft, client_amount: "" });
-                          void patch({ client_amount: 0 });
-                          setManualOpen(false);
-                        }}
-                      >
-                        Убрать
-                      </button>
-                    )}
-                    <button type="button" className="bt-pop-btn" onClick={() => setManualOpen(false)}>
+                <div className="bx-pop" data-no-reveal>
+                  <b>Вес клиентам вручную</b>
+                  <small>Только то, чего нет в «Уведомлениях» — например, вес, взятый до них. Иначе задвоится.</small>
+                  <span className="bx-pop-r">
+                    {field("client_amount", "Вес клиентам вручную", "client_cur")}
+                    <button type="button" className="bx-btn" onClick={() => setManualOpen(false)}>
                       Готово
                     </button>
-                  </div>
+                  </span>
+                  {live.manual > 0 && (
+                    <button
+                      type="button"
+                      className="bx-pop-x"
+                      onClick={() => {
+                        setDraft({ ...draft, client_amount: "" });
+                        void patch({ client_amount: 0 });
+                        setManualOpen(false);
+                      }}
+                    >
+                      Убрать вписанное вручную
+                    </button>
+                  )}
                 </div>
               )}
             </div>
           </Term>
-          <Op>+</Op>
-          <Term sign={live.markup < 0 ? "−" : "+"} tone="green" title="Наценка на товары" hint="сумма − реальная цена" value={live.markup} note={live.withCost < items.length ? `с выкупом ${live.withCost} из ${items.length}` : `${items.length} ${plural(items.length, "товар", "товара", "товаров")}`}>
-            <div className="bt-calc">
-              <span style={css(NUM + ";color:var(--text)")}>{som(live.sale)}</span>
-              <span style={css("color:var(--text-4)")}>−</span>
-              <span style={css(NUM + ";color:var(--text)")}>{som(live.goodsCost)}</span>
+          <Term
+            icon={IC.tag}
+            op="+"
+            sign={live.markup < 0 ? "−" : "+"}
+            title="Наценка на товары"
+            hint="сумма − реальная цена"
+            value={live.markup}
+            note={live.withCost < items.length ? `выкуп указан у ${live.withCost} из ${items.length}` : `${items.length} ${plural(items.length, "товар", "товара", "товаров")}`}
+          >
+            <div className="bx-calcline">
+              <b>{som(live.sale)}</b>
+              <em>−</em>
+              <b>{som(live.goodsCost)}</b>
             </div>
           </Term>
-          <Op>−</Op>
-          <Term sign="−" tone="danger" title="Выкуп веса" hint="отдали за вес" value={live.buy} note={rateNote("buy_cur", live.buy)}>
+          <Term icon={IC.cash} op="−" sign="−" title="Выкуп веса" hint="отдали за вес" value={live.buy} note={rateNote("buy_cur", live.buy)}>
             {field("buy_amount", "Выкуп веса", "buy_cur")}
           </Term>
-          <Op>−</Op>
-          <Term sign="−" tone="danger" title="Доставка" hint="отдали водителю" value={live.delivery} note={rateNote("delivery_cur", live.delivery)}>
+          <Term icon={IC.truck} op="−" sign="−" title="Доставка" hint="отдали водителю" value={live.delivery} note={rateNote("delivery_cur", live.delivery)}>
             {field("delivery_usd", "Доставка", "delivery_cur")}
           </Term>
-          <Op>=</Op>
-          <div className={"bt-result" + (neg ? " neg" : "")}>
-            <span style={css("font-size:12.5px;opacity:.85")}>{neg ? "Убыток партии" : "Прибыль партии"}</span>
-            <span style={css(NUM + ";display:block;font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1.1;margin-top:6px;white-space:nowrap")}>
+          <div className={"bx-result bx-r2" + (neg ? " neg" : "")}>
+            <span className="bx-opb">
+              <Svg paths={[["path", { d: "M5 9h14" }], ["path", { d: "M5 15h14" }]]} size={11} sw={2.6} />
+            </span>
+            <small>{neg ? "Убыток партии" : "Прибыль партии"}</small>
+            <b>
               <CountUp text={`${live.profit > 0 ? "+" : ""}${som(Math.round(live.profit))}`} />
-            </span>
-            <span style={css(NUM + ";display:block;font-size:12px;opacity:.8;margin-top:6px")}>
-              {live.sale > 0 ? `${Math.round((live.profit / live.sale) * 100)}% от суммы товаров` : "доходы − расходы"}
-            </span>
+            </b>
+            <em>{live.sale > 0 ? `${Math.round((live.profit / live.sale) * 100)}% от суммы товаров` : "доходы − расходы"}</em>
+            <Mountain pts={[0, live.client, live.income, live.income - live.buy, live.profit]} />
+            <div className="bx-rbars">
+              <Bar label="Доходы" value={live.income} max={barMax} tone="p" />
+              <Bar label="Расходы" value={live.expenses} max={barMax} tone="m" />
+            </div>
           </div>
-        </div>
-
-        {/* Доходы и расходы полосами */}
-        <div className="bt-bars">
-          <Bar label="Доходы" value={live.income} max={barMax} grad="linear-gradient(90deg,#34D399,#16A34A)" color="var(--green)" />
-          <Bar label="Расходы" value={live.expenses} max={barMax} grad="linear-gradient(90deg,#FB7185,#DC2626)" color="var(--danger)" />
         </div>
       </section>
 
       {/* Товары партии */}
-      <section style={css(CARD + ";overflow:hidden")}>
-        <div style={css("display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:14px 18px;border-bottom:1px solid var(--border-2)")}>
+      <section className="ov-card paper bx-items">
+        <div className="bx-items-h">
           {items.length > 0 && <Check on={allOn} half={selected.size > 0} onToggle={(on) => toggle(items.map((i) => i.id), on)} title="Выбрать все" />}
-          <div style={css("min-width:0")}>
-            <div style={css("font-size:15px;font-weight:500;color:var(--text)")}>Товары партии</div>
-            <div style={css(NUM + ";font-size:12px;color:var(--text-4)")}>
+          <span className="bx-items-t">
+            <b>Товары партии</b>
+            <small>
               {items.length} {plural(items.length, "товар", "товара", "товаров")} · {live.customers} {plural(live.customers, "клиент", "клиента", "клиентов")} · на {som(live.sale)}
-            </div>
-          </div>
-          <span style={css("flex:1")} />
+            </small>
+          </span>
           {selected.size > 0 && (
-            <HButton onClick={removeSelected} s={btnGhost + ";height:34px;font-size:12.5px"} hover="border-color:var(--danger-border);color:var(--danger)">
+            <button type="button" className="bx-btn ghost danger" onClick={removeSelected}>
               Убрать из партии ({selected.size})
-            </HButton>
+            </button>
           )}
-          <HButton onClick={() => setAdding(true)} s={btnPrimary + ";height:34px;font-size:12.5px;display:inline-flex;align-items:center;gap:6px"} hover="background:var(--accent-hover)">
+          <button type="button" className="bx-btn" onClick={() => setAdding(true)}>
             <Svg paths={I_PLUS} size={14} sw={2.4} />
             Добавить принятые
-          </HButton>
+          </button>
         </div>
         {items.length === 0 ? (
-          <Empty
-            icon="receive"
-            title="В партии пока нет товаров"
-            text="Выберите эту партию на «Приёме товара» и сканируйте — товары попадут сюда. Или добавьте уже принятые кнопкой выше."
-          />
+          <div className="bx-none">
+            <span className="bx-empty-i">
+              <Icon name="receive" size={20} />
+            </span>
+            <b>В партии пока нет товаров</b>
+            <small>Выберите эту партию на «Приёме товара» и сканируйте — товары попадут сюда. Или добавьте уже принятые кнопкой выше.</small>
+          </div>
         ) : (
-          groups.map((g) => (
-            <ClientBlock key={g[0].customer_id} items={g} weight={calcSrv?.client_weights[g[0].customer_id]} selected={selected} onToggle={toggle} onOpen={setOpen} />
-          ))
+          <div className="bx-cards">
+            {groups.map((g) => (
+              <ClientBlock key={g[0].customer_id} items={g} weight={calcSrv?.client_weights[g[0].customer_id]} selected={selected} onToggle={toggle} onOpen={setOpen} />
+            ))}
+          </div>
         )}
       </section>
 
@@ -612,59 +591,123 @@ function BatchDetail({ id, toast, onChanged, onDeleted }: { id: number; toast: T
   );
 }
 
-const TERM = {
-  green: { badge: "linear-gradient(135deg,#34D399,#16A34A)", fg: "var(--green)" },
-  danger: { badge: "linear-gradient(135deg,#FB7185,#DC2626)", fg: "var(--danger)" },
-} as const;
-
-/** Слагаемое формулы: знак, название, поле (или расчёт) и сумма в сомах. */
-function Term({ sign, tone, title, hint, value, note, children }: { sign: "+" | "−"; tone: keyof typeof TERM; title: string; hint: string; value: number; note?: string; children: ReactNode }) {
-  const t = TERM[tone];
+function DetailGhost() {
   return (
-    <div className="bt-term">
-      <div style={css("display:flex;align-items:center;gap:9px;min-width:0")}>
-        <span style={mix("width:24px;height:24px;border-radius:8px;flex:none;display:grid;place-items:center;color:#fff;font-size:15px;font-weight:600;line-height:1", { background: t.badge })}>{sign}</span>
-        <span style={css("min-width:0")}>
-          <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{title}</span>
-          <span style={css("display:block;font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{hint}</span>
+    <div className="bx-detail" aria-hidden>
+      <section className="ov-card paper bx-head ghost">
+        <span className="sk" style={{ width: 48, height: 48, borderRadius: 15 }} />
+        <span style={{ flex: 1 }}>
+          <span className="sk" style={{ width: "34%", height: 16 }} />
+          <span className="sk" style={{ width: "52%", height: 10, marginTop: 10 }} />
         </span>
-      </div>
-      {children}
-      <div style={css("display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:auto;min-width:0")}>
-        <span style={css("font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{note}</span>
-        <span style={mix(NUM + ";font-size:15px;font-weight:500;white-space:nowrap", { color: value ? t.fg : "var(--text-4)" })}>
-          {value ? `${sign} ${som(Math.round(Math.abs(value)))}` : "—"}
+      </section>
+      <section className="ov-card paper bx-calc ghost">
+        <span className="sk" style={{ width: 160, height: 12 }} />
+        <span className="bx-ghost-row">
+          {[0, 1, 2, 3, 4].map((k) => (
+            <span key={k} className="sk" style={{ flex: 1, height: 120, borderRadius: 16 }} />
+          ))}
         </span>
-      </div>
+      </section>
     </div>
   );
 }
 
-function Op({ children }: { children: ReactNode }) {
+/** Слагаемое: знак и название, сумма справа; ниже поле (или расчёт) и пояснение. op — знак между карточками. */
+type PathDef = [string, Record<string, unknown>][];
+const IC: Record<"weight" | "tag" | "cash" | "truck", PathDef> = {
+  weight: [["path", { d: "M12 3v18" }], ["path", { d: "M5 7h14" }], ["path", { d: "m5 7-3 7a4 4 0 0 0 6 0Z" }], ["path", { d: "m19 7-3 7a4 4 0 0 0 6 0Z" }], ["path", { d: "M8 21h8" }]],
+  tag: [["path", { d: "M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4Z" }], ["circle", { cx: 7.5, cy: 7.5, r: 1.5 }]],
+  cash: [["rect", { x: 2, y: 6, width: 20, height: 12, rx: 2 }], ["circle", { cx: 12, cy: 12, r: 2.2 }], ["path", { d: "M6 12h.01M18 12h.01" }]],
+  truck: [["path", { d: "M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" }], ["path", { d: "M15 18H9" }], ["path", { d: "M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62L18.3 9.38a1 1 0 0 0-.78-.38H14" }], ["circle", { cx: 17, cy: 18, r: 2 }], ["circle", { cx: 7, cy: 18, r: 2 }]],
+};
+
+function Term({ icon, op, sign, title, hint, value, note, children }: { icon: PathDef; op?: string; sign: "+" | "−"; title: string; hint: string; value: number; note?: string; children: ReactNode }) {
+  const t = sign === "+" ? "p" : "m";
   return (
-    <span className="bt-op" aria-hidden>
+    <div className="bx-t2">
+      {op && (
+        <span className="bx-opb">
+          <Svg paths={op === "+" ? I_PLUS : I_MINUS} size={11} sw={2.6} />
+        </span>
+      )}
+      <div className="bx-t2-h">
+        <span className={"bx-sign " + t}>
+          <Svg paths={sign === "+" ? I_PLUS : I_MINUS} size={13} sw={2.6} />
+        </span>
+        <b title={hint}>{title}</b>
+        <em className={value ? t : ""}>{value ? `${sign} ${som(Math.round(Math.abs(value)))}` : "—"}</em>
+      </div>
       {children}
-    </span>
+      <span className="bx-t2-n">
+        <Svg paths={icon} size={13} sw={1.9} />
+        {note || hint}
+      </span>
+    </div>
   );
 }
 
-function Bar({ label, value, max, grad, color }: { label: string; value: number; max: number; grad: string; color: string }) {
+/** Плавная линия через точки (Catmull-Rom → кривые Безье). */
+const smooth = (p: [number, number][]) =>
+  p.reduce((acc, [x, y], i, a) => {
+    if (i === 0) return `M ${x} ${y}`;
+    const [x0, y0] = a[i - 2] ?? a[i - 1];
+    const [x1, y1] = a[i - 1];
+    const [x3, y3] = a[i + 1] ?? [x, y];
+    return `${acc} C ${x1 + (x - x0) / 6} ${y1 + (y - y0) / 6} ${x - (x3 - x1) / 6} ${y - (y3 - y1) / 6} ${x} ${y}`;
+  }, "");
+
+/**
+ * «Гора» прибыли: путь от нуля — вверх на доходы (вес, наценка), вниз на расходы (выкуп, доставка),
+ * в конце — прибыль. При открытии плавно вырастает, при вводе сумм — растёт или опускается на глазах.
+ */
+function Mountain({ pts }: { pts: number[] }) {
+  const W = 132;
+  const H = 70;
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setReady(true), 150);
+    return () => window.clearTimeout(t);
+  }, []);
+  const max = Math.max(1, ...pts.map((v) => Math.abs(v)));
+  const xy = pts.map((v, k): [number, number] => [5 + (k / (pts.length - 1)) * (W - 10), ready ? H - 5 - (Math.max(0, v) / max) * (H - 14) : H - 5]);
+  const line = smooth(xy);
+  const area = `${line} L ${W - 5} ${H} L 5 ${H} Z`;
+  const [ex, ey] = xy[xy.length - 1];
+  return (
+    <svg className="bx-mtn" width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-hidden>
+      <defs>
+        <linearGradient id="bxMtn" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="currentColor" stopOpacity=".38" />
+          <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path className="a" fill="url(#bxMtn)" style={{ d: `path("${area}")` } as CSSProperties} />
+      <path className="l" pathLength={1} style={{ d: `path("${line}")` } as CSSProperties} />
+      <circle className="dot" r="4" style={{ cx: ex, cy: ey } as CSSProperties} />
+    </svg>
+  );
+}
+
+function Bar({ label, value, max, tone }: { label: string; value: number; max: number; tone: "p" | "m" }) {
   const w = value > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0;
   return (
-    <div style={css("display:grid;grid-template-columns:70px minmax(0,1fr) 110px;align-items:center;gap:12px")}>
-      <span style={css("font-size:12.5px;color:var(--text-3)")}>{label}</span>
-      <span style={css("height:10px;border-radius:999px;background:var(--hover);overflow:hidden")}>
-        <span className="bar-grow" style={mix("display:block;height:100%;border-radius:999px", { width: `${w}%`, background: grad })} />
+    <div className="bx-bar">
+      <span>{label}</span>
+      <span className="bx-bar-t">
+        <i className={"bar-grow " + tone} style={{ width: `${w}%` }} />
       </span>
-      <span style={mix(NUM + ";text-align:right;font-size:13.5px;font-weight:500;white-space:nowrap", { color: value ? color : "var(--text-4)" })}>{som(Math.round(value))}</span>
+      <b className={value ? tone : ""}>{som(Math.round(value))}</b>
     </div>
   );
 }
 
 // --- Товары партии по клиентам -------------------------------------------------------------------
 
-const STATUS_TEXT: Record<Item["status"], string> = { ordered: "Заказан", in_stock: "На складе", issued: "Выдан" };
+const STAGE_TEXT: Record<string, string> = { ordered: "Заказан", in_transit: "В пути", in_stock: "На складе", issued: "Выдан" };
+const STAGE_DOT: Record<string, string> = { ordered: "warn", in_transit: "info", in_stock: "ok", issued: "" };
 
+/** Клиент партии — карточкой как в «Заказах»: слева листок с весом посылки, справа товары. */
 function ClientBlock({
   items,
   weight,
@@ -682,82 +725,103 @@ function ClientBlock({
   const nav = useNavigate();
   const first = items[0];
   const sale = items.reduce((s, i) => s + i.sale, 0);
+  const debt = items.reduce((s, i) => s + i.debt, 0);
+  const qty = items.reduce((s, i) => s + i.qty, 0);
   const withCost = items.filter((i) => i.cost !== null);
   const markup = withCost.reduce((s, i) => s + i.sale - (i.cost ?? 0), 0);
   const allOn = items.every((i) => selected.has(i.id));
   const someOn = items.some((i) => selected.has(i.id));
+  const ps = sale <= 0 ? "w" : debt <= 0 ? "ok" : debt < sale ? "part" : "no";
+  const stages = [...items.reduce((m, i) => m.set(i.stage ?? i.status, (m.get(i.stage ?? i.status) ?? 0) + 1), new Map<string, number>())];
+  const hasW = !!weight && weight.som > 0;
   return (
-    <div className="bt-client">
-      <div className="bt-client-head">
-        <Check on={allOn} half={someOn} onToggle={(on) => onToggle(items.map((i) => i.id), on)} title="Выбрать все товары клиента" />
-        <HButton
-          onClick={() => nav(`/customers/${first.customer_id}`)}
-          title="Открыть карточку клиента"
-          className="bt-client-link"
-          s="display:flex;align-items:center;gap:10px;min-width:0;flex:1;border:none;background:transparent;padding:0;cursor:pointer;font:inherit;color:inherit;text-align:left"
-          hover=""
-        >
-          <Avatar name={first.customer_name} size={32} />
-          <span style={css("min-width:0")}>
-            <span className="bt-client-name" style={css("display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-              {first.customer_name}
-            </span>
-            <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-3);white-space:nowrap")}>
-              {first.customer_phone} · {items.length} {plural(items.length, "товар", "товара", "товаров")}
-              {weight && weight.som > 0 && (
-                <span className="bt-client-weight" title="Вес посылки из «Уведомлений» по товарам этой партии">
-                  {num(weight.kg)} кг · {som(weight.som)}
-                </span>
-              )}
-            </span>
-          </span>
-        </HButton>
-        <span style={css("text-align:right;flex:none")}>
-          <span style={css(NUM + ";display:block;font-size:14px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(sale)}</span>
-          <span style={mix(NUM + ";display:block;font-size:12px;white-space:nowrap", { color: withCost.length ? (markup < 0 ? "var(--danger)" : "var(--green)") : "var(--text-4)" })}>
-            {withCost.length ? `${markup > 0 ? "+" : ""}${som(markup)} наценка` : "без выкупа"}
-          </span>
-        </span>
+    <article className={"od-card bx-card" + (someOn ? " sel" : "")}>
+      {/* Листок с весом посылки клиента по этой партии */}
+      <div className={"od-date bx-w" + (hasW ? "" : " none")} title="Вес посылки из «Уведомлений» по товарам этой партии">
+        <div className="od-date-in">
+          <small>вес</small>
+          <b>{hasW ? num(weight.kg) : "—"}</b>
+          <em>{hasW ? "кг" : "нет"}</em>
+          {hasW && <i>{som(weight.som)}</i>}
+        </div>
       </div>
-      {items.map((it) => {
-        const p = profitOf(it);
-        const on = selected.has(it.id);
-        return (
-          <div key={it.id} onClick={() => onOpen(it.id)} className={"bt-row" + (on ? " on" : "")} title="Открыть карточку товара">
-            <Check on={on} onToggle={(v) => onToggle([it.id], v)} />
-            <span style={css("min-width:0")}>
-              <span style={css("display:block;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                {it.name}
-                {it.qty > 1 && <span style={css(NUM + ";color:var(--text-4)")}> × {it.qty}</span>}
+      <div className="od-main">
+        <header className="od-head">
+          <Check on={allOn} half={someOn} onToggle={(on) => onToggle(items.map((i) => i.id), on)} title="Выбрать все товары клиента" />
+          <button type="button" className="od-who" onClick={() => nav(`/customers/${first.customer_id}`)} title="Открыть клиента">
+            <span className="rx-av">{letters(first.customer_name)}</span>
+            <span>
+              <b>{first.customer_name}</b>
+              <small>{first.customer_phone}</small>
+            </span>
+          </button>
+          <span className="od-stages">
+            {stages.map(([k, n]) => (
+              <span key={k} className={"rx-pill-st " + (STAGE_DOT[k] ?? "")}>
+                {(STAGE_TEXT[k] ?? k).toLowerCase()} {n}
               </span>
-              <span style={css(CODE + ";display:block;font-size:11px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{it.code || "без кода"}</span>
-            </span>
-            <span style={css(NUM + ";text-align:right;font-size:13px;color:var(--text);white-space:nowrap")}>{som(it.sale)}</span>
-            <span className="bt-hide" style={css("text-align:right;min-width:0")}>
-              {p === null ? (
-                <span style={css("font-size:12px;color:var(--text-5)")}>нет выкупа</span>
-              ) : (
-                <>
-                  <span style={mix(NUM + ";display:block;font-size:13px;white-space:nowrap", { color: p < 0 ? "var(--danger)" : "var(--green)" })}>
-                    {p > 0 ? "+" : ""}
-                    {som(p)}
-                  </span>
-                  <span style={css(NUM + ";display:block;font-size:11px;color:var(--text-4);white-space:nowrap")}>из {som(it.cost)}</span>
-                </>
-              )}
-            </span>
-            <span className="bt-hide" style={mix(NUM + ";display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap", { color: it.debt > 0 ? "var(--danger)" : "var(--green)" })}>
-              <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: it.debt > 0 ? "var(--danger-dot)" : "var(--green-dot)" })} />
-              {it.debt > 0 ? `долг ${som(it.debt)}` : "оплачено"}
-            </span>
-            <span className="bt-hide" style={css("display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);white-space:nowrap")}>
-              <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: ST[it.status].dot })} />
-              {STATUS_TEXT[it.status]}
-            </span>
+            ))}
+          </span>
+          <span className={"od-sum " + ps}>
+            <small>
+              {ps === "ok" && <Svg paths={I_CHECK} size={12} sw={3} />}
+              {ps === "w" ? "По весу" : ps === "ok" ? "Оплачено" : ps === "no" ? "Не оплачено" : `Долг ${som(debt)}`}
+            </small>
+            <b>{sale > 0 ? som(sale) : "—"}</b>
+          </span>
+        </header>
+        <div className="od-items">
+          <div className="od-cols" aria-hidden>
+            <span />
+            <span>Товар</span>
+            <span>Кол-во</span>
+            <span>Сумма</span>
+            <span>Наценка</span>
+            <span>Оплата</span>
+            <span>Статус</span>
           </div>
-        );
-      })}
-    </div>
+          {items.map((it) => {
+            const p = profitOf(it);
+            const on = selected.has(it.id);
+            const st = it.stage ?? it.status;
+            const pay: [string, string] = it.sale <= 0 ? ["", "По весу"] : it.debt <= 0 ? ["ok", "Оплачено"] : it.debt < it.sale ? ["warn", "Частично"] : ["bad", "Не оплачено"];
+            return (
+              <div key={it.id} onClick={() => onOpen(it.id)} className={"od-row" + (on ? " on" : "")} title="Открыть карточку товара">
+                <Check on={on} onToggle={(v) => onToggle([it.id], v)} />
+                <span className="od-row-n">
+                  <b>{it.name}</b>
+                  <small>{it.code ? it.code : <em>без кода</em>}</small>
+                </span>
+                <span className="od-row-q">{it.qty} шт</span>
+                <span className="od-row-s">
+                  <b>{it.sale > 0 ? som(it.sale) : "—"}</b>
+                </span>
+                <span className="od-row-p">{p === null ? <small>—</small> : <b className={p < 0 ? "neg" : "pos"}>{`${p > 0 ? "+" : ""}${som(p)}`}</b>}</span>
+                <span className="od-row-pay">
+                  <span className={"od-pay " + pay[0]}>{pay[1]}</span>
+                </span>
+                <span className="od-row-st">
+                  <span className={"rx-pill-st " + (STAGE_DOT[st] ?? "")}>{STAGE_TEXT[st] ?? st}</span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <footer className="od-foot-l">
+          <span>
+            <small>Товаров</small>
+            <b>
+              {items.length}
+              {qty !== items.length ? ` · ${qty} шт` : ""}
+            </b>
+          </span>
+          <span>
+            <small>Наценка</small>
+            <b className={withCost.length && markup < 0 ? "neg" : ""}>{withCost.length ? `${markup > 0 ? "+" : ""}${som(markup)}` : "нет выкупа"}</b>
+          </span>
+        </footer>
+      </div>
+    </article>
   );
 }
 
@@ -809,15 +873,7 @@ function AddItems({ batchId, onClose, onAdded }: { batchId: number; onClose: () 
   return (
     <ModalShell
       title="Добавить принятые товары"
-      subtitle={
-        picked.size && rows ? (
-          <span style={css(NUM)}>
-            выбрано {picked.size} на {som(rows.filter((i) => picked.has(i.id)).reduce((s, i) => s + i.sale, 0))}
-          </span>
-        ) : (
-          "Отметьте товары со склада, которых ещё нет в партиях"
-        )
-      }
+      subtitle={picked.size && rows ? `выбрано ${picked.size} на ${som(rows.filter((i) => picked.has(i.id)).reduce((s, i) => s + i.sale, 0))}` : "Отметьте товары со склада, которых ещё нет в партиях"}
       icon={<Icon name="batches" size={18} />}
       tone="violet"
       onClose={onClose}
@@ -825,58 +881,62 @@ function AddItems({ batchId, onClose, onAdded }: { batchId: number; onClose: () 
       footer={
         <>
           <ModalCancel>Отмена</ModalCancel>
-          <HButton disabled={!picked.size} onClick={add} s={btnPrimary + ";opacity:" + (picked.size ? 1 : 0.5)} hover="background:var(--accent-hover)">
-            Добавить ({picked.size})
-          </HButton>
+          <span className="ov" style={{ display: "contents" }}>
+            <button type="button" className="bx-btn" disabled={!picked.size} onClick={add}>
+              Добавить ({picked.size})
+            </button>
+          </span>
         </>
       }
     >
-      <div style={css("padding:16px 18px;display:flex;flex-direction:column;gap:12px")}>
-        <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px")}>
-          <span style={css("color:var(--text-3)")}>Принятые без партии за</span>
+      <div className="ov bx-add">
+        <div className="bx-add-h">
+          <span>Принятые без партии за</span>
           <DatePicker value={day} disabled={allDays} onChange={setDay} height={32} fontSize={12.5} ariaLabel="День приёма" />
-          <span style={css("display:flex;align-items:center;gap:7px;cursor:pointer;color:var(--text-2)")} onClick={() => setAllDays((v) => !v)}>
+          <span className="bx-add-all" onClick={() => setAllDays((v) => !v)}>
             <Check on={allDays} onToggle={setAllDays} /> за все дни
           </span>
         </div>
         <ModalError text={error} />
         {!rows ? (
-          <SkeletonRows rows={3} />
+          <div className="bx-add-list">
+            {[0, 1, 2].map((k) => (
+              <div key={k} className="bx-add-row">
+                <span className="sk" style={{ width: 18, height: 18, borderRadius: 6 }} />
+                <span className="sk" style={{ width: `${[60, 44, 52][k]}%`, height: 10 }} />
+              </div>
+            ))}
+          </div>
         ) : rows.length === 0 ? (
-          <div style={css("display:flex;flex-direction:column;align-items:center;gap:6px;padding:26px 16px;border-radius:14px;border:1px dashed var(--border-strong);text-align:center")}>
-            <span style={css("width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:var(--violet-tint);color:var(--violet)")}>
+          <div className="bx-none small">
+            <span className="bx-empty-i">
               <Icon name="batches" size={18} />
             </span>
-            <span style={css("margin-top:4px;font-size:13.5px;font-weight:500;color:var(--text)")}>{allDays ? "Все принятые товары уже в партиях" : "За этот день нечего добавлять"}</span>
-            <span style={css("font-size:12.5px;color:var(--text-3)")}>{allDays ? "Новые появятся после приёма на складе" : "Все товары, принятые в этот день, уже распределены по партиям"}</span>
+            <b>{allDays ? "Все принятые товары уже в партиях" : "За этот день нечего добавлять"}</b>
+            <small>{allDays ? "Новые появятся после приёма на складе" : "Все товары, принятые в этот день, уже распределены по партиям"}</small>
             {!allDays && (
-              <HButton onClick={() => setAllDays(true)} className="mf-chip" s="margin-top:6px" hover="">
+              <button type="button" className="bx-btn ghost" onClick={() => setAllDays(true)}>
                 Показать за все дни
-              </HButton>
+              </button>
             )}
           </div>
         ) : (
-          <div className="thin-scroll" style={css("border:1px solid var(--border);border-radius:12px;overflow:hidden;max-height:380px;overflow-y:auto")}>
-            <div style={css("display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-2);border-bottom:1px solid var(--border-2);font-size:12px;color:var(--text-3)")}>
+          <div className="bx-add-list thin-scroll">
+            <div className="bx-add-row head">
               <Check on={picked.size === rows.length} half={picked.size > 0} onToggle={(on) => pick(rows.map((i) => i.id), on)} />
               Выбрать все ({rows.length})
             </div>
             {rows.map((i) => (
-              <div
-                key={i.id}
-                onClick={() => pick([i.id], !picked.has(i.id))}
-                className="row-click"
-                style={css("display:grid;grid-template-columns:18px minmax(0,1fr) auto 90px;gap:10px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border-2);font-size:12.5px;cursor:pointer")}
-              >
+              <div key={i.id} onClick={() => pick([i.id], !picked.has(i.id))} className={"bx-add-row" + (picked.has(i.id) ? " on" : "")}>
                 <Check on={picked.has(i.id)} onToggle={(on) => pick([i.id], on)} />
-                <span style={css("min-width:0")}>
-                  <span style={css("display:block;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{i.name}</span>
-                  <span style={css("display:block;font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                    {i.customer_name} · <span style={css(CODE + ";font-size:11px")}>{i.code || "без кода"}</span>
-                  </span>
+                <span className="wx-li">
+                  <b>{i.name}</b>
+                  <small>
+                    {i.customer_name} · {i.code || "без кода"}
+                  </small>
                 </span>
-                <span style={css(NUM + ";font-size:11.5px;color:var(--text-3);white-space:nowrap")}>{shortDateTime(i.arrived_at)}</span>
-                <span style={css(NUM + ";font-weight:500;text-align:right;white-space:nowrap;color:var(--text)")}>{som(i.sale)}</span>
+                <span className="bx-add-d">{shortDateTime(i.arrived_at)}</span>
+                <b className="bx-add-s">{som(i.sale)}</b>
               </div>
             ))}
           </div>
@@ -888,15 +948,15 @@ function AddItems({ batchId, onClose, onAdded }: { batchId: number; onClose: () 
 
 // --- Мелочи --------------------------------------------------------------------------------------
 
-/** Галочка выбора: квадрат с галкой; half — выбрана часть. Клик не открывает карточку товара. */
+/** Галочка выбора; half — выбрана часть. Клик не открывает карточку товара. */
 function Check({ on, half, onToggle, title }: { on: boolean; half?: boolean; onToggle: (on: boolean) => void; title?: string }) {
-  const lit = on || half;
   return (
     <span
       role="checkbox"
       aria-checked={on ? true : half ? "mixed" : false}
       tabIndex={0}
       title={title}
+      className={"od-check" + (on || half ? " on" : "")}
       onClick={(e) => {
         e.stopPropagation();
         onToggle(!on);
@@ -908,40 +968,20 @@ function Check({ on, half, onToggle, title }: { on: boolean; half?: boolean; onT
           onToggle(!on);
         }
       }}
-      style={mix("width:18px;height:18px;border-radius:6px;flex:none;display:grid;place-items:center;color:#fff;cursor:pointer;transition:background .12s,border-color .12s", {
-        background: lit ? "var(--accent)" : "var(--surface)",
-        border: `1.5px solid ${lit ? "var(--accent)" : "var(--border-strong)"}`,
-      })}
     >
       {on ? <Svg paths={I_CHECK} size={12} sw={3} /> : half ? <Svg paths={I_MINUS} size={12} sw={3} /> : null}
     </span>
   );
 }
 
-/** Аватар-буква; цвет — от имени, как на других страницах. */
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
-
-function Avatar({ name, size }: { name: string; size: number }) {
-  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
-  return (
-    <span
-      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:600", {
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.4),
-        background: AVATAR_BG[n % AVATAR_BG.length],
-      })}
-    >
-      {name.trim().slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
+const letters = (name: string) =>
+  name
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}]/gu, ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
 
 function plural(n: number, one: string, few: string, many: string): string {
   const m10 = n % 10;

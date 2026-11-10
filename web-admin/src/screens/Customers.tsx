@@ -4,7 +4,7 @@
  * по давности заказа или рейтингом (должники, крупные); у каждого — полоса оплаты. Карточка клиента — все его товары,
  * суммы, оплаты, долг, что заказано / на складе / выдано.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
@@ -20,37 +20,47 @@ import {
   type CustomerRow,
   type CustomerSort,
   type CustomersSummary,
+  type Item,
   type ItemStatus,
   type Page as PageOf,
 } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
-import { Confirm, Empty, MoneyInput, Pager, Tabs } from "../components/cargo";
+import { Confirm, MoneyInput } from "../components/cargo";
 import BulkBar, { useSelection } from "../components/BulkBar";
 import ItemModal from "../components/ItemModal";
-import ItemTable from "../components/ItemTable";
 import PhoneInput from "../components/PhoneInput";
 import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
-import { I_BACK, I_CLOSE, I_PLUS, I_SEARCH, I_USER, Icon, Svg } from "../design/icons";
-import { PANEL, Page } from "../design/table";
-import { FieldLabel, HButton, LoadError, ModalCancel, ModalError, ModalShell, ST, SkeletonRows, btnGhost, btnPrimary, inputStyle } from "../design/ui";
-import { METHOD_OPTIONS, date, parseMoney, som, todayIso } from "../lib/cargo";
+import { I_BACK, I_CLOSE, I_PLUS, I_SEARCH, I_USER, Svg } from "../design/icons";
+import { Page } from "../design/table";
+import { FieldLabel, HButton, LoadError, ModalCancel, ModalError, ModalShell, btnPrimary, inputStyle } from "../design/ui";
+import { METHOD_OPTIONS, date, num, parseMoney, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
 import { emit, itemMatches, onFocusItem, useDebounced, useRefresh, useSearchHits } from "../lib/events";
+import SlideTabs from "../components/SlideTabs";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
+type PathDef = [string, Record<string, unknown>][];
 const LIMIT = 100;
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 
 // --- Список ---------------------------------------------------------------------------
 
 type Filter = "" | "debt" | "in_stock";
 
-const SORTS: { key: CustomerSort; label: string }[] = [
-  { key: "recent", label: "Недавние" },
-  { key: "name", label: "А–Я" },
-  { key: "debt", label: "Должники" },
-  { key: "sale", label: "Крупные" },
+const SORTS: [CustomerSort, string][] = [
+  ["recent", "Недавние"],
+  ["name", "А–Я"],
+  ["debt", "Должники"],
+  ["sale", "Крупные"],
 ];
+
+const IC: Record<"users" | "wallet" | "box", PathDef> = {
+  users: [["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }], ["circle", { cx: 9, cy: 7, r: 4 }], ["path", { d: "M22 21v-2a4 4 0 0 0-3-3.87" }], ["path", { d: "M16 3.13a4 4 0 0 1 0 7.75" }]],
+  wallet: [["path", { d: "M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1" }], ["path", { d: "M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" }]],
+  box: [["path", { d: "M21 8 12 3 3 8v8l9 5 9-5V8Z" }], ["path", { d: "m3 8 9 5 9-5" }], ["path", { d: "M12 13v8" }]],
+};
+
+const pc = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
 /** Раздел справочника: буква — по алфавиту, давность — для недавних, без разделов — для рейтингов. */
 function sectionOf(c: CustomerRow, sort: CustomerSort): string {
@@ -82,6 +92,8 @@ export default function Customers({ isDesktop, toast }: { isDesktop: boolean; to
   /** По какой сортировке пришли текущие строки — разделы строим по ней, а не по только что нажатой. */
   const [shownSort, setShownSort] = useState<CustomerSort>(sort);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listTop = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     listCustomers({ q, filter, sort, limit: LIMIT, offset })
@@ -94,6 +106,38 @@ export default function Customers({ isDesktop, toast }: { isDesktop: boolean; to
   }, [q, filter, sort, offset]);
   useEffect(load, [load]);
   useEffect(() => setOffset(0), [q, filter, sort]);
+  // Карточки плавно появляются, когда при прокрутке попадают в экран; соседние — волной.
+  useEffect(() => {
+    const root = gridRef.current;
+    if (!root || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const cards = [...root.querySelectorAll<HTMLElement>(".cu6-c")];
+    cards.forEach((el) => el.classList.add("rv"));
+    const timers: number[] = [];
+    const io = new IntersectionObserver(
+      (entries) => {
+        let k = 0;
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          const el = e.target as HTMLElement;
+          const delay = Math.min(k++, 7) * 70;
+          el.style.transitionDelay = `${delay}ms`;
+          el.classList.add("in");
+          io.unobserve(el);
+          // Когда доехала — снимаем служебные классы, чтобы наведение работало как обычно.
+          timers.push(window.setTimeout(() => {
+            el.classList.remove("rv", "in");
+            el.style.transitionDelay = "";
+          }, delay + 700));
+        }
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -30px 0px" }
+    );
+    cards.forEach((el) => io.observe(el));
+    return () => {
+      io.disconnect();
+      timers.forEach((t) => window.clearTimeout(t));
+    };
+  }, [data]);
   useRefresh(load);
 
   const sections = useMemo(() => {
@@ -108,160 +152,295 @@ export default function Customers({ isDesktop, toast }: { isDesktop: boolean; to
   }, [data, shownSort]);
   const ranked = shownSort === "debt" || shownSort === "sale";
   const s = data?.summary;
+  const pages = data ? Math.max(1, Math.ceil(data.total / LIMIT)) : 1;
+  const page = Math.floor(offset / LIMIT);
+  // Листаем — экран встаёт к началу списка, а не к самому верху.
+  const go = (o: number) => {
+    setOffset(o);
+    listTop.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   return (
     <Page size="wide">
-      {/* Поиск и фильтры */}
-      <section className="cu-hero">
-        <div style={css("display:flex;align-items:center;gap:12px;flex-wrap:wrap")}>
-          <label className="cu-search">
-            <span style={css("display:flex;color:var(--accent)")}>
-              <Svg paths={I_SEARCH} size={20} sw={2} />
+      <div className="ov cu2">
+        <div className="wx-head">
+          <HomeHead title="Клиенты" />
+          <div className="wx-head-r">
+            <button type="button" className="od-new" onClick={() => setCreating(true)}>
+              <Svg paths={I_PLUS} size={15} sw={2.2} />
+              Новый клиент
+            </button>
+          </div>
+        </div>
+
+        {/* Сводка: одна полоса — «Все», «С долгом», «Ждут выдачи» — фильтры */}
+        <div className="cu3-sum">
+          <button type="button" className={"cu3-seg" + (filter === "" ? " on" : "")} onClick={() => setFilter("")} aria-pressed={filter === ""}>
+            <i>
+              <Svg paths={IC.users} size={16} sw={2} />
+            </i>
+            <span>
+              <small>Все клиенты</small>
+              <b>{s ? <CountUp text={String(s.total)} /> : "—"}</b>
+              <em>в книге</em>
             </span>
+            <AvatarStack names={data?.rows.map((r) => r.name) ?? []} total={s?.total ?? 0} />
+          </button>
+          <div className="cu3-seg info">
+            <i>
+              <Svg paths={[["path", { d: "m22 7-8.5 8.5-5-5L2 17" }], ["path", { d: "M16 7h6v6" }]]} size={16} sw={2} />
+            </i>
+            <span>
+              <small>Активны</small>
+              <b>{s ? <CountUp text={String(s.active)} /> : "—"}</b>
+              <em>{s ? `${pc(s.active, s.total)}% заказывали в этом месяце` : "…"}</em>
+            </span>
+            <CalendarLeaf pct={s ? pc(s.active, s.total) : 0} />
+          </div>
+          <button type="button" className={"cu3-seg" + (filter === "debt" ? " on" : "")} onClick={() => setFilter(filter === "debt" ? "" : "debt")} aria-pressed={filter === "debt"}>
+            <i>
+              <Svg paths={IC.wallet} size={16} sw={2} />
+            </i>
+            <span>
+              <small>С долгом</small>
+              <b>{s ? <CountUp text={String(s.debtors)} /> : "—"}</b>
+              <em>{s ? (s.debt > 0 ? `должны ${som(s.debt)}` : "долгов нет") : "…"}</em>
+            </span>
+            <Receipt has={!!s && s.debt > 0} />
+          </button>
+          <button type="button" className={"cu3-seg" + (filter === "in_stock" ? " on" : "")} onClick={() => setFilter(filter === "in_stock" ? "" : "in_stock")} aria-pressed={filter === "in_stock"}>
+            <i>
+              <Svg paths={IC.box} size={16} sw={2} />
+            </i>
+            <span>
+              <small>Ждут выдачи</small>
+              <b>{s ? <CountUp text={String(s.waiting)} /> : "—"}</b>
+              <em>{s ? (s.in_stock > 0 ? `${s.in_stock} ${plural(s.in_stock, "товар", "товара", "товаров")} на складе` : "на складе пусто") : "…"}</em>
+            </span>
+            <Parcel n={s?.in_stock ?? 0} />
+          </button>
+        </div>
+
+        {/* Поиск и сортировка */}
+        <div className="cu2-tools cu3-tools" ref={listTop}>
+          <label className="rx-as-in od-search cu2-search">
+            <Svg paths={I_SEARCH} size={15} />
             <input
               ref={searchRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Escape" && setQuery("")}
-              placeholder={isDesktop ? "Найти клиента — имя, телефон в любом формате или код" : "Имя, телефон или код"}
+              placeholder={isDesktop ? "Имя, телефон в любом формате или код клиента" : "Имя, телефон или код"}
               aria-label="Найти клиента"
               autoFocus={isDesktop}
             />
-            {query ? (
-              <HButton
+            {query && (
+              <button
+                type="button"
+                className="cu2-x"
+                title="Очистить"
                 onClick={() => {
                   setQuery("");
                   searchRef.current?.focus();
                 }}
-                title="Очистить"
-                s="width:30px;height:30px;flex:none;display:grid;place-items:center;border:none;border-radius:9px;background:transparent;color:var(--text-4);cursor:pointer"
-                hover="background:var(--hover);color:var(--text-2)"
               >
-                <Svg paths={I_CLOSE} size={15} />
-              </HButton>
-            ) : (
-              data && <span style={css(NUM + ";flex:none;font-size:12.5px;color:var(--text-4);white-space:nowrap")}>{s?.total ?? data.total} в книге</span>
+                <Svg paths={I_CLOSE} size={13} sw={2.2} />
+              </button>
             )}
           </label>
-          <HButton onClick={() => setCreating(true)} className="cu-new" s="" hover="">
-            <Svg paths={I_PLUS} size={16} sw={2.4} />
-            Новый клиент
-          </HButton>
+          <SlideTabs<CustomerSort> value={sort} onChange={setSort} options={SORTS} counts={false} />
+          {data && <span className="cu3-count">{data.total} {plural(data.total, "клиент", "клиента", "клиентов")}</span>}
         </div>
-        <div style={css("display:flex;flex-wrap:wrap;gap:8px;margin-top:14px")}>
-          <Pill active={filter === ""} onClick={() => setFilter("")} dot="var(--accent)" label="Все" value={s ? String(s.total) : "…"} hint={s ? `${s.active} заказывали в этом месяце` : ""} />
-          <Pill
-            active={filter === "debt"}
-            onClick={() => setFilter(filter === "debt" ? "" : "debt")}
-            dot="var(--danger-dot)"
-            label="С долгом"
-            value={s ? String(s.debtors) : "…"}
-            hint={s ? (s.debt > 0 ? `должны ${som(s.debt)}` : "долгов нет") : ""}
-            tone="var(--danger)"
-          />
-          <Pill
-            active={filter === "in_stock"}
-            onClick={() => setFilter(filter === "in_stock" ? "" : "in_stock")}
-            dot={ST.in_stock.dot}
-            label="Ждут выдачи"
-            value={s ? String(s.waiting) : "…"}
-            hint={s ? (s.in_stock > 0 ? `${s.in_stock} ${plural(s.in_stock, "товар", "товара", "товаров")} на складе` : "на складе пусто") : ""}
-          />
-        </div>
-      </section>
 
-      {/* Сортировка */}
-      <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 2px 10px")}>
-        <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>{filter === "debt" ? "Должники" : filter === "in_stock" ? "Ждут выдачи" : q ? "Найдено" : "Все клиенты"}</span>
-        {data && <span style={css(NUM + ";font-size:12.5px;color:var(--text-4)")}>{data.total}</span>}
-        <span style={css("flex:1")} />
-        <Tabs<CustomerSort> value={sort} onChange={setSort} tabs={SORTS} />
-      </div>
-
-      {error && <ModalError text={error} />}
-      {!data && !error ? (
-        <div className="cu-book" style={css("padding:16px")}>
-          <SkeletonRows rows={6} />
-        </div>
-      ) : (
-        data && (
-          <>
-            {data.rows.length === 0 ? (
-              <div className="cu-book">
-                <Empty
-                  icon="customers"
-                  title={q || filter ? "Никого не найдено" : "Клиентов пока нет"}
-                  text={q || filter ? "Попробуйте другой запрос — телефон можно вводить в любом формате" : "Клиенты создаются сами при новом заказе или импорте Excel"}
-                />
+        {error && <ModalError text={error} />}
+        {!data && !error ? (
+          <div className="cu6-grid" aria-hidden>
+            {Array.from({ length: 8 }, (_, k) => (
+              <div key={k} className="cu6-c ghost">
+                <div className="cu6-band" />
+                <span className="cu6-av sk" />
+                <span className="sk" style={{ width: `${[56, 44, 62, 50][k % 4]}%`, height: 12, marginTop: 12 }} />
+                <span className="sk" style={{ width: "40%", height: 9, marginTop: 8 }} />
+                <span className="sk" style={{ width: "86%", height: 46, marginTop: 14, borderRadius: 14 }} />
               </div>
-            ) : (
-              <div style={css("display:flex;gap:10px;align-items:flex-start")}>
-                <div className="cu-book" style={css("flex:1;min-width:0")}>
-                  {sections.map((sec, si) => (
-                    <div key={sec.key || si} id={sec.key ? `cu-sec-${sec.key}` : undefined}>
-                      {sec.key && (
-                        <div className={"cu-sec" + (shownSort === "name" ? " letter" : "")}>
-                          <span>{sec.key}</span>
-                          <span style={css(NUM + ";font-size:12px;font-weight:400;color:var(--text-4)")}>{sec.rows.length}</span>
-                        </div>
-                      )}
-                      {sec.rows.map((c) => (
-                        <ContactRow
+            ))}
+          </div>
+        ) : (
+          data && (
+            <div className="cu6">
+              {data.rows.length === 0 ? (
+                <div className="ov-card paper cu2-none">
+                  <span className="cu2-none-i">
+                    <Svg paths={IC.users} size={22} sw={1.8} />
+                  </span>
+                  <b>{q || filter ? "Никого не найдено" : "Клиентов пока нет"}</b>
+                  <small>{q || filter ? "Попробуйте другой запрос — телефон можно вводить в любом формате" : "Клиенты создаются сами при новом заказе или импорте Excel"}</small>
+                </div>
+              ) : (
+                <>
+                  {shownSort === "name" && sections.length > 1 && (
+                    <nav className="cu5-abc cu6-abc" aria-label="Алфавит">
+                      {sections.map((x) => (
+                        <button key={x.key} type="button" onClick={() => document.getElementById(`cu-sec-${x.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                          {x.key}
+                        </button>
+                      ))}
+                    </nav>
+                  )}
+                  <div className="cu6-grid" ref={gridRef}>
+                    {data.rows.map((c, i) => {
+                      const sec = sectionOf(c, shownSort);
+                      const first = !!sec && (i === 0 || sectionOf(data.rows[i - 1], shownSort) !== sec);
+                      return (
+                        <ProfileCard
                           key={c.id}
                           c={c}
-                          rank={ranked ? offset + data.rows.indexOf(c) + 1 : null}
+                          anchor={first ? `cu-sec-${sec}` : undefined}
+                          mark={ranked ? `#${offset + i + 1}` : first && shownSort === "name" ? sec : undefined}
                           onOpen={() => nav(`/customers/${c.id}`)}
                         />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-                {shownSort === "name" && isDesktop && sections.length > 1 && <AlphaRail letters={sections.map((x) => x.key)} />}
-              </div>
-            )}
-            <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
-          </>
-        )
-      )}
-      {creating && (
-        <CustomerForm
-          customer={null}
-          onClose={() => setCreating(false)}
-          onSaved={(c) => {
-            setCreating(false);
-            toast("success", `Клиент «${c.name}» создан`);
-            nav(`/customers/${c.id}`);
-          }}
-        />
-      )}
+                      );
+                    })}
+                  </div>
+                  {data.total > LIMIT && (
+                    <footer className="hx-foot od-foot cu2-pager">
+                      <small>
+                        {offset + 1}–{Math.min(data.total, offset + LIMIT)} из {data.total} {plural(data.total, "клиента", "клиентов", "клиентов")}
+                      </small>
+                      <span className="hx-pages">
+                        <button type="button" onClick={() => go(Math.max(0, offset - LIMIT))} disabled={page === 0} aria-label="Назад">
+                          ‹
+                        </button>
+                        <b>
+                          {page + 1} / {pages}
+                        </b>
+                        <button type="button" onClick={() => go(offset + LIMIT)} disabled={page >= pages - 1} aria-label="Дальше">
+                          ›
+                        </button>
+                      </span>
+                    </footer>
+                  )}
+                </>
+              )}
+            </div>
+          )
+        )}
+        {creating && (
+          <CustomerForm
+            customer={null}
+            onClose={() => setCreating(false)}
+            onSaved={(c) => {
+              setCreating(false);
+              toast("success", `Клиент «${c.name}» создан`);
+              nav(`/customers/${c.id}`);
+            }}
+          />
+        )}
+      </div>
     </Page>
   );
 }
 
-/** Пилюля-фильтр: цветная точка, подпись, число и пояснение. */
-function Pill({ active, onClick, dot, label, value, hint, tone }: { active: boolean; onClick: () => void; dot: string; label: string; value: string; hint: string; tone?: string }) {
+/** Стопка кружков с инициалами последних клиентов и «+N». */
+function AvatarStack({ names, total }: { names: string[]; total: number }) {
+  const shown = names.slice(0, 4);
   return (
-    <HButton onClick={onClick} className={"cu-pill" + (active ? " on" : "")} s="" hover="" aria-pressed={active}>
-      <span style={mix("width:8px;height:8px;border-radius:50%;flex:none", { background: dot })} />
-      <span style={css("color:var(--text-2)")}>{label}</span>
-      <span style={mix(NUM + ";font-size:15px;font-weight:500", { color: tone ?? "var(--text)" })}>
-        <CountUp text={value} />
-      </span>
-      {hint && <span className="cu-pill-hint">{hint}</span>}
-    </HButton>
+    <span className="cu7-vis cu7-ava" aria-hidden>
+      {shown.map((n, k) => (
+        <i key={k} style={{ animationDelay: `${k * 90}ms` }}>
+          {letters(n)}
+        </i>
+      ))}
+      {total > shown.length && (
+        <i className="more" style={{ animationDelay: `${shown.length * 90}ms` }}>
+          +{total - shown.length}
+        </i>
+      )}
+    </span>
   );
 }
 
-/** Алфавитная полоса справа: буквы разделов, клик — к разделу. */
-function AlphaRail({ letters }: { letters: string[] }) {
+const MON_ABBR = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+
+/** Листок отрывного календаря: шапка с месяцем, закрашенные клетки — доля активных клиентов. */
+function CalendarLeaf({ pct }: { pct: number }) {
+  const N = 12;
+  const lit = pct > 0 ? Math.max(1, Math.round((pct / 100) * N)) : 0;
   return (
-    <nav className="cu-rail" aria-label="Алфавит">
-      {letters.map((l) => (
-        <button key={l} type="button" onClick={() => document.getElementById(`cu-sec-${l}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-          {l}
-        </button>
-      ))}
-    </nav>
+    <span className="cu7-vis cu8-cal" aria-hidden title={`${pct}% клиентов заказывали в этом месяце`}>
+      <svg viewBox="0 0 52 54">
+        <rect className="paper" x="5" y="8" width="42" height="42" rx="6" />
+        <path className="head" d="M5 14a6 6 0 0 1 6-6h30a6 6 0 0 1 6 6v6H5Z" />
+        <text className="mon" x="26" y="17.6" textAnchor="middle">
+          {MON_ABBR[new Date().getMonth()]}
+        </text>
+        <rect className="ring" x="14" y="4" width="3.4" height="9" rx="1.7" />
+        <rect className="ring" x="34.6" y="4" width="3.4" height="9" rx="1.7" />
+        {Array.from({ length: N }, (_, k) => (
+          <rect
+            key={k}
+            className={"day" + (k < lit ? " on" : "")}
+            x={10.5 + (k % 4) * 8.2}
+            y={24.5 + Math.floor(k / 4) * 7.8}
+            width="6"
+            height="5.6"
+            rx="1.6"
+            style={{ animationDelay: `${300 + k * 40}ms` }}
+          />
+        ))}
+      </svg>
+    </span>
+  );
+}
+
+/** Чек с зубчатым краем: строки и жирный итог; есть долг — итог тёмный. */
+function Receipt({ has }: { has: boolean }) {
+  return (
+    <span className={"cu7-vis cu8-rc" + (has ? "" : " none")} aria-hidden>
+      <svg viewBox="0 0 54 50">
+        <path className="paper" d="M8 2H46a3 3 0 0 1 3 3V44L44.6 41 40.2 44 35.8 41 31.4 44 27 41 22.6 44 18.2 41 13.8 44 9.4 41 5 44V5a3 3 0 0 1 3-3Z" />
+        <rect className="ln" x="11" y="9" width="20" height="3" rx="1.5" />
+        <rect className="ln" x="11" y="16" width="27" height="3" rx="1.5" />
+        <rect className="ln" x="11" y="23" width="16" height="3" rx="1.5" />
+        <rect className="tot" x="11" y="31" width="32" height="4.5" rx="2.2" />
+      </svg>
+    </span>
+  );
+}
+
+/** Объёмная коробка с лентой и наклейкой; в углу — сколько товаров ждёт выдачи. */
+function Parcel({ n }: { n: number }) {
+  return (
+    <span className={"cu7-vis cu8-pc" + (n ? "" : " none")} aria-hidden>
+      <svg viewBox="0 0 54 52">
+        <ellipse className="sh" cx="27" cy="48" rx="21" ry="3.2" />
+        <polygon className="l" points="7,16 27,26 27,46 7,36" />
+        <polygon className="r" points="27,26 47,16 47,36 27,46" />
+        <polygon className="t" points="27,6 47,16 27,26 7,16" />
+        <polygon className="tape" points="14,19.5 34,9.5 40,12.5 20,22.5" />
+        <polygon className="tape2" points="14,19.5 20,22.5 20,31 14,28" />
+        <polygon className="lbl" points="32,30.5 41,26 41,32.5 32,37" />
+        <path className="edge" d="M27 26V46M7 16l20 10 20-10" />
+      </svg>
+      {n > 0 && <em>{n}</em>}
+    </span>
+  );
+}
+
+/** Доля «водой» в скруглённом окошке (как на «Уведомлениях»): уровень = процент. */
+function Wave({ pct, label, dark }: { pct: number; label: string; dark?: boolean }) {
+  const y = (1 - Math.max(0, Math.min(100, pct)) / 100) * 46;
+  return (
+    <span className={"nf-wave cu2-wave" + (dark ? " dark" : "")} title={`${pct}% ${label}`}>
+      <svg viewBox="0 0 64 52" preserveAspectRatio="none" aria-hidden>
+        <g className="lvl" style={{ transform: `translateY(${y}px)` }}>
+          <path className="w2" d="M0 6 Q8 1 16 6 T32 6 T48 6 T64 6 T80 6 T96 6 T112 6 T128 6 V70 H0Z" />
+          <path className="w1" d="M0 6 Q8 1 16 6 T32 6 T48 6 T64 6 T80 6 T96 6 T112 6 T128 6 V70 H0Z" />
+        </g>
+      </svg>
+      <b>{pct}%</b>
+      <small>{label}</small>
+    </span>
   );
 }
 
@@ -285,115 +464,133 @@ function plural(n: number, one: string, few: string, many: string) {
   return many;
 }
 
-/** Строка справочника: аватар, имя и телефон, товары по этапам, деньги с полосой оплаты, последний заказ, быстрые действия. */
-function ContactRow({ c, rank, onOpen }: { c: CustomerRow; rank: number | null; onOpen: () => void }) {
-  const nav = useNavigate();
-  const stages = [
-    { n: c.ordered, dot: ST.ordered.dot, label: "ждём" },
-    { n: c.in_stock, dot: ST.in_stock.dot, label: "на складе" },
-    { n: c.issued, dot: ST.issued.dot, label: "выдано" },
-  ].filter((x) => x.n > 0);
-  const empty = !stages.length && !c.sale;
-  const newOrder = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    nav(`/new-order?customer=${c.id}`);
-  };
-  return (
-    <div onClick={onOpen} className="cu-row" title="Открыть карточку клиента">
-      <span style={css("position:relative;display:flex")}>
-        <Avatar name={c.name} size={42} />
-        {c.in_stock > 0 && <span className="cu-badge" title={`на складе ${c.in_stock}`}>{c.in_stock}</span>}
-      </span>
-      <span style={css("min-width:0")}>
-        <span style={css("display:flex;align-items:center;gap:8px;min-width:0")}>
-          {rank !== null && <span className="cu-rank">#{rank}</span>}
-          <span className="cu-name">{c.name}</span>
-          {c.code && <span style={css(MONO + ";flex:none;font-size:10.5px;padding:1px 6px;border-radius:6px;background:var(--hover);color:var(--text-3)")}>{c.code}</span>}
-        </span>
-        <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-3);margin-top:2px;white-space:nowrap")}>{c.phone || "без телефона"}</span>
-      </span>
+const letters = (name: string) =>
+  name
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}]/gu, ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
 
-      {empty ? (
-        // Без заказов: вместо прочерков — спокойная плашка и кнопка первого заказа.
-        <span className="cu-empty">
-          <span className="cu-empty-ghost" aria-hidden>
-            <i style={{ width: 54 }} />
-            <i style={{ width: 38 }} />
-          </span>
-          <span style={css("min-width:0")}>
-            <span style={css("display:block;font-size:12.5px;color:var(--text-2)")}>Пока без заказов</span>
-            <span style={css(NUM + ";display:block;font-size:11.5px;color:var(--text-4);margin-top:1px")}>в книге с {date(c.created_at.slice(0, 10))}</span>
-          </span>
-          <HButton onClick={newOrder} title="Оформить первый заказ" className="cu-act cu-first" s="" hover="">
-            <Svg paths={I_PLUS} size={13} sw={2.4} />
-            Первый заказ
-          </HButton>
+/**
+ * Карточка-профиль: полоса с узором (тёмная — если товар ждёт выдачи), круглый аватар на ней,
+ * имя, телефон и код; плашка «Сумма · Товары · Долг»; полоска этапов и давность заказа; действия — в «⋯».
+ */
+function ProfileCard({ c, mark, anchor, onOpen }: { c: CustomerRow; mark?: string; anchor?: string; onOpen: () => void }) {
+  const ready = c.in_stock > 0;
+  const empty = !c.items && !c.sale;
+  const stages = [
+    { k: "o", n: c.ordered, label: "ждём" },
+    { k: "s", n: c.in_stock, label: "на складе" },
+    { k: "i", n: c.issued, label: "выдано" },
+  ].filter((x) => x.n > 0);
+  return (
+    <div
+      className={"cu6-c" + (ready ? " ready" : "")}
+      id={anchor}
+      onClick={onOpen}
+      onKeyDown={(e) => e.key === "Enter" && onOpen()}
+      role="button"
+      tabIndex={0}
+      title="Открыть карточку клиента"
+    >
+      <div className="cu6-band">
+        <span className="cu6-tl">
+          {mark && <em className="cu6-mark">{mark}</em>}
+          {ready && <em className="cu6-go">к выдаче · {c.in_stock}</em>}
         </span>
-      ) : (
-        <>
-          <span className="cu-hide" style={css("display:flex;flex-wrap:wrap;gap:4px 12px;min-width:0;font-size:12.5px;color:var(--text-3)")}>
-            {stages.map((x) => (
-              <span key={x.label} style={css("display:inline-flex;align-items:center;gap:6px;white-space:nowrap")}>
-                <span style={mix("width:7px;height:7px;border-radius:50%", { background: x.dot })} />
-                <b style={css(NUM + ";font-weight:500;color:var(--text)")}>{x.n}</b> {x.label}
-              </span>
-            ))}
-          </span>
-          <Money sale={c.sale} debt={c.debt} />
-          <span className="cu-hide" style={css("min-width:0;white-space:nowrap")}>
-            {c.last_order_date ? (
-              <>
-                <span style={css("display:block;font-size:12.5px;color:var(--text-2)")}>{ago(c.last_order_date)}</span>
-                <span style={css(NUM + ";display:block;font-size:11.5px;color:var(--text-4);margin-top:1px")}>{date(c.last_order_date)}</span>
-              </>
-            ) : (
-              <span style={css("font-size:12.5px;color:var(--text-4)")}>—</span>
-            )}
-          </span>
-          <span className="cu-actions cu-hide">
-            {c.in_stock > 0 && (
-              <HButton
-                onClick={(e) => {
-                  e.stopPropagation();
-                  nav(`/issue?customer=${c.id}`);
-                }}
-                title="Выдать товары"
-                className="cu-act green"
-                s=""
-                hover=""
-              >
-                <Icon name="issue" size={14} />
-                Выдать
-              </HButton>
-            )}
-            <HButton onClick={newOrder} title="Новый заказ" className="cu-act" s="" hover="">
-              <Svg paths={I_PLUS} size={13} sw={2.4} />
-              Заказ
-            </HButton>
-          </span>
-        </>
-      )}
+        <CardMenu c={c} />
+      </div>
+      <span className="cu6-av">{letters(c.name)}</span>
+      <div className="cu6-id">
+        <b>{c.name}</b>
+        <small>
+          {c.phone || "без телефона"}
+          {c.code && <code>{c.code}</code>}
+        </small>
+      </div>
+      <div className="cu6-stats">
+        <span>
+          <b>{c.sale > 0 ? som(c.sale) : "—"}</b>
+          <small>сумма</small>
+        </span>
+        <span>
+          <b>{c.items || "—"}</b>
+          <small>{plural(c.items, "товар", "товара", "товаров")}</small>
+        </span>
+        <span className={c.debt > 0 ? "owe" : ""}>
+          <b>{c.debt > 0 ? som(c.debt) : "—"}</b>
+          <small>долг</small>
+        </span>
+      </div>
+      <div className="cu6-foot">
+        {empty ? (
+          <small className="cu6-none">пока без заказов · в книге с {date(c.created_at.slice(0, 10))}</small>
+        ) : (
+          <>
+            <span className="cu6-bar" title={stages.map((x) => `${x.label} ${x.n}`).join(" · ")}>
+              {stages.map((x) => (
+                <i key={x.k} className={x.k} style={{ flexGrow: x.n }} />
+              ))}
+            </span>
+            <span className="cu6-fl">
+              <small>{c.last_order_date ? ago(c.last_order_date) : "заказов не было"}</small>
+              <small>{c.in_stock > 0 ? `на складе ${c.in_stock}` : c.ordered > 0 ? `ждём ${c.ordered}` : "всё выдано"}</small>
+            </span>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-/**
- * Деньги клиента ровной колонкой: сверху сумма заказов и состояние (долг или «оплачено»),
- * под ними полоса — зелёная часть оплачена, красная — долг. Процент — в подсказке.
- */
-function Money({ sale, debt }: { sale: number; debt: number }) {
-  const paid = Math.max(0, sale - debt);
-  const pct = sale > 0 ? Math.round((paid / sale) * 100) : 0;
+/** «⋯» на карточке: выдать (если есть на складе), новый заказ, открыть карточку. */
+function CardMenu({ c }: { c: CustomerRow }) {
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", off);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", off);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  const go = (to: string) => {
+    setOpen(false);
+    nav(to);
+  };
   return (
-    <span className="cu-money" title={sale ? `оплачено ${pct}% · ${som(paid)} из ${som(sale)}` : undefined}>
-      <span style={css("display:flex;align-items:baseline;justify-content:space-between;gap:10px")}>
-        <span style={mix(NUM + ";font-size:12px;white-space:nowrap", { color: debt > 0 ? "var(--danger)" : "var(--green)" })}>{debt > 0 ? `долг ${som(debt)}` : "✓ оплачено"}</span>
-        <span style={css(NUM + ";font-size:14px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(sale)}</span>
-      </span>
-      <span className="cu-bar">
-        {paid > 0 && <i style={{ flexGrow: paid, background: "linear-gradient(90deg,#34D399,#16A34A)" }} />}
-        {debt > 0 && <i style={{ flexGrow: debt, background: "linear-gradient(90deg,#FB7185,#E5484D)" }} />}
-      </span>
+    <span className="cu4-more cu6-more" ref={box} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+      <button type="button" className={"cu4-dots" + (open ? " on" : "")} onClick={() => setOpen(!open)} aria-label="Действия с клиентом" aria-expanded={open}>
+        <Svg paths={[["circle", { cx: 5, cy: 12, r: 1.6 }], ["circle", { cx: 12, cy: 12, r: 1.6 }], ["circle", { cx: 19, cy: 12, r: 1.6 }]]} size={16} sw={2.2} />
+      </button>
+      {open && (
+        <span className="cu4-menu" role="menu">
+          {c.in_stock > 0 && (
+            <button type="button" role="menuitem" className="main" onClick={() => go(`/issue?customer=${c.id}`)}>
+              <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={14} sw={2.6} />
+              Выдать товары
+              <em>{c.in_stock}</em>
+            </button>
+          )}
+          <button type="button" role="menuitem" onClick={() => go(`/new-order?customer=${c.id}`)}>
+            <Svg paths={I_PLUS} size={14} sw={2.4} />
+            Новый заказ
+          </button>
+          <button type="button" role="menuitem" onClick={() => go(`/customers/${c.id}`)}>
+            <Svg paths={I_USER} size={14} sw={2.2} />
+            Открыть карточку
+          </button>
+        </span>
+      )}
     </span>
   );
 }
@@ -425,7 +622,7 @@ function Avatar({ name, size = 34 }: { name: string; size?: number }) {
 
 // --- Карточка клиента -----------------------------------------------------------------------
 
-export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast: Toast }) {
+export function CustomerDetail({ toast }: { isDesktop: boolean; toast: Toast }) {
   const { id } = useParams();
   const nav = useNavigate();
   const { user } = useAuth();
@@ -520,7 +717,28 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
   const foundCount = new Set([...found, ...(focusId !== null ? [focusId] : [])]).size;
 
   if (error && !card) return <LoadError text={error} onRetry={load} />;
-  if (!card) return <Page size="wide"><SkeletonRows rows={5} /></Page>;
+  if (!card)
+    return (
+      <Page size="wide">
+        <div className="ov cd" aria-hidden>
+          <section className="ov-card paper cd-hero ghost">
+            <span className="sk" style={{ width: 64, height: 64, borderRadius: "50%" }} />
+            <span style={{ flex: 1 }}>
+              <span className="sk" style={{ width: "30%", height: 18 }} />
+              <span className="sk" style={{ width: "46%", height: 10, marginTop: 10 }} />
+            </span>
+          </section>
+          <section className="ov-card paper cd-money ghost">
+            {[0, 1, 2, 3].map((k) => (
+              <div key={k} className="cd-m">
+                <span className="sk" style={{ width: "40%", height: 9 }} />
+                <span className="sk" style={{ width: "60%", height: 18, marginTop: 8 }} />
+              </div>
+            ))}
+          </section>
+        </div>
+      </Page>
+    );
   const c = card.customer;
   const t = card.totals;
   const rows = card.items.filter((i) => !tab || i.status === tab);
@@ -528,224 +746,530 @@ export function CustomerDetail({ isDesktop, toast }: { isDesktop: boolean; toast
   const firstDate = card.items.reduce<string | null>((m, i) => (!m || i.order_date < m ? i.order_date : m), null);
   const paidPct = t.sale ? Math.min(100, Math.round((t.paid / t.sale) * 100)) : 0;
 
+  const orderSums = (() => {
+    const m = new Map<string, number>();
+    for (const it of card.items) m.set(it.order_date.slice(0, 10), (m.get(it.order_date.slice(0, 10)) ?? 0) + it.sale);
+    return [...m.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).slice(-14).map(([, v]) => v);
+  })();
+  const costSale = card.items.filter((i) => i.cost !== null).reduce((a, i) => a + (i.cost ?? 0), 0);
+  // Товары по дням заказа — сверху новые.
+  const groups = (() => {
+    const m = new Map<string, Item[]>();
+    for (const it of rows) {
+      const k = it.order_date.slice(0, 10);
+      const g = m.get(k);
+      if (g) g.push(it);
+      else m.set(k, [it]);
+    }
+    return [...m.entries()];
+  })();
+  const ids = rows.map((r) => r.id);
+  const allOn = ids.length > 0 && ids.every((x) => sel.selected.has(x));
+  const someOn = ids.some((x) => sel.selected.has(x));
+
   return (
     <Page size="wide">
-      <HButton onClick={() => nav("/customers")} s="display:flex;align-items:center;gap:6px;border:none;background:transparent;color:var(--text-3);font-size:12.5px;cursor:pointer;padding:0;margin-bottom:10px" hover="color:var(--text)">
-        <Svg paths={I_BACK} size={14} /> Все клиенты
-      </HButton>
+      <div className="ov cd">
+        <button type="button" className="cd-back" onClick={() => nav("/customers")}>
+          <Svg paths={I_BACK} size={14} /> Все клиенты
+        </button>
 
-      {/* Шапка: кто это, как связаться, как давно с нами — и действия */}
-      <div className="cu-card-head" style={css("margin-bottom:12px")}>
-        <div style={css("display:flex;flex-wrap:wrap;gap:14px 16px;align-items:center")}>
-          <Avatar name={c.name} size={56} />
-          <div style={css("min-width:0;flex:1 1 260px")}>
-            <div style={css("display:flex;align-items:center;gap:8px;flex-wrap:wrap")}>
-              <span style={css("font-size:21px;font-weight:500;letter-spacing:-.01em")}>{c.name}</span>
-              {c.code && <span style={css("font-size:11px;padding:2px 7px;border-radius:6px;background:var(--hover);color:var(--text-2);" + MONO)}>код {c.code}</span>}
-              {t.debt > 0 && <span style={css(NUM + ";font-size:12px;font-weight:500;padding:3px 9px;border-radius:999px;background:var(--danger-tint);color:var(--danger)")}>должен {som(t.debt)}</span>}
-            </div>
-            <div style={css("display:flex;gap:6px 14px;align-items:center;flex-wrap:wrap;margin-top:5px;font-size:12.5px;color:var(--text-3)")}>
+        {/* Профиль: кто это, как связаться, как давно с нами — и действия */}
+        <section className="ov-card paper cd-hero">
+          <span className="cd-av">{letters(c.name)}</span>
+          <div className="cd-id">
+            <span className="cd-name">
+              <b>{c.name}</b>
+              {c.code && <code>код {c.code}</code>}
               {c.phone ? (
-                <HButton
-                  onClick={() => navigator.clipboard?.writeText(c.phone).then(() => toast("success", "Телефон скопирован"))}
-                  s={"border:none;background:transparent;padding:0;cursor:pointer;font-size:14px;color:var(--text);" + NUM}
-                  hover="color:var(--accent)"
-                  title="Скопировать"
-                >
+                <button type="button" className="cd-phone" onClick={() => navigator.clipboard?.writeText(c.phone).then(() => toast("success", "Телефон скопирован"))} title="Скопировать номер">
+                  <Svg paths={CD_IC.phone} size={13} sw={2} />
                   {c.phone}
-                </HButton>
+                </button>
               ) : (
                 <span>телефон не указан</span>
               )}
-              {firstDate && <span>клиент с {date(firstDate)}</span>}
-              {orders > 0 && (
-                <span>
-                  {orders} {plural(orders, "заказ", "заказа", "заказов")} · {t.items} {plural(t.items, "товар", "товара", "товаров")}
+            </span>
+            <span className="cd-meta">
+              {firstDate && (
+                <span className="cd-chip" title="Первый заказ">
+                  <Svg paths={[["rect", { x: 3, y: 4, width: 18, height: 18, rx: 2 }], ["path", { d: "M16 2v4M8 2v4M3 10h18" }]]} size={13} sw={2} />
+                  с <b>{date(firstDate)}</b>
                 </span>
               )}
-              {c.comment && <span style={css("color:var(--text-2);font-style:italic")}>«{c.comment}»</span>}
-            </div>
-          </div>
-          <div style={css("display:flex;gap:8px;flex-wrap:wrap;align-items:center")}>
-            {t.debt > 0 && (
-              <HButton onClick={() => setPaying(true)} s={btnPrimary} hover="background:var(--accent-hover)">
-                Принять оплату
-              </HButton>
-            )}
-            {t.in_stock > 0 && (
-              <HButton onClick={() => nav(`/issue?customer=${c.id}`)} s={btnGhost + ";color:var(--green);border-color:var(--green-dot)"} hover="background:var(--green-tint)">
-                Выдать ({t.in_stock})
-              </HButton>
-            )}
-            <HButton onClick={() => nav(`/new-order?customer=${c.id}`)} s={t.debt > 0 ? btnGhost : btnPrimary} hover={t.debt > 0 ? "border-color:var(--accent)" : "background:var(--accent-hover)"}>
-              + Новый заказ
-            </HButton>
-            <HButton onClick={() => setEditing(true)} s={btnGhost + ";padding:0 12px"} hover="border-color:var(--accent)">
-              Изменить
-            </HButton>
-            {isAdmin && (
-              <HButton onClick={() => setDeleting(true)} s={btnGhost + ";padding:0 12px;color:var(--danger);border-color:var(--danger-border)"} hover="background:var(--danger-tint)">
-                Удалить
-              </HButton>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Деньги одной панелью: сколько заказал, сколько оплатил, сколько должен и что заработали */}
-      <div style={mix(PANEL + ";display:grid;margin-bottom:14px", { gridTemplateColumns: isDesktop ? "repeat(4,minmax(0,1fr))" : "repeat(2,minmax(0,1fr))" })}>
-        <Metric label="Сумма заказов" value={som(t.sale)} sub={`${t.items} ${plural(t.items, "товар", "товара", "товаров")}`} />
-        <Metric label="Оплачено" value={som(t.paid)} color="var(--green)" sub={t.sale ? `${paidPct}% от суммы` : ""} bar={paidPct} bl />
-        <Metric
-          label="Долг"
-          value={t.debt > 0 ? som(t.debt) : "нет"}
-          color={t.debt > 0 ? "var(--danger)" : "var(--text-4)"}
-          sub={t.debt > 0 ? `${t.unpaid_items} ${plural(t.unpaid_items, "товар", "товара", "товаров")} не оплачено` : "всё оплачено"}
-          bl={isDesktop}
-          bt={!isDesktop}
-        />
-        <Metric
-          label="Прибыль"
-          value={t.with_cost ? som(t.profit) : "—"}
-          color={t.profit < 0 ? "var(--danger)" : "var(--green)"}
-          sub={t.with_cost < t.items ? `по ${t.with_cost} из ${t.items} — где есть реальная цена` : "Сумма − реальная цена"}
-          bl
-          bt={!isDesktop}
-        />
-      </div>
-
-      <div style={css("margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap")}>
-        <Tabs<"" | ItemStatus>
-          value={tab}
-          onChange={setTab}
-          tabs={[
-            { key: "", label: "Все товары", count: t.items },
-            { key: "ordered", label: "Заказаны", count: t.ordered, dot: ST.ordered.dot },
-            { key: "in_stock", label: "На складе", count: t.in_stock, dot: ST.in_stock.dot },
-            { key: "issued", label: "Выданы", count: t.issued, dot: ST.issued.dot },
-          ]}
-        />
-        {foundCount > 0 && (
-          <div className="cu-found" role="status">
-            <span className="cu-found-i">
-              <Svg paths={I_SEARCH} size={13} />
-            </span>
-            <span style={css("white-space:nowrap")}>
-              {focusId !== null && foundCount > 1 ? (
-                <>
-                  Найдено здесь <b>{[...card.items.filter((i) => foundSet.has(i.id) || i.id === focusId)].findIndex((i) => i.id === focusId) + 1}</b> из <b>{foundCount}</b>
-                </>
-              ) : (
-                <>
-                  Найдено здесь: <b>{foundCount}</b> {plural(foundCount, "товар", "товара", "товаров")}
-                </>
+              {orders > 0 && (
+                <span className="cd-chip">
+                  <Svg paths={[["path", { d: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" }], ["path", { d: "M3 6h18" }], ["path", { d: "M16 10a4 4 0 0 1-8 0" }]]} size={13} sw={2} />
+                  <b>{orders}</b> {plural(orders, "заказ", "заказа", "заказов")}
+                </span>
+              )}
+              {t.items > 0 && (
+                <span className="cd-chip">
+                  <Svg paths={CD_IC.box} size={13} sw={2} />
+                  <b>{t.items}</b> {plural(t.items, "товар", "товара", "товаров")}
+                </span>
               )}
             </span>
-            {foundCount > 1 && (
-              <>
-                <HButton onClick={() => stepFound(-1)} className="cu-found-b" s="" hover="" title="Предыдущий найденный">
-                  <Svg paths={[["path", { d: "m18 15-6-6-6 6" }]]} size={15} />
-                </HButton>
-                <HButton onClick={() => stepFound(1)} className="cu-found-b" s="" hover="" title="Следующий найденный">
-                  <Svg paths={[["path", { d: "m6 9 6 6 6-6" }]]} size={15} />
-                </HButton>
-              </>
-            )}
-            {foundCount === 1 && (
-              <HButton onClick={() => stepFound(1)} className="cu-found-b wide" s="" hover="" title="Показать в списке">
-                показать
-              </HButton>
-            )}
-            <HButton
-              onClick={() => {
-                setFocusId(null);
-                setHidden(hitKey);
-              }}
-              className="cu-found-b"
-              s=""
-              hover=""
-              title="Снять выделение"
-            >
-              <Svg paths={I_CLOSE} size={13} />
-            </HButton>
+            {c.comment && <span className="cd-note">«{c.comment}»</span>}
           </div>
+          <OrderTimeline items={card.items} />
+          <div className="cd-actions">
+            {t.debt > 0 && (
+              <button type="button" className="cd-btn pay" onClick={() => setPaying(true)}>
+                <Svg paths={CD_IC.cash} size={15} sw={1.9} />
+                <span className="cd-lg">Принять оплату</span>
+                <span className="cd-sm">Оплата</span>
+              </button>
+            )}
+            {t.in_stock > 0 && (
+              <button type="button" className="cd-btn" onClick={() => nav(`/issue?customer=${c.id}`)}>
+                <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={14} sw={2.4} />
+                Выдать · {t.in_stock}
+              </button>
+            )}
+            <button type="button" className="cd-btn dark" onClick={() => nav(`/new-order?customer=${c.id}`)}>
+              <Svg paths={I_PLUS} size={14} sw={2.4} />
+              <span className="cd-lg">Новый заказ</span>
+              <span className="cd-sm">Заказ</span>
+            </button>
+            <MoreMenu onEdit={() => setEditing(true)} onDelete={isAdmin ? () => setDeleting(true) : undefined} />
+          </div>
+        </section>
+
+        {/* Деньги клиента одной строкой */}
+        <section className="ov-card paper cd-money">
+          <Metric label="Сумма заказов" icon={CD_IC.bag} value={som(t.sale)} sub={`${orders} ${plural(orders, "заказ", "заказа", "заказов")} · ${t.items} ${plural(t.items, "товар", "товара", "товаров")}`} side={<MiniBars values={orderSums} />} />
+          <Metric label="Оплачено" icon={CD_IC.check} value={som(t.paid)} sub={t.sale ? `${paidPct}% от суммы` : "оплат пока нет"} side={t.sale ? <Wave pct={paidPct} label="оплачено" /> : undefined} />
+          <Metric
+            label="Долг"
+            icon={CD_IC.cash}
+            value={t.debt > 0 ? som(t.debt) : "нет"}
+            tone={t.debt > 0 ? "owe" : "mute"}
+            sub={t.debt > 0 ? `${t.unpaid_items} ${plural(t.unpaid_items, "товар", "товара", "товаров")} не оплачено` : "всё оплачено"}
+            side={t.sale > 0 ? <DebtCap debt={t.debt} sale={t.sale} /> : undefined}
+          />
+          <Metric
+            label="Прибыль"
+            icon={CD_IC.trend}
+            value={t.with_cost ? som(t.profit) : "—"}
+            tone={t.with_cost && t.profit < 0 ? "owe" : t.with_cost ? "" : "mute"}
+            sub={t.with_cost < t.items ? `по ${t.with_cost} из ${t.items} с ценой выкупа` : "сумма − цена выкупа"}
+            side={t.with_cost && costSale > 0 ? <ProfitCols cost={costSale} profit={t.profit} /> : undefined}
+          />
+        </section>
+
+        <div className="cd-tools">
+          <SlideTabs<"" | ItemStatus>
+            value={tab}
+            onChange={setTab}
+            options={[
+              ["", "Все товары", t.items],
+              ["ordered", "Заказаны", t.ordered, "warn"],
+              ["in_stock", "На складе", t.in_stock, "ok"],
+              ["issued", "Выданы", t.issued, "ink"],
+            ]}
+          />
+          {foundCount > 0 && (
+            <div className="cd-found" role="status">
+              <Svg paths={I_SEARCH} size={13} />
+              <span>
+                {focusId !== null && foundCount > 1 ? (
+                  <>
+                    найдено <b>{[...card.items.filter((i) => foundSet.has(i.id) || i.id === focusId)].findIndex((i) => i.id === focusId) + 1}</b> из <b>{foundCount}</b>
+                  </>
+                ) : (
+                  <>
+                    найдено: <b>{foundCount}</b> {plural(foundCount, "товар", "товара", "товаров")}
+                  </>
+                )}
+              </span>
+              {foundCount > 1 ? (
+                <>
+                  <button type="button" onClick={() => stepFound(-1)} title="Предыдущий найденный">
+                    <Svg paths={[["path", { d: "m18 15-6-6-6 6" }]]} size={14} sw={2.2} />
+                  </button>
+                  <button type="button" onClick={() => stepFound(1)} title="Следующий найденный">
+                    <Svg paths={[["path", { d: "m6 9 6 6 6-6" }]]} size={14} sw={2.2} />
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="wide" onClick={() => stepFound(1)} title="Показать в списке">
+                  показать
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setFocusId(null);
+                  setHidden(hitKey);
+                }}
+                title="Снять выделение"
+              >
+                <Svg paths={I_CLOSE} size={12} sw={2.4} />
+              </button>
+            </div>
+          )}
+        </div>
+
+        <section className="ov-card paper cd-items">
+          {rows.length === 0 ? (
+            <div className="cu2-none">
+              <span className="cu2-none-i">
+                <Svg paths={CD_IC.box} size={22} sw={1.8} />
+              </span>
+              <b>Товаров нет</b>
+              <small>Нажмите «Новый заказ» вверху</small>
+            </div>
+          ) : (
+            <>
+              <div className="cd-th">
+                <Tick on={allOn} half={someOn} onToggle={(on) => sel.onSelect(ids, on)} title="Выбрать все" />
+                <span>Товар</span>
+                <span>Кол-во</span>
+                <span>Сумма</span>
+                <span>Прибыль</span>
+                <span>Оплата</span>
+                <span>Статус</span>
+              </div>
+              {groups.map(([day, list]) => (
+                <div key={day} className="cd-grp">
+                  <div className="cd-gh">
+                    <b>{dayWords(day)}</b>
+                    <small>
+                      {list.length} {plural(list.length, "товар", "товара", "товаров")} · {som(list.reduce((a, x) => a + x.sale, 0))}
+                    </small>
+                  </div>
+                  {list.map((it) => (
+                    <DetailRow
+                      key={`${it.id}:${focusId === it.id ? pulse : 0}`}
+                      it={it}
+                      on={sel.selected.has(it.id)}
+                      onToggle={(on) => sel.onSelect([it.id], on)}
+                      onOpen={setOpen}
+                      found={foundSet.has(it.id)}
+                      focus={focusId === it.id}
+                    />
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
+        </section>
+
+        <BulkBar items={rows} selected={sel.selected} onClear={sel.clear} toast={toast} />
+        {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
+        {editing && (
+          <CustomerForm
+            customer={c}
+            onClose={() => setEditing(false)}
+            onSaved={() => {
+              setEditing(false);
+              toast("success", "Клиент сохранён");
+              load();
+              emit("cargo:changed");
+            }}
+          />
+        )}
+        {paying && (
+          <PayModal
+            customer={c}
+            debt={t.debt}
+            onClose={() => setPaying(false)}
+            onPaid={(amount) => {
+              setPaying(false);
+              toast("success", `Оплата ${som(amount)} принята`);
+              emit("cargo:changed");
+            }}
+          />
+        )}
+        {deleting && (
+          <Confirm
+            title="Удалить клиента?"
+            text={
+              <>
+                «{c.name}» и все его товары ({t.items}) пропадут из списков и отчётов. Записи останутся в базе (мягкое удаление).
+              </>
+            }
+            onClose={() => setDeleting(false)}
+            onConfirm={async () => {
+              await deleteCustomer(c.id);
+              toast("success", "Клиент удалён");
+              emit("cargo:changed");
+              nav("/customers");
+            }}
+          />
         )}
       </div>
-      <ItemTable
-        rows={rows}
-        isDesktop={isDesktop}
-        columns={["date", "item", "qty", "sale", "profit", "pay", "status", "arrived", "issued"]}
-        onOpen={setOpen}
-        selected={sel.selected}
-        onSelect={sel.onSelect}
-        found={foundSet}
-        focus={focusId}
-        query={hidden === hitKey ? undefined : hits.query}
-        key={`f${pulse}`}
-        empty={<Empty icon="orders" title="Товаров нет" text="Нажмите «+ Новый заказ» вверху" />}
-      />
-
-      <BulkBar items={rows} selected={sel.selected} onClear={sel.clear} toast={toast} />
-      {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
-      {editing && (
-        <CustomerForm
-          customer={c}
-          onClose={() => setEditing(false)}
-          onSaved={() => {
-            setEditing(false);
-            toast("success", "Клиент сохранён");
-            load();
-            emit("cargo:changed");
-          }}
-        />
-      )}
-      {paying && (
-        <PayModal
-          customer={c}
-          debt={t.debt}
-          onClose={() => setPaying(false)}
-          onPaid={(amount) => {
-            setPaying(false);
-            toast("success", `Оплата ${som(amount)} принята`);
-            emit("cargo:changed");
-          }}
-        />
-      )}
-      {deleting && (
-        <Confirm
-          title="Удалить клиента?"
-          text={
-            <>
-              «{c.name}» и все его товары ({t.items}) пропадут из списков и отчётов. Записи останутся в базе (мягкое удаление).
-            </>
-          }
-          onClose={() => setDeleting(false)}
-          onConfirm={async () => {
-            await deleteCustomer(c.id);
-            toast("success", "Клиент удалён");
-            emit("cargo:changed");
-            nav("/customers");
-          }}
-        />
-      )}
     </Page>
   );
 }
 
-/** Ячейка денежной панели карточки; bl / bt — разделитель слева / сверху. */
-function Metric({ label, value, color, sub, bar, bl, bt }: { label: string; value: string; color?: string; sub?: string; bar?: number; bl?: boolean; bt?: boolean }) {
+const CD_IC: Record<"phone" | "cash" | "pen" | "trash" | "box" | "bag" | "check" | "trend", PathDef> = {
+  bag: [["path", { d: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" }], ["path", { d: "M3 6h18" }], ["path", { d: "M16 10a4 4 0 0 1-8 0" }]],
+  check: [["path", { d: "M22 11.1V12a10 10 0 1 1-5.9-9.1" }], ["path", { d: "m9 11 3 3L22 4" }]],
+  trend: [["path", { d: "m22 7-8.5 8.5-5-5L2 17" }], ["path", { d: "M16 7h6v6" }]],
+  phone: [["path", { d: "M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z" }]],
+  cash: [["rect", { x: 2, y: 6, width: 20, height: 12, rx: 2 }], ["circle", { cx: 12, cy: 12, r: 2.2 }], ["path", { d: "M6 12h.01M18 12h.01" }]],
+  pen: [["path", { d: "M12 20h9" }], ["path", { d: "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" }]],
+  trash: [["path", { d: "M3 6h18" }], ["path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }], ["path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }]],
+  box: [["path", { d: "M21 8 12 3 3 8v8l9 5 9-5V8Z" }], ["path", { d: "m3 8 9 5 9-5" }], ["path", { d: "M12 13v8" }]],
+};
+const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const dayWords = (d: string) => {
+  const x = new Date(`${d}T00:00:00`);
+  return `${x.getDate()} ${MONTHS_GEN[x.getMonth()]}${x.getFullYear() !== new Date().getFullYear() ? ` ${x.getFullYear()}` : ""}`;
+};
+const STAGE_TEXT: Record<string, string> = { ordered: "Заказан", in_transit: "В пути", in_stock: "На складе", issued: "Выдан" };
+const STAGE_DOT: Record<string, string> = { ordered: "warn", in_transit: "info", in_stock: "ok", issued: "" };
+
+const MONTHS_NOM = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const MON_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+
+/** Заказы за год по месяцам: столбик — сколько товаров заказано в месяц; текущий месяц тёмный. */
+function OrderTimeline({ items }: { items: Item[] }) {
+  const now = new Date();
+  const months = Array.from({ length: 12 }, (_, k) => {
+    const m = new Date(now.getFullYear(), now.getMonth() - 11 + k, 1);
+    return { key: `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}`, label: MON_SHORT[m.getMonth()], full: `${MONTHS_NOM[m.getMonth()]} ${m.getFullYear()}`, n: 0, qty: 0, sale: 0, orders: new Set<number>() };
+  });
+  const at = new Map(months.map((m, k) => [m.key, k]));
+  for (const it of items) {
+    const k = at.get(it.order_date.slice(0, 7));
+    if (k === undefined) continue;
+    const m = months[k];
+    m.n += 1;
+    m.qty += it.qty;
+    m.sale += it.sale;
+    m.orders.add(it.order_id);
+  }
+  const max = Math.max(1, ...months.map((m) => m.n));
+  const active = months.filter((m) => m.n > 0).length;
   return (
-    <div style={mix("padding:14px 18px;min-width:0", { borderLeft: bl ? "1px solid var(--border-2)" : undefined, borderTop: bt ? "1px solid var(--border-2)" : undefined })}>
-      <div style={css("font-size:12px;color:var(--text-3)")}>{label}</div>
-      <div style={mix(NUM + ";font-size:23px;font-weight:500;letter-spacing:-.02em;margin-top:4px;white-space:nowrap", { color: color ?? "var(--text)" })}>
-        <CountUp text={value} />
+    <div className="cd-tl" aria-label="Заказы за год">
+      <span className="cd-tl-h">
+        <b>Заказы за год</b>
+        <small>{active ? `${active} ${plural(active, "месяц", "месяца", "месяцев")} с заказами` : "заказов не было"}</small>
+      </span>
+      <div className="cd-tl-bars">
+        {months.map((m, k) => (
+          <span key={m.key} className={"cd-tl-col" + (k === 11 ? " now" : "")}>
+            <i className={m.n ? "" : "zero"} style={{ height: m.n ? Math.round(6 + (m.n / max) * 32) : undefined, animationDelay: `${k * 45}ms` }} />
+            <em>{m.label}</em>
+            <span className={"cd-tl-tip" + (k < 2 ? " l" : k > 9 ? " r" : "")}>
+              <b>{m.full}</b>
+              {m.n ? (
+                <>
+                  <span>
+                    <strong>{m.orders.size}</strong> {plural(m.orders.size, "заказ", "заказа", "заказов")} · <strong>{m.n}</strong> {plural(m.n, "товар", "товара", "товаров")}
+                  </span>
+                  <span>
+                    <strong>{m.qty}</strong> шт · <strong>{som(m.sale)}</strong>
+                  </span>
+                </>
+              ) : (
+                <span>заказов не было</span>
+              )}
+            </span>
+          </span>
+        ))}
       </div>
-      {bar !== undefined && (
-        <div style={css("height:6px;border-radius:999px;background:var(--danger-tint);margin-top:9px;overflow:hidden")}>
-          <div className="bar-grow" style={mix("height:100%;border-radius:999px;background:linear-gradient(90deg,#34D399,#16A34A)", { width: bar + "%" })} />
+    </div>
+  );
+}
+
+/** «⋯» — редкие действия с клиентом в выпадающем меню. */
+function MoreMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", off);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", off);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="cd-more">
+      <button type="button" className={"cd-ico" + (open ? " on" : "")} onClick={() => setOpen(!open)} title="Ещё" aria-expanded={open}>
+        <Svg paths={[["circle", { cx: 5, cy: 12, r: 1.4 }], ["circle", { cx: 12, cy: 12, r: 1.4 }], ["circle", { cx: 19, cy: 12, r: 1.4 }]]} size={17} sw={2.2} />
+      </button>
+      {open && (
+        <div className="cd-more-m" role="menu">
+          <button type="button" role="menuitem" onClick={() => (setOpen(false), onEdit())}>
+            <Svg paths={CD_IC.pen} size={15} sw={1.9} />
+            Изменить клиента
+          </button>
+          {onDelete && (
+            <button type="button" role="menuitem" className="danger" onClick={() => (setOpen(false), onDelete())}>
+              <Svg paths={CD_IC.trash} size={15} sw={1.9} />
+              Удалить клиента
+            </button>
+          )}
         </div>
       )}
-      {sub && <div style={css("font-size:11.5px;color:var(--text-4);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</div>}
+    </div>
+  );
+}
+
+/** Галочка выбора; half — выбрана часть. Клик не открывает товар. */
+function Tick({ on, half, onToggle, title }: { on: boolean; half?: boolean; onToggle: (on: boolean) => void; title?: string }) {
+  return (
+    <span
+      role="checkbox"
+      aria-checked={on ? true : half ? "mixed" : false}
+      tabIndex={0}
+      title={title}
+      className={"od-check" + (on || half ? " on" : "")}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(!on);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          onToggle(!on);
+        }
+      }}
+    >
+      {on ? <Svg paths={[["path", { d: "M20 6 9 17l-5-5" }]]} size={12} sw={3} /> : half ? <Svg paths={[["path", { d: "M6 12h12" }]]} size={12} sw={3} /> : null}
+    </span>
+  );
+}
+
+/** Строка товара клиента: найденное поиском — подсвечено, выбранное из поиска — с рамкой. */
+function DetailRow({ it, on, onToggle, onOpen, found, focus }: { it: Item; on: boolean; onToggle: (on: boolean) => void; onOpen: (id: number) => void; found: boolean; focus: boolean }) {
+  const st = it.stage ?? it.status;
+  const p = profitOf(it);
+  const self = (it.comment ?? "").startsWith("Клиент заказывал сам");
+  const pay: [string, string] = it.debt <= 0 ? ["ok", "Оплачено"] : it.debt < it.sale ? ["warn", `Долг ${som(it.debt)}`] : ["bad", "Не оплачено"];
+  const when =
+    it.status === "issued" && it.issued_at
+      ? `выдан ${shortDateTime(it.issued_at)}`
+      : it.arrived_at
+        ? `пришёл ${shortDateTime(it.arrived_at)}`
+        : st === "in_transit" && it.transit_shipped_at
+          ? `отправлен ${shortDateTime(it.transit_shipped_at).slice(0, 5)}`
+          : "";
+  return (
+    <div data-item={it.id} className={"cd-r" + (on ? " on" : "") + (found ? " found" : "") + (focus ? " focus" : "")} onClick={() => onOpen(it.id)} title="Открыть карточку товара">
+      <Tick on={on} onToggle={onToggle} />
+      <span className="wx-li">
+        <b>
+          {it.name || "Название неизвестно"}
+          {self && <em className="cd-self">свой заказ</em>}
+        </b>
+        <small>{it.code || "без кода"}</small>
+      </span>
+      <span className="wx-lq">
+        {it.qty} <small>шт</small>
+      </span>
+      <span className="wx-ls">{it.sale > 0 ? som(it.sale) : "—"}</span>
+      <span className="bx-mk">
+        {p === null ? (
+          <small>—</small>
+        ) : (
+          <>
+            <b className={p < 0 ? "neg" : ""}>{`${p > 0 ? "+" : ""}${som(p)}`}</b>
+            <small>из {som(it.cost)}</small>
+          </>
+        )}
+      </span>
+      <span>
+        {it.sale <= 0 ? (
+          <span className="cd-w">
+            <b>{it.issue_weight_kg ? `${num(it.issue_weight_kg)} кг` : "по весу"}</b>
+            <small>{it.issue_weight_kg ? "вес при выдаче" : "оплата за вес"}</small>
+          </span>
+        ) : (
+          <span className={"od-pay " + pay[0]}>{pay[1]}</span>
+        )}
+      </span>
+      <span className="cd-st">
+        <span className={"rx-pill-st " + (STAGE_DOT[st] ?? "")}>{STAGE_TEXT[st] ?? st}</span>
+        {when && <small>{when}</small>}
+      </span>
+    </div>
+  );
+}
+
+/** Мини-график сумм по заказам (последние 14 дней заказа): столбики, последний — тёмный. */
+function MiniBars({ values }: { values: number[] }) {
+  if (values.length < 2) return null;
+  const max = Math.max(...values, 1);
+  const w = 7;
+  const gap = 3;
+  const W = values.length * (w + gap) - gap;
+  return (
+    <svg className="cd-bars" width={W} height={44} viewBox={`0 0 ${W} 44`} aria-hidden>
+      {values.map((v, k) => {
+        const h = Math.max(3, (v / max) * 42);
+        return <rect key={k} x={k * (w + gap)} y={44 - h} width={w} height={h} rx={2.5} className={k === values.length - 1 ? "last" : ""} style={{ animationDelay: `${k * 40}ms` }} />;
+      })}
+    </svg>
+  );
+}
+
+/** Долг — «столбик» суммы заказов: снизу оплаченное (тёмное), сверху долг (красный); рядом доля долга. */
+function DebtCap({ debt, sale }: { debt: number; sale: number }) {
+  const p = sale > 0 ? Math.min(100, Math.round((Math.max(0, debt) / sale) * 100)) : 0;
+  // 10 клеток по 10%: красные — доля долга (хотя бы одна, если долг есть).
+  const red = debt > 0 ? Math.max(1, Math.round(p / 10)) : 0;
+  return (
+    <span className={"cd-cap" + (debt > 0 ? " owe" : "")} title={debt > 0 ? `${p}% суммы заказов не оплачено` : "всё оплачено"}>
+      <span className="cd-waf">
+        {Array.from({ length: 10 }, (_, k) => (
+          <i key={k} className={k >= 10 - red ? "d" : ""} style={{ animationDelay: `${k * 35}ms` }} />
+        ))}
+      </span>
+      <span className="cd-cap-l">
+        <b>{debt > 0 ? `${p}%` : "0%"}</b>
+        <small>{debt > 0 ? "в долг" : "долга"}</small>
+      </span>
+    </span>
+  );
+}
+
+/** Прибыль — два столбика: цена выкупа и сумма; разница сверху — наценка в процентах. */
+function ProfitCols({ cost, profit }: { cost: number; profit: number }) {
+  const sale = cost + profit;
+  const max = Math.max(cost, sale, 1);
+  const pct = cost > 0 ? Math.round((profit / cost) * 100) : 0;
+  return (
+    <span className="cd-pc" title={`цена выкупа ${som(cost)} → сумма ${som(sale)}`}>
+      <span className="cd-pc-cols">
+        <i className="c" style={{ height: `${Math.max(8, (cost / max) * 100)}%` }} />
+        <i className={"s" + (profit < 0 ? " neg" : "")} style={{ height: `${Math.max(8, (sale / max) * 100)}%` }} />
+      </span>
+      <span className="cd-cap-l">
+        <b className={profit < 0 ? "neg" : ""}>{`${pct > 0 ? "+" : ""}${pct}%`}</b>
+        <small>наценка</small>
+      </span>
+    </span>
+  );
+}
+
+/** Ячейка денег клиента: иконка и подпись, крупная сумма, пояснение; справа — мини-график. */
+function Metric({ label, value, sub, tone, icon, side }: { label: string; value: string; sub?: string; tone?: string; icon: PathDef; side?: ReactNode }) {
+  return (
+    <div className={"cd-m" + (tone ? ` ${tone}` : "")}>
+      <span className="cd-m-t">
+        <small>
+          <i>
+            <Svg paths={icon} size={13} sw={2} />
+          </i>
+          {label}
+        </small>
+        <b>
+          <CountUp text={value} />
+        </b>
+        {sub && <em>{sub}</em>}
+      </span>
+      {side && <span className="cd-m-side">{side}</span>}
     </div>
   );
 }

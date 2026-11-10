@@ -1,40 +1,73 @@
 /**
  * Заказы: все товары клиентов карточками заказов.
  *
- *  - сверху — итоги по выбранным фильтрам: сумма, оплачено (с полосой), долг, прибыль;
- *  - ниже — вкладки по статусу, оплата, даты, поиск и «Новый заказ»;
- *  - заказ = товары одного клиента за один день: карточка с клиентом, датой, полосой оплаты
- *    и итогами, внутри строки товаров (кол-во, сумма, прибыль, оплата, статус).
+ *  - сверху — путь товара цепочкой этапов (Заказаны → В пути → На складе → Выданы, отдельно «Без кода»):
+ *    сколько на каждом, клик — фильтр; рядом деньги по фильтру: сумма, оплачено, долг, прибыль;
+ *  - ниже — поиск, оплата и даты кнопками, «Новый заказ»;
+ *  - заказ = товары одного клиента за один день: слева отрывной листок с датой, клиент, этапы,
+ *    сумма с кольцом оплаты; внутри — строки товаров (кол-во, сумма, оплата, прибыль, этап).
  * Клик по товару — его карточка; галочки — массовые действия; клик по клиенту — карточка клиента.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { apiError } from "../api/client";
-import { listItems, type Item,
-  type ItemStage, type ItemList, type ItemQuery, type Totals } from "../api/domain";
-import { Empty, Pager, Tabs } from "../components/cargo";
+import { listItems, type Item, type ItemList, type ItemQuery, type ItemStage, type Totals } from "../api/domain";
 import BulkBar, { useSelection } from "../components/BulkBar";
 import ItemModal from "../components/ItemModal";
-import Select from "../components/Select";
 import CountUp from "../design/CountUp";
-import { MONO, css, mix } from "../design/css";
-import { I_CHECK, I_MINUS, Svg } from "../design/icons";
-import { Page, PrimaryAction, SearchInput } from "../design/table";
-import { HButton, ModalError, ST, SkeletonRows } from "../design/ui";
-import { date, monthStartIso, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
+import { I_SEARCH, Svg } from "../design/icons";
+import { Page } from "../design/table";
+import { ModalError } from "../design/ui";
+import { monthStartIso, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
 import { useDebounced, useRefresh } from "../lib/events";
+import { HomeHead } from "./overview/Home";
+import Tabs from "../components/SlideTabs";
 
 type Toast = (kind: "success" | "error", text: string) => void;
-type StatusTab = "" | "ordered" | "in_transit" | "in_stock" | "issued" | "no_code";
+/** "" — по умолчанию всё, кроме выданных; "all" — вместе с выданными. */
+type StatusTab = "" | "all" | "ordered" | "in_transit" | "in_stock" | "issued" | "no_code";
 type PayFilter = "" | "unpaid" | "partial" | "paid" | "debt";
 type DateFilter = "" | "today" | "7" | "month";
-type PathDef = [string, Record<string, unknown>][];
 
-const LIMIT = 50;
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
-const CODE = MONO + ";letter-spacing:.02em";
-const CARD = "background:var(--surface);border:1px solid var(--border);border-radius:16px";
+const LIMIT = 30;
+const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+const MON = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const WD = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const STAGE_TEXT: Record<ItemStage, string> = { ordered: "Заказан", in_transit: "В пути", in_stock: "На складе", issued: "Выдан" };
+/** Этап — приглушённой точкой, как по всему сайту. */
+const STAGE_DOT: Record<ItemStage, string> = { ordered: "warn", in_transit: "info", in_stock: "ok", issued: "" };
+const stageOf = (i: Item): ItemStage => i.stage ?? i.status;
+const r2 = (n: number) => Math.round(n * 100) / 100;
+const letters = (name: string) =>
+  name
+    .split(/\s+/)
+    .map((w) => w.replace(/[^\p{L}]/gu, ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
+
+const I = {
+  ordered: ["M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z", "M3 6h18", "M16 10a4 4 0 0 1-8 0"],
+  transit: ["M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2", "M15 18H9", "M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62L18.3 9.38a1 1 0 0 0-.78-.38H14", "M17 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z", "M7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"],
+  stock: ["M21 8 12 3 3 8v8l9 5 9-5V8Z", "m3 8 9 5 9-5", "M12 13v8"],
+  issued: ["M20 6 9 17l-5-5"],
+  nocode: ["M3 7V5a2 2 0 0 1 2-2h2", "M17 3h2a2 2 0 0 1 2 2v2", "M21 17v2a2 2 0 0 1-2 2h-2", "M7 21H5a2 2 0 0 1-2-2v-2", "m8 8 8 8", "m16 8-8 8"],
+  all: ["M3 6h18", "M3 12h18", "M3 18h18"],
+  plus: ["M12 5v14", "M5 12h14"],
+  check: ["M20 6 9 17l-5-5"],
+  minus: ["M6 12h12"],
+};
+function Ico({ d, size = 16, sw = 1.8 }: { d: string[]; size?: number; sw?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {d.map((p) => (
+        <path key={p} d={p} />
+      ))}
+    </svg>
+  );
+}
 
 export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) {
   const [params, setParams] = useSearchParams();
@@ -59,7 +92,7 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
   };
 
   const load = useCallback(() => {
-    const p: ItemQuery = { status: status === "ordered" ? "not_shipped" : status, pay, q, limit: LIMIT, offset };
+    const p: ItemQuery = { status: status === "" ? "active" : status === "all" ? "" : status === "ordered" ? "not_shipped" : status, pay, q, limit: LIMIT, offset };
     if (dateF === "today") p.date_from = todayIso();
     if (dateF === "7") p.date_from = todayIso(-6);
     if (dateF === "month") p.date_from = monthStartIso();
@@ -70,9 +103,14 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
       })
       .catch((e) => setError(apiError(e, "Не удалось загрузить заказы")));
   }, [status, pay, q, dateF, offset]);
-
   useEffect(load, [load]);
   useEffect(() => setOffset(0), [q, dateF]);
+  // Листаем страницы — экран встаёт к первому заказу, а не к самому верху.
+  const listTop = useRef<HTMLElement>(null);
+  const go = (o: number) => {
+    setOffset(o);
+    listTop.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   useRefresh(load);
 
   // Заказ — товары одного клиента за один день (строки приходят по дате, клиенты подряд).
@@ -87,125 +125,114 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
   }, [data]);
 
   const filtered = !!(q || status || pay || dateF);
+  const c = data?.counts;
+  const pages = data ? Math.max(1, Math.ceil(data.total / LIMIT)) : 1;
+  const page = Math.floor(offset / LIMIT);
 
   return (
     <Page size="wide">
-      <Kpis t={data?.totals ?? null} filtered={filtered} debtOn={pay === "debt"} onDebt={() => setParam("pay", pay === "debt" ? "" : "debt")} />
+      <div className="ov od">
+        <HomeHead title="Заказы" />
 
-      {/* Фильтры */}
-      <div className="ord-filters">
-        <Tabs<StatusTab>
-          value={status}
-          onChange={(v) => setParam("status", v)}
-          tabs={[
-            { key: "", label: "Все", count: data?.counts.all },
-            { key: "ordered", label: "Заказаны", count: data?.counts.not_shipped ?? data?.counts.ordered, dot: ST.ordered.dot },
-            { key: "in_transit", label: "В пути", count: data?.counts.in_transit, dot: ST.in_transit.dot },
-            { key: "in_stock", label: "На складе", count: data?.counts.in_stock, dot: ST.in_stock.dot },
-            { key: "issued", label: "Выданы", count: data?.counts.issued, dot: ST.issued.dot },
-            { key: "no_code", label: "Без кода", count: data?.counts.no_code, dot: "var(--danger-dot)" },
-          ]}
-        />
-        <div className="ord-tools">
-          <span className="ord-f-search">
-            <SearchInput value={query} onChange={setQuery} placeholder="Имя, телефон, код…" width={250} />
-          </span>
-          <span className="ord-f-sel" style={css("width:150px")}>
-            <Select
-              value={pay}
-              onChange={(v) => setParam("pay", v)}
-              width="100%"
-              height={34}
-              fontSize={12.5}
-              highlight={!!pay}
-              ariaLabel="Оплата"
-              options={[
-                { value: "", label: "Любая оплата" },
-                { value: "unpaid", label: "Не оплачено", dot: ST.unpaid.dot },
-                { value: "partial", label: "Частично", dot: ST.partial.dot },
-                { value: "paid", label: "Оплачено", dot: ST.paid.dot },
-                { value: "debt", label: "С долгом", dot: "var(--danger-dot)" },
-              ]}
-            />
-          </span>
-          <span className="ord-f-sel" style={css("width:132px")}>
-            <Select<DateFilter>
-              value={dateF}
-              onChange={setDateF}
-              width="100%"
-              height={34}
-              fontSize={12.5}
-              highlight={!!dateF}
-              ariaLabel="Дата"
-              options={[
-                { value: "", label: "Все даты" },
-                { value: "today", label: "Сегодня" },
-                { value: "7", label: "7 дней" },
-                { value: "month", label: "Этот месяц" },
-              ]}
-            />
-          </span>
-          <span className="ord-f-new">
-            <PrimaryAction onClick={() => nav("/new-order")}>Новый заказ</PrimaryAction>
-          </span>
-        </div>
-      </div>
+        {/* ===== Путь товара: этапы цепочкой ===== */}
+        <Flow counts={c} cur={status} onPick={(v) => setParam("status", v)} />
 
-      {error && <ModalError text={error} />}
-      {!data && !error ? (
-        <div style={css(CARD + ";padding:16px")}>
-          <SkeletonRows rows={6} />
+
+        {/* ===== Поиск и фильтры ===== */}
+        <div className="od-tools">
+          <Tabs
+            value={status}
+            onChange={(v) => setParam("status", v)}
+            options={[
+              ["all", "Все", c?.all],
+              ["ordered", "Заказаны", c ? (c.not_shipped ?? c.ordered) : undefined, "warn"],
+              ["in_transit", "В пути", c?.in_transit, "info"],
+              ["in_stock", "На складе", c?.in_stock, "ok"],
+              ["issued", "Выданы", c?.issued, "ink"],
+              ["", "Не выданы", c ? c.all - c.issued : undefined],
+            ]}
+          />
+          <label className="rx-as-in od-search">
+            <Svg paths={I_SEARCH} size={15} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, телефон, код" aria-label="Поиск" />
+          </label>
+          <Filters pay={pay} date={dateF} onPay={(v) => setParam("pay", v)} onDate={setDateF} />
+          <button type="button" className="od-new" onClick={() => nav("/new-order")}>
+            <Ico d={I.plus} size={15} sw={2.2} />
+            Новый заказ
+          </button>
         </div>
-      ) : data && orders.length === 0 ? (
-        <div style={css(CARD)}>
-          {status === "no_code" && !q && !pay && !dateF ? (
-            <Empty icon="orders" title="У всех товаров есть код" text="Невыданных товаров без кода нет — сканер на приёме найдёт каждый." />
-          ) : (
-            <Empty
-              icon="orders"
-              title={filtered ? "Ничего не найдено" : "Заказов пока нет"}
-              text={filtered ? "Измените фильтры или поиск" : "Нажмите «Новый заказ» или загрузите Excel в разделе «Импорт»"}
-            />
-          )}
-        </div>
-      ) : (
-        data && (
-          <>
-            {status === "no_code" && orders.length > 0 && (
-              <div className="ord-nocode">
-                <span className="ord-nocode-i">!</span>
-                <span style={css("min-width:0")}>
-                  <span style={css("display:block;font-size:13px;font-weight:500;color:var(--text)")}>
-                    {data.total} {data.total % 10 === 1 && data.total % 100 !== 11 ? "товар" : [2, 3, 4].includes(data.total % 10) && ![12, 13, 14].includes(data.total % 100) ? "товара" : "товаров"} без кода
-                  </span>
-                  <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>
-                    Их не найти сканером на приёме. Откройте товар — курсор сразу встанет в поле кода, можно сканировать.
-                  </span>
-                </span>
-              </div>
-            )}
-            {orders.length > 0 && (
-              <div style={css("display:flex;align-items:center;gap:10px;margin:0 2px 8px;font-size:12px;color:var(--text-4)")}>
-                <Check
-                  on={orders.every((g) => g.every((i) => sel.selected.has(i.id)))}
-                  half={data.rows.some((i) => sel.selected.has(i.id))}
-                  onToggle={(on) => sel.onSelect(data.rows.map((i) => i.id), on)}
-                  title="Выбрать все на странице"
-                />
-                <span style={css(NUM)}>
-                  {orders.length} {plural(orders.length, "заказ", "заказа", "заказов")} на странице · {data.rows.length} {plural(data.rows.length, "товар", "товара", "товаров")}
-                </span>
-              </div>
-            )}
-            <div style={css("display:flex;flex-direction:column;gap:12px")}>
-              {orders.map((g) => (
-                <OrderCard key={`${g[0].customer_id}-${g[0].order_date}-${g[0].id}`} items={g} selected={sel.selected} onSelect={sel.onSelect} onOpen={setOpen} />
-              ))}
+
+        {error && <ModalError text={error} />}
+
+        {/* ===== Коротко о деньгах ===== */}
+        <Money t={data?.totals ?? null} filtered={filtered} debtOn={pay === "debt"} onDebt={() => setParam("pay", pay === "debt" ? "" : "debt")} />
+
+        {status === "no_code" && data && orders.length > 0 && (
+          <div className="od-note">
+            <span className="rx-mi">
+              <Ico d={I.nocode} size={15} />
+            </span>
+            <span>
+              <b>
+                {data.total} {plural(data.total, "товар", "товара", "товаров")} без кода
+              </b>
+              <small>их не найти сканером на приёме — откройте товар, курсор сразу встанет в поле кода</small>
+            </span>
+          </div>
+        )}
+
+        {/* ===== Заказы ===== */}
+        <section className="od-list" ref={listTop}>
+          {orders.length > 0 && data && (
+            <div className="od-list-h">
+              <Check on={orders.every((g) => g.every((i) => sel.selected.has(i.id)))} half={data.rows.some((i) => sel.selected.has(i.id))} onToggle={(on) => sel.onSelect(data.rows.map((i) => i.id), on)} title="Выбрать все на странице" />
+              <span>
+                {orders.length} {plural(orders.length, "заказ", "заказа", "заказов")} · {data.rows.length} {plural(data.rows.length, "товар", "товара", "товаров")} на странице
+              </span>
+              <small>отметьте товары — внизу появятся действия</small>
             </div>
-            <Pager total={data.total} offset={offset} limit={LIMIT} onChange={setOffset} />
-          </>
-        )
-      )}
+          )}
+          {!data && !error
+            ? Array.from({ length: 4 }, (_, i) => <OrderGhost key={i} i={i} />)
+            : orders.map((g, i) => <OrderCard key={`${g[0].customer_id}-${g[0].order_date}-${g[0].id}`} items={g} i={i} selected={sel.selected} onSelect={sel.onSelect} onOpen={setOpen} />)}
+          {data && !orders.length && (
+            <div className="od-empty">
+              {Array.from({ length: 3 }, (_, i) => (
+                <OrderGhost key={i} i={i} faded />
+              ))}
+              <div className="rx-ghost-msg">
+                <span className="rx-ghost-i">
+                  <Ico d={status === "no_code" ? I.check : I.ordered} size={17} />
+                </span>
+                <span>
+                  <b>{status === "no_code" && !filtered ? "У всех товаров есть код" : filtered ? "Ничего не найдено" : "Заказов пока нет"}</b>
+                  <small>{status === "no_code" && !filtered ? "сканер на приёме найдёт каждый товар" : filtered ? "измените фильтры или поиск" : "нажмите «Новый заказ» или загрузите Excel в «Импорте»"}</small>
+                </span>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {data && data.total > LIMIT && (
+          <footer className="hx-foot od-foot">
+            <small>
+              {offset + 1}–{Math.min(data.total, offset + LIMIT)} из {data.total} товаров
+            </small>
+            <span className="hx-pages">
+              <button type="button" onClick={() => go(Math.max(0, offset - LIMIT))} disabled={page === 0} aria-label="Назад">
+                ‹
+              </button>
+              <b>
+                {page + 1} / {pages}
+              </b>
+              <button type="button" onClick={() => go(offset + LIMIT)} disabled={page >= pages - 1} aria-label="Дальше">
+                ›
+              </button>
+            </span>
+          </footer>
+        )}
+      </div>
 
       {data && <BulkBar items={data.rows} selected={sel.selected} onClear={sel.clear} toast={toast} />}
       {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
@@ -213,298 +240,531 @@ export default function Orders({ toast }: { isDesktop: boolean; toast: Toast }) 
   );
 }
 
-// --- Итоги сверху -------------------------------------------------------------------------------
+// --- Путь товара ------------------------------------------------------------------------------
 
-const I_RECEIPT: PathDef = [
-  ["path", { d: "M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" }],
-  ["path", { d: "M8 8h8" }],
-  ["path", { d: "M8 12h8" }],
-  ["path", { d: "M8 16h5" }],
+const FLOW: { k: StatusTab; label: string; icon: string[]; tone: string }[] = [
+  { k: "ordered", label: "Заказаны", icon: I.ordered, tone: "a" },
+  { k: "in_transit", label: "В пути", icon: I.transit, tone: "b" },
+  { k: "in_stock", label: "На складе", icon: I.stock, tone: "c" },
+  { k: "issued", label: "Выданы", icon: I.issued, tone: "d" },
 ];
-const I_WALLET: PathDef = [
-  ["path", { d: "M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2" }],
-  ["path", { d: "M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4" }],
-];
-const I_ALERT: PathDef = [
-  ["circle", { cx: 12, cy: 12, r: 9 }],
-  ["path", { d: "M12 7.5v5.5" }],
-  ["path", { d: "M12 16.5h.01" }],
-];
-const I_TREND: PathDef = [
-  ["path", { d: "m3 17 6-6 4 4 8-8" }],
-  ["path", { d: "M15 7h6v6" }],
-];
+/** Один рейс, мс: погрузка у «Заказаны» → таможня → выгрузка на складе → к выдаче. */
+const RIDE = 26000;
+/** Где машинка встаёт задом к станции (px от центра кружка): кузов у кружка, кабина видна. */
+const GAP = 52;
+/** Насколько проезжает дальше, чтобы сдать назад к станции (px). */
+const BACK = 8;
 
-const KPI_GRAD = {
-  accent: "linear-gradient(135deg,#6A8BFF,#3E63DD)",
-  green: "linear-gradient(135deg,#34D399,#16A34A)",
-  danger: "linear-gradient(135deg,#FB7185,#DC2626)",
-  violet: "linear-gradient(135deg,#A78BFA,#7C3AED)",
-} as const;
-
-function Kpis({ t, filtered, debtOn, onDebt }: { t: Totals | null; filtered: boolean; debtOn: boolean; onDebt: () => void }) {
-  const paidShare = t && t.sale > 0 ? Math.round((Math.min(t.paid, t.sale) / t.sale) * 100) : 0;
-  const markup = t && t.with_cost && t.cost > 0 ? Math.round((t.profit / t.cost) * 100) : null;
+/** Грузовик с фургоном: строгий, без детских деталей. Смотрит вправо, поворачивается по дороге. */
+function Truck() {
   return (
-    <div className="ord-kpis">
-      <Kpi icon={I_RECEIPT} tone="accent" label={filtered ? "Сумма по фильтру" : "Сумма заказов"} value={t ? som(t.sale) : "—"}>
-        {t ? `${t.items} ${plural(t.items, "товар", "товара", "товаров")} · ${t.qty} шт` : " "}
-      </Kpi>
-      <Kpi icon={I_WALLET} tone="green" label="Оплачено" value={t ? som(t.paid) : "—"}>
-        <span style={css("display:flex;align-items:center;gap:8px")}>
-          <span style={css("flex:1;height:6px;border-radius:999px;background:var(--danger-tint);overflow:hidden")}>
-            <span className="bar-grow" style={mix("display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#34D399,#16A34A)", { width: `${paidShare}%` })} />
+    <svg className="of-svg" width="36" height="21" viewBox="0 0 48 28" aria-hidden>
+      <rect className="of-box" x="1" y="3" width="29" height="16" rx="2.6" />
+      <rect className="of-door" x="-6" y="3.5" width="7" height="15" rx="1.2" />
+      <path className="of-rib" d="M8 6v10M15 6v10M22 6v10" />
+      <rect className="of-stripe" x="1" y="14" width="29" height="2" />
+      <path className="of-cab" d="M31 7h8.2a2.4 2.4 0 0 1 2 1.1l4.4 6.7c.3.4.4.9.4 1.4V20a1 1 0 0 1-1 1H31Z" />
+      <path className="of-win" d="M33.4 9.4h5.4l3.2 5H33.4Z" />
+      <circle className="of-lamp" cx="45.4" cy="17.6" r="1" />
+      <rect className="of-chassis" x="2" y="19" width="43" height="2.4" rx="1.2" />
+      {[8, 17, 38].map((cx) => (
+        <g key={cx} className="of-wheel" style={{ transformOrigin: `${cx}px 22.5px` }}>
+          <circle cx={cx} cy="22.5" r="3.7" />
+          <circle className="of-hub" cx={cx} cy="22.5" r="1.3" />
+          <path d={`M${cx} 19.6v1.4M${cx} 24v1.4`} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/** Путь товара: «Все» слева, четыре станции на дороге волнами, «Без кода» справа. Клик — фильтр. */
+function Flow({ counts, cur, onPick }: { counts?: ItemList["counts"]; cur: StatusTab; onPick: (v: StatusTab) => void }) {
+  const n: Record<string, number | undefined> = {
+    ordered: counts ? (counts.not_shipped ?? counts.ordered) : undefined,
+    in_transit: counts?.in_transit,
+    in_stock: counts?.in_stock,
+    issued: counts?.issued,
+  };
+  const sum = FLOW.reduce((a, x) => a + (n[x.k] ?? 0), 0);
+  const pick = (k: StatusTab) => onPick(cur === k && k ? "" : k);
+  const noCode = counts?.no_code ?? 0;
+  const steps = useRef<HTMLDivElement>(null);
+  const road = useRef<SVGPathElement>(null);
+  const truck = useRef<HTMLSpanElement>(null);
+  const cargo = useRef<HTMLSpanElement>(null);
+  const bag = useRef<HTMLSpanElement>(null);
+  const [geo, setGeo] = useState<{ d: string; w: number; h: number } | null>(null);
+
+  // Дорога: от станции к станции волной (вверх, вниз, вверх), у станций — ровно.
+  useLayoutEffect(() => {
+    const box = steps.current;
+    if (!box) return;
+    const measure = () => {
+      const b = box.getBoundingClientRect();
+      const c = [...box.querySelectorAll<HTMLElement>(".of-node")].map((nd) => {
+        const r = nd.getBoundingClientRect();
+        return { x: r.left - b.left + r.width / 2, y: r.top - b.top + r.height / 2 };
+      });
+      if (c.length < 4) return;
+      const y = c[0].y;
+      const A = 11;
+      // У станций дорога прямая (там машинка стоит ровно), между ними — волна.
+      const F = 54;
+      let d = `M 0 ${y} L ${c[0].x + F} ${y}`;
+      for (let i = 0; i < 3; i++) {
+        const x0 = c[i].x + F;
+        const x1 = c[i + 1].x - F;
+        const k = (x1 - x0) * 0.22;
+        const xm = (x0 + x1) / 2;
+        const ym = y + (i % 2 ? A : -A);
+        d += ` C ${x0 + k} ${y}, ${xm - k} ${ym}, ${xm} ${ym} C ${xm + k} ${ym}, ${x1 - k} ${y}, ${x1} ${y}`;
+        d += ` L ${i < 2 ? c[i + 1].x + F : b.width} ${y}`;
+      }
+      setGeo({ d, w: b.width, h: b.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, []);
+
+  // Рейс машинки по дороге: где стоять — ищем по длине пути; груз летит со станции в фургон и из фургона на склад.
+  useLayoutEffect(() => {
+    const p = road.current;
+    const el = truck.current;
+    const bx = cargo.current;
+    const bg = bag.current;
+    const box = steps.current;
+    if (!geo || !p || !el || !bx || !bg || !box || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const total = p.getTotalLength();
+    const nodes = [...box.querySelectorAll<HTMLElement>(".of-node")].map((nd) => {
+      const r = nd.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      return { x: r.left - b.left + r.width / 2, y: r.top - b.top + r.height / 2 };
+    });
+    // Длина пути до точки с нужным x (дорога идёт слева направо).
+    const at = (x: number) => {
+      let lo = 0;
+      let hi = total;
+      for (let i = 0; i < 30; i++) {
+        const mid = (lo + hi) / 2;
+        if (p.getPointAtLength(mid).x < x) lo = mid;
+        else hi = mid;
+      }
+      return lo;
+    };
+    const stop = nodes.map((nd) => at(nd.x + GAP));
+    const pt = (l: number) => p.getPointAtLength(Math.max(0, Math.min(total, l)));
+    // Положение и наклон машинки в точке пути: колёса на полотне, поворот по касательной.
+    const pose = (l: number, o: number, op = 1): Keyframe => {
+      const a = pt(l - 1.5);
+      const b = pt(l + 1.5);
+      const c = pt(l);
+      const deg = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+      return { offset: o, transform: `translate(${c.x - 18}px, ${c.y - 15.5}px) rotate(${deg}deg)`, opacity: op };
+    };
+    const ease = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+    const kf: Keyframe[] = [];
+    const drive = (t0: number, t1: number, l0: number, l1: number, fade?: "in" | "out") => {
+      for (let k = 0; k <= 40; k++) {
+        const q = k / 40;
+        const op = fade === "in" ? Math.min(1, q * 3) : fade === "out" ? Math.min(1, (1 - q) * 3) : 1;
+        kf.push(pose(l0 + (l1 - l0) * ease(q), t0 + (t1 - t0) * q, op));
+      }
+    };
+    // Подъезд: проезжает станцию, останавливается и сдаёт задом к кружку.
+    const arrive = (t0: number, t1: number, from: number, to: number, fade?: "in") => {
+      drive(t0, t1 - 0.03, from, to + BACK, fade);
+      drive(t1 - 0.03, t1, to + BACK, to);
+    };
+    arrive(0, 0.13, 0, stop[0], "in");
+    arrive(0.18, 0.35, stop[0], stop[1]);
+    arrive(0.39, 0.56, stop[1], stop[2]);
+    arrive(0.66, 0.83, stop[2], stop[3]);
+    drive(0.88, 0.97, stop[3], total, "out");
+    kf.push({ ...pose(total, 1), opacity: 0 });
+    const t = Number(el.getAnimations()[0]?.currentTime ?? 0) % RIDE;
+    for (const a of [...el.getAnimations(), ...bx.getAnimations(), ...bg.getAnimations()]) a.cancel();
+    const ride = el.animate(
+      kf.filter((x, n, arr) => n === 0 || (x.offset as number) > (arr[n - 1].offset as number)),
+      { duration: RIDE, iterations: Infinity }
+    );
+    // Посылка: дугой со станции в фургон (погрузка) и из фургона на склад (выгрузка).
+    const tr = (x: number, y: number, sc = 1) => `translate(${x - 5}px, ${y - 5}px) scale(${sc})`;
+    const arc = (t0: number, t1: number, from: { x: number; y: number }, to: { x: number; y: number }): Keyframe[] => {
+      const mx = (from.x + to.x) / 2;
+      const my = Math.min(from.y, to.y) - 13;
+      const eo = "cubic-bezier(.33,.0,.2,1)";
+      return [
+        { offset: t0, transform: tr(from.x, from.y, 0.4), opacity: 0 },
+        { offset: t0 + (t1 - t0) * 0.15, transform: tr(from.x, from.y - 8, 1), opacity: 1, easing: eo },
+        { offset: t0 + (t1 - t0) * 0.55, transform: tr(mx, my, 1.08), opacity: 1, easing: eo },
+        { offset: t0 + (t1 - t0) * 0.92, transform: tr(to.x, to.y, 0.8), opacity: 1 },
+        { offset: t1, transform: tr(to.x, to.y, 0.4), opacity: 0 },
+      ];
+    };
+    const a0 = pt(stop[0]);
+    const a2 = pt(stop[2]);
+    const a3 = pt(stop[3]);
+    // Задняя дверь открыта: груз входит в кузов и выходит из него.
+    const rear = (q: DOMPoint) => ({ x: q.x - 15, y: q.y - 7 });
+    const fly = bx.animate(
+      [
+        { offset: 0, transform: tr(nodes[0].x, nodes[0].y, 0.4), opacity: 0 },
+        ...arc(0.14, 0.17, nodes[0], rear(a0)),
+        ...arc(0.575, 0.635, rear(a2), nodes[2]),
+        { offset: 1, transform: tr(nodes[2].x, nodes[2].y, 0.4), opacity: 0 },
+      ],
+      { duration: RIDE, iterations: Infinity }
+    );
+    // Выдача: маленький пакетик из кузова к «Выданы».
+    const give = bg.animate(
+      [{ offset: 0, transform: tr(a3.x, a3.y, 0.4), opacity: 0 }, ...arc(0.842, 0.872, rear(a3), nodes[3]), { offset: 1, transform: tr(nodes[3].x, nodes[3].y, 0.4), opacity: 0 }],
+      { duration: RIDE, iterations: Infinity }
+    );
+    ride.currentTime = t;
+    give.currentTime = t;
+    fly.currentTime = t;
+    // Вспышки станций — по тем же часам.
+    for (const a of box.getAnimations({ subtree: true })) if (a instanceof CSSAnimation && /^of(Ping|Door)/.test(a.animationName)) a.currentTime = t;
+  }, [geo]);
+
+  return (
+    <section className="of">
+      <button type="button" className={"of-all" + (cur === "all" ? " on" : "")} onClick={() => onPick(cur === "all" ? "" : "all")} title={cur === "all" ? "Вернуть: всё, кроме выданных" : "Показать все товары, вместе с выданными"}>
+        <small>Все товары</small>
+        <b>{counts ? <CountUp text={String(counts.all)} /> : "…"}</b>
+        <em>{cur ? "× сбросить фильтр" : "весь путь товара →"}</em>
+      </button>
+
+      <div className="of-track">
+        <div ref={steps} className="of-steps">
+          {geo && (
+            <svg className="of-road" width={geo.w} height={geo.h} aria-hidden>
+              <path className="of-road-e" d={geo.d} />
+              <path ref={road} className="of-road-b" d={geo.d} />
+              <path className="of-road-m" d={geo.d} />
+            </svg>
+          )}
+          <span ref={truck} className="of-truck" aria-hidden>
+            <Truck />
           </span>
-          <span style={css(NUM + ";color:var(--green);font-weight:500")}>{paidShare}%</span>
+          <span ref={cargo} className="of-cargo" aria-hidden />
+          <span ref={bag} className="of-cargo bag" aria-hidden />
+          {FLOW.map((x, i) => {
+            const v = n[x.k];
+            const pctv = v !== undefined && sum ? Math.round((v / sum) * 100) : 0;
+            return (
+              <Fragment key={x.k}>
+                {i > 0 && <span className="of-conn" aria-hidden />}
+                <button type="button" className={"of-step " + x.tone + (cur === x.k ? " on" : "")} onClick={() => pick(x.k)} style={{ animationDelay: `${i * 60}ms` }}>
+                  <span className="of-node">
+                    <Ico d={x.icon} size={16} />
+                  </span>
+                  <span className="of-t">
+                    <small>{x.label}</small>
+                    <span className="of-n">
+                      <b>{v === undefined ? "…" : <CountUp text={String(v)} />}</b>
+                      <em>{pctv}%</em>
+                    </span>
+                  </span>
+                </button>
+              </Fragment>
+            );
+          })}
+        </div>
+        <div className="of-bar" aria-hidden>
+          {FLOW.map((x) => {
+            const v = n[x.k] ?? 0;
+            return v > 0 ? <i key={x.k} className={x.tone + (cur === x.k ? " on" : "")} style={{ flexGrow: v }} onClick={() => pick(x.k)} /> : null;
+          })}
+        </div>
+      </div>
+
+      <button type="button" className={"of-all nc" + (cur === "no_code" ? " on" : "") + (noCode ? " warn" : "")} onClick={() => pick("no_code")} title={noCode ? "Показать товары без кода" : "У всех товаров есть код"}>
+        <small>Без кода</small>
+        <b>{counts ? noCode : "…"}</b>
+        <em>{cur === "no_code" ? "× сбросить фильтр" : noCode ? "сканер их не найдёт →" : "у всех товаров есть код"}</em>
+      </button>
+    </section>
+  );
+}
+
+// --- Деньги -----------------------------------------------------------------------------------
+
+/** Коротко о деньгах по фильтру — одной строкой; подробно всё на «Финансах». */
+function Money({ t, filtered, debtOn, onDebt }: { t: Totals | null; filtered: boolean; debtOn: boolean; onDebt: () => void }) {
+  const nav = useNavigate();
+  const share = t && t.sale > 0 ? Math.min(100, Math.round((Math.min(t.paid, t.sale) / t.sale) * 100)) : 0;
+  return (
+    <section className="os">
+      <span className="os-c">
+        <small>{filtered ? "По фильтру" : "Все заказы"}</small>
+        <b>{t ? <CountUp text={som(t.sale)} /> : "—"}</b>
+      </span>
+      <span className="os-pay">
+        <span className="os-bar" title={`Оплачено ${share}%`}>
+          <i style={{ width: `${share}%` }} />
         </span>
-      </Kpi>
-      <Kpi
-        icon={I_ALERT}
-        tone="danger"
-        label="Долг клиентов"
-        value={t ? som(t.debt) : "—"}
-        valueColor={t && t.debt > 0 ? "var(--danger)" : undefined}
-        onClick={t && (t.debt > 0 || debtOn) ? onDebt : undefined}
-        active={debtOn}
-      >
-        {t ? (t.debt > 0 ? (debtOn ? "показаны только с долгом · снять" : "показать товары с долгом →") : "долгов нет") : " "}
-      </Kpi>
-      <Kpi icon={I_TREND} tone="violet" label="Прибыль" value={t && t.with_cost ? `${t.profit > 0 ? "+" : ""}${som(t.profit)}` : "—"} valueColor={t && t.with_cost ? (t.profit < 0 ? "var(--danger)" : "var(--green)") : undefined}>
-        {!t || !t.with_cost
-          ? "нет реальных цен выкупа"
-          : t.with_cost < t.items
-            ? `по ${t.with_cost} из ${t.items} — у остальных нет выкупа`
-            : markup !== null
-              ? `наценка ${markup}% к выкупу ${som(t.cost)}`
-              : " "}
-      </Kpi>
+        <small>
+          оплачено <b>{t ? som(t.paid) : "—"}</b> · {share}%
+        </small>
+      </span>
+      <button type="button" className={"os-debt" + (debtOn ? " on" : "")} onClick={onDebt} disabled={!t || (!t.debt && !debtOn)}>
+        <i />
+        долг <b>{t ? som(t.debt) : "—"}</b>
+        {t && (t.debt > 0 || debtOn) && <em>{debtOn ? "×" : "→"}</em>}
+      </button>
+      <button type="button" className="os-fin" onClick={() => nav("/finance")} title="Прибыль, оплаты и долги подробно">
+        Финансы
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M7 17 17 7M8 7h9v9" />
+        </svg>
+      </button>
+    </section>
+  );
+}
+
+const PAYS: [PayFilter, string][] = [
+  ["", "Любая"],
+  ["unpaid", "Не оплачено"],
+  ["partial", "Частично"],
+  ["paid", "Оплачено"],
+  ["debt", "С долгом"],
+];
+const DATES: [DateFilter, string][] = [
+  ["", "Всё время"],
+  ["today", "Сегодня"],
+  ["7", "7 дней"],
+  ["month", "Месяц"],
+];
+
+/** Одна кнопка «Фильтр»: внутри оплата и период. Выбранное пишется на кнопке, ✕ сбрасывает всё. */
+function Filters({ pay, date, onPay, onDate }: { pay: PayFilter; date: DateFilter; onPay: (v: PayFilter) => void; onDate: (v: DateFilter) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", off);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", off);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  const on = [pay && PAYS.find((o) => o[0] === pay)?.[1], date && DATES.find((o) => o[0] === date)?.[1]].filter(Boolean);
+  const group = <V extends string>(title: string, opts: [V, string][], v: V, set: (x: V) => void) => (
+    <>
+      <h6>{title}</h6>
+      <div className="od-flt-o">
+        {opts.map(([k, l]) => (
+          <button key={k} type="button" className={v === k ? "on" : ""} onClick={() => set(k)}>
+            {l}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+  return (
+    <div ref={ref} className={"od-flt" + (open ? " open" : "") + (on.length ? " set" : "")}>
+      <button type="button" className="od-flt-b" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <Ico d={["M4 5h16l-6 7.5V18l-4 2v-7.5Z"]} size={15} sw={1.9} />
+        <span>{on.length ? on.join(" · ") : "Фильтр"}</span>
+        {on.length ? (
+          <span className="od-flt-x" role="button" aria-label="Сбросить фильтр" onClick={(e) => (e.stopPropagation(), onPay(""), onDate(""), setOpen(false))}>
+            <Ico d={["M18 6 6 18", "m6 6 12 12"]} size={11} sw={2.6} />
+          </span>
+        ) : (
+          <Ico d={["m6 9 6 6 6-6"]} size={13} sw={2.2} />
+        )}
+      </button>
+      {open && (
+        <div className="od-flt-m">
+          {group("Оплата", PAYS, pay, onPay)}
+          {group("Период", DATES, date, onDate)}
+        </div>
+      )}
     </div>
   );
 }
 
-function Kpi({
-  icon,
-  tone,
-  label,
-  value,
-  valueColor,
-  children,
-  onClick,
-  active,
-}: {
-  icon: PathDef;
-  tone: keyof typeof KPI_GRAD;
-  label: string;
-  value: string;
-  valueColor?: string;
-  children: ReactNode;
-  onClick?: () => void;
-  active?: boolean;
-}) {
-  const body = (
-    <>
-      <span style={css("display:flex;align-items:center;gap:9px;min-width:0")}>
-        <span style={mix("width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;color:#fff;box-shadow:0 6px 14px -6px rgba(15,18,25,.4)", { background: KPI_GRAD[tone] })}>
-          <Svg paths={icon} size={15} sw={2} />
-        </span>
-        <span style={css("font-size:12.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
-      </span>
-      <span style={mix(NUM + ";display:block;font-size:24px;font-weight:500;letter-spacing:-.02em;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: valueColor ?? "var(--text)" })}>
-        <CountUp text={value} />
-      </span>
-      <span className="ord-kpi-sub" style={css("display:block;font-size:12px;color:var(--text-4);min-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{children}</span>
-    </>
-  );
-  return onClick ? (
-    <HButton onClick={onClick} className={"ord-kpi ord-kpi-btn" + (active ? " on" : "")} s="text-align:left;font:inherit;color:inherit;cursor:pointer" hover="">
-      {body}
-    </HButton>
-  ) : (
-    <div className="ord-kpi">{body}</div>
-  );
-}
+// --- Карточка заказа --------------------------------------------------------------------------
 
-// --- Карточка заказа ----------------------------------------------------------------------------
-
-const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
-const WEEKDAYS = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
-
-/** «Сегодня», «Вчера» или «4 октября, суббота» (+ год, если не текущий). */
-function orderDay(d: string): string {
-  const day = d.slice(0, 10);
-  if (day === todayIso()) return "Сегодня";
-  if (day === todayIso(-1)) return "Вчера";
-  const x = new Date(`${day}T00:00:00`);
-  const year = x.getFullYear() !== new Date().getFullYear() ? ` ${x.getFullYear()}` : "";
-  return `${x.getDate()} ${MONTHS[x.getMonth()]}${year}, ${WEEKDAYS[x.getDay()]}`;
-}
-
-const STATUS_TEXT: Record<ItemStage, string> = { ordered: "Заказан", in_transit: "В пути", in_stock: "На складе", issued: "Выдан" };
-const stageOf = (i: Item): ItemStage => i.stage ?? i.status;
-
-function OrderCard({
-  items,
-  selected,
-  onSelect,
-  onOpen,
-}: {
-  items: Item[];
-  selected: Set<number>;
-  onSelect: (ids: number[], on: boolean) => void;
-  onOpen: (id: number) => void;
-}) {
+function OrderCard({ items, i, selected, onSelect, onOpen }: { items: Item[]; i: number; selected: Set<number>; onSelect: (ids: number[], on: boolean) => void; onOpen: (id: number) => void }) {
   const nav = useNavigate();
   const first = items[0];
-  const sale = items.reduce((s, i) => s + i.sale, 0);
-  const debt = items.reduce((s, i) => s + i.debt, 0);
-  const paid = Math.max(0, sale - debt);
-  const qty = items.reduce((s, i) => s + i.qty, 0);
-  const withCost = items.filter((i) => i.cost !== null);
-  const profit = withCost.reduce((s, i) => s + i.sale - (i.cost ?? 0), 0);
+  const sale = r2(items.reduce((s, x) => s + x.sale, 0));
+  const debt = r2(items.reduce((s, x) => s + x.debt, 0));
+  const paid = Math.max(0, r2(sale - debt));
+  const qty = items.reduce((s, x) => s + x.qty, 0);
+  const withCost = items.filter((x) => x.cost !== null);
+  const profit = r2(withCost.reduce((s, x) => s + x.sale - (x.cost ?? 0), 0));
+  const ps = sale <= 0 ? "w" : debt <= 0 ? "ok" : paid > 0 ? "part" : "no";
   const share = sale > 0 ? Math.round((paid / sale) * 100) : 100;
-  const tone = debt <= 0 ? "var(--green-dot)" : paid > 0 ? "var(--amber-dot)" : "var(--danger-dot)";
-  const counts = (["ordered", "in_transit", "in_stock", "issued"] as const).map((s) => [s, items.filter((i) => stageOf(i) === s).length] as const).filter(([, n]) => n > 0);
-  const allOn = items.every((i) => selected.has(i.id));
-  const someOn = items.some((i) => selected.has(i.id));
+  const stages = (["ordered", "in_transit", "in_stock", "issued"] as const).map((s) => [s, items.filter((x) => stageOf(x) === s).length] as const).filter(([, n]) => n > 0);
+  const allOn = items.every((x) => selected.has(x.id));
+  const someOn = items.some((x) => selected.has(x.id));
+  const d = new Date(`${first.order_date.slice(0, 10)}T00:00:00`);
+  const day = first.order_date.slice(0, 10);
+  const rel = day === todayIso() ? "сегодня" : day === todayIso(-1) ? "вчера" : WD[d.getDay()];
 
   return (
-    <section className="ord-card" style={{ ["--ord-tone" as string]: tone }}>
-      {/* Шапка: клиент и дата — слева, оплата и сумма — справа */}
-      <div className="ord-head">
-        <Check on={allOn} half={someOn} onToggle={(on) => onSelect(items.map((i) => i.id), on)} title="Выбрать все товары заказа" />
-        <HButton
-          onClick={() => nav(`/customers/${first.customer_id}`)}
-          title="Открыть карточку клиента"
-          s="display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 260px;border:none;background:transparent;padding:0;cursor:pointer;font:inherit;color:inherit;text-align:left"
-          hover=""
-          className="ord-client"
-        >
-          <Avatar name={first.customer_name} size={40} />
-          <span style={css("min-width:0")}>
-            <span style={css("display:flex;align-items:baseline;gap:8px;min-width:0")}>
-              <span className="ord-name" style={css("font-size:14.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                {first.customer_name}
-              </span>
-              <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);white-space:nowrap")}>{first.customer_phone}</span>
-            </span>
-            <span style={css("display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;margin-top:3px;font-size:12px;color:var(--text-4)")}>
-              <span style={css("color:var(--text-2)")}>{orderDay(first.order_date)}</span>
-              <span style={css(NUM)}>
-                {items.length} {plural(items.length, "товар", "товара", "товаров")}
-                {qty !== items.length ? ` · ${qty} шт` : ""}
-              </span>
-              {counts.map(([s, n]) => (
-                <span key={s} style={css("display:inline-flex;align-items:center;gap:5px;white-space:nowrap")}>
-                  <span style={mix("width:6px;height:6px;border-radius:50%", { background: ST[s].dot })} />
-                  {STATUS_TEXT[s].toLowerCase()} {n}
-                </span>
-              ))}
-            </span>
-          </span>
-        </HButton>
-
-        <span className="ord-pay">
-          <span style={css("display:flex;justify-content:space-between;gap:10px;font-size:12px;white-space:nowrap")}>
-            <span style={mix(NUM, { color: debt > 0 ? (paid > 0 ? "var(--amber)" : "var(--danger)") : "var(--green)" })}>
-              {debt > 0 ? `долг ${som(debt)}` : "✓ оплачено"}
-            </span>
-            <span style={css(NUM + ";color:var(--text-4)")}>{share}%</span>
-          </span>
-          <span style={css("display:block;height:6px;border-radius:999px;background:var(--danger-tint);overflow:hidden;margin-top:6px")}>
-            <span style={mix("display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#34D399,#16A34A)", { width: `${share}%` })} />
-          </span>
-        </span>
-
-        <span className="ord-sum">
-          <span style={css(NUM + ";display:block;font-size:17px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(sale)}</span>
-          <span style={mix(NUM + ";display:block;font-size:12px;white-space:nowrap;margin-top:1px", { color: withCost.length ? (profit < 0 ? "var(--danger)" : "var(--green)") : "var(--text-4)" })}>
-            {withCost.length ? `${profit > 0 ? "+" : ""}${som(profit)} прибыль` : "без выкупа"}
-          </span>
-        </span>
+    <article className={"od-card" + (someOn ? " sel" : "")} style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}>
+      {/* Отрывной листок с датой */}
+      <div className="od-date" title={`${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`}>
+        <div className="od-date-in">
+          <small>{MON[d.getMonth()]}</small>
+          <b>{d.getDate()}</b>
+          <em>{rel}</em>
+        </div>
       </div>
+      <div className="od-main">
+        <header className="od-head">
+          <Check on={allOn} half={someOn} onToggle={(on) => onSelect(items.map((x) => x.id), on)} title="Выбрать все товары заказа" />
+          <button type="button" className="od-who" onClick={() => nav(`/customers/${first.customer_id}`)} title="Открыть клиента">
+            <span className="rx-av">{letters(first.customer_name)}</span>
+            <span>
+              <b>{first.customer_name}</b>
+              <small>{first.customer_phone}</small>
+            </span>
+          </button>
+          <span className="od-stages">
+            {stages.map(([s, n]) => (
+              <span key={s} className={"rx-pill-st " + STAGE_DOT[s]}>
+                {STAGE_TEXT[s].toLowerCase()} {n}
+              </span>
+            ))}
+          </span>
+          {/* Оплата заказа: значок + сумма + понятная подпись */}
+          <span className={"od-sum " + ps} title={sale > 0 ? `оплачено ${som(paid)} из ${som(sale)}` : undefined}>
+            <small>
+              {ps === "ok" && <Ico d={I.check} size={12} sw={3} />}
+              {ps === "w" ? "По весу" : ps === "ok" ? "Оплачено" : ps === "no" ? "Не оплачено" : `Долг ${som(debt)}`}
+            </small>
+            <b>{som(sale)}</b>
+            {ps === "part" && <i style={{ "--p": share } as CSSProperties} />}
+          </span>
+        </header>
 
-      {/* Товары */}
-      {items.map((it) => (
-        <ItemRow key={it.id} it={it} on={selected.has(it.id)} onToggle={(on) => onSelect([it.id], on)} onOpen={() => onOpen(it.id)} />
-      ))}
-    </section>
+        <div className="od-items">
+          <div className="od-cols" aria-hidden>
+            <span />
+            <span>Товар</span>
+            <span>Кол-во</span>
+            <span>Сумма</span>
+            <span>Прибыль</span>
+            <span>Оплата</span>
+            <span>Статус</span>
+          </div>
+          {items.map((it) => (
+            <ItemRow key={it.id} it={it} on={selected.has(it.id)} onToggle={(on) => onSelect([it.id], on)} onOpen={() => onOpen(it.id)} />
+          ))}
+        </div>
+
+        <footer className="od-foot-l">
+          <span>
+            <small>Товаров</small>
+            <b>
+              {items.length}
+              {qty !== items.length ? ` · ${qty} шт` : ""}
+            </b>
+          </span>
+          <span>
+            <small>Прибыль</small>
+            <b className={withCost.length && profit < 0 ? "neg" : ""}>{withCost.length ? `${profit > 0 ? "+" : ""}${som(profit)}` : "нет цены выкупа"}</b>
+          </span>
+        </footer>
+      </div>
+    </article>
   );
 }
 
 function ItemRow({ it, on, onToggle, onOpen }: { it: Item; on: boolean; onToggle: (on: boolean) => void; onOpen: () => void }) {
   const p = profitOf(it);
-  const arrivedToday = it.status === "in_stock" && it.arrived_at && new Date(it.arrived_at).toDateString() === new Date().toDateString();
-  const payTone = it.pay_status === "paid" ? "var(--green)" : it.pay_status === "partial" ? "var(--amber)" : "var(--danger)";
-  const payDot = it.pay_status === "paid" ? ST.paid.dot : it.pay_status === "partial" ? ST.partial.dot : ST.unpaid.dot;
+  const st = stageOf(it);
+  const dm = (x?: string | null) => (x ? shortDateTime(x).slice(0, 5) : "");
+  const note =
+    st === "ordered"
+      ? dm(it.order_date)
+      : st === "in_transit"
+        ? it.transit_shipped_at
+          ? `отправлен ${dm(it.transit_shipped_at)}`
+          : ""
+        : st === "in_stock"
+          ? it.arrived_at
+            ? `прибыл ${shortDateTime(it.arrived_at)}`
+            : ""
+          : it.issued_at
+            ? shortDateTime(it.issued_at)
+            : "";
+  const pay: [string, string] = it.sale <= 0 ? ["", "по весу"] : it.pay_status === "paid" ? ["ok", "Оплачено"] : it.pay_status === "partial" ? ["warn", "Частично"] : ["bad", "Не оплачено"];
   return (
-    <div onClick={onOpen} className={"ord-row" + (on ? " on" : "")} title="Открыть карточку товара">
+    <div onClick={onOpen} className={"od-row" + (on ? " on" : "")} title="Открыть карточку товара">
       <Check on={on} onToggle={onToggle} />
-      <span style={css("min-width:0")}>
-        <span style={css("display:block;font-size:13.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{it.name}</span>
-        <span style={css("display:block;font-size:11.5px;color:var(--text-4);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-          {it.code ? <span style={css(CODE + ";font-size:11px")}>{it.code}</span> : "без кода"}
-          <span className="ord-sm">{` · ${it.qty} шт`}</span>
-        </span>
+      <span className="od-row-n">
+        <b>{it.name}</b>
+        <small>{it.code ? it.code : <em>без кода</em>}</small>
       </span>
-      <span className="ord-hide" style={css(NUM + ";text-align:center;font-size:12.5px;color:var(--text-3)")}>
-        {it.qty} шт
+      <span className="od-row-q">{it.qty} шт</span>
+      <span className="od-row-s">
+        <b>{it.sale > 0 ? som(it.sale) : "—"}</b>
       </span>
-      <span style={css("text-align:right;min-width:0")}>
-        <span style={css(NUM + ";display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap")}>{som(it.sale)}</span>
-        <div className="ord-sm" style={mix(NUM + ";font-size:11.5px;white-space:nowrap;margin-top:1px", { color: payTone })}>
-          {it.pay_status === "paid" ? "оплачено" : `долг ${som(it.debt)}`}
-        </div>
+      <span className="od-row-p">{p === null ? <small>—</small> : <b className={p < 0 ? "neg" : "pos"}>{`${p > 0 ? "+" : ""}${som(p)}`}</b>}</span>
+      <span className="od-row-pay">
+        <span className={"od-pay " + pay[0]}>{pay[1]}</span>
       </span>
-      <span className="ord-hide" style={css("text-align:right;min-width:0")}>
-        {p === null ? (
-          <span style={css("font-size:12px;color:var(--text-5)")}>нет выкупа</span>
-        ) : (
-          <>
-            <span style={mix(NUM + ";display:block;font-size:13px;font-weight:500;white-space:nowrap", { color: p < 0 ? "var(--danger)" : "var(--green)" })}>
-              {p > 0 ? "+" : ""}
-              {som(p)}
-            </span>
-            <span style={css(NUM + ";display:block;font-size:11px;color:var(--text-4);white-space:nowrap")}>из {som(it.cost)}</span>
-          </>
-        )}
-      </span>
-      <span className="ord-hide" style={css("min-width:0")}>
-        <span style={mix(NUM + ";display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap", { color: payTone })}>
-          <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: payDot })} />
-          {it.pay_status === "paid" ? "оплачено" : it.pay_status === "partial" ? "частично" : "не оплачено"}
-        </span>
-        {it.pay_status === "partial" && <span style={css(NUM + ";display:block;font-size:11px;color:var(--text-4);margin:2px 0 0 13px;white-space:nowrap")}>долг {som(it.debt)}</span>}
-      </span>
-      <span className="ord-hide" style={css("min-width:0")}>
-        <span style={css("display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);white-space:nowrap")}>
-          <span style={mix("width:7px;height:7px;border-radius:50%;flex:none", { background: ST[stageOf(it)].dot })} />
-          {STATUS_TEXT[stageOf(it)]}
-        </span>
-        {stageOf(it) === "in_transit" && it.transit_shipped_at ? (
-          <span style={css(NUM + ";display:block;font-size:11px;color:var(--sky);margin:2px 0 0 13px;white-space:nowrap")} title={it.transit_waybill ? `Накладная ${it.transit_waybill}` : undefined}>
-            отправлен {date(it.transit_shipped_at).slice(0, 5)}
-          </span>
-        ) : arrivedToday ? (
-          <span style={css(NUM + ";display:block;font-size:11px;color:var(--accent-strong);margin:2px 0 0 13px;white-space:nowrap")}>принят сегодня {shortDateTime(it.arrived_at).slice(6)}</span>
-        ) : it.status === "issued" && it.issued_at ? (
-          <span style={css(NUM + ";display:block;font-size:11px;color:var(--text-4);margin:2px 0 0 13px;white-space:nowrap")}>{shortDateTime(it.issued_at)}</span>
-        ) : null}
+      <span className="od-row-st">
+        <span className={"rx-pill-st " + STAGE_DOT[st]}>{STAGE_TEXT[st]}</span>
+        {note && <small>{note}</small>}
       </span>
     </div>
+  );
+}
+function OrderGhost({ i, faded }: { i: number; faded?: boolean }) {
+  return (
+    <article className="od-card ghost" aria-hidden style={faded ? { opacity: Math.max(0.2, 0.7 - i * 0.2) } : undefined}>
+      <div className="od-date">
+        <span className="sk" style={{ width: 24, height: 8 }} />
+        <span className="sk" style={{ width: 30, height: 22, marginTop: 4 }} />
+      </div>
+      <div className="od-main">
+        <header className="od-head">
+          <span className="sk rx-sk-av" />
+          <span style={{ flex: 1 }}>
+            <span className="sk" style={{ width: `${[30, 22, 36, 26][i % 4]}%`, height: 10 }} />
+            <span className="sk" style={{ width: "16%", height: 8, marginTop: 6 }} />
+          </span>
+          <span className="sk" style={{ width: 90, height: 14 }} />
+        </header>
+        {[0, 1].map((k) => (
+          <div key={k} className="od-row ghost">
+            <span className="sk" style={{ width: 18, height: 18, borderRadius: 6 }} />
+            <span className="od-row-n">
+              <span className="sk" style={{ width: `${[48, 36][k]}%`, height: 9 }} />
+              <span className="sk" style={{ width: "24%", height: 7, marginTop: 6 }} />
+            </span>
+            <span className="sk" style={{ width: 70, height: 9, marginLeft: "auto" }} />
+          </div>
+        ))}
+      </div>
+    </article>
   );
 }
 
 // --- Мелочи -------------------------------------------------------------------------------------
 
-/** Галочка выбора: квадрат с галкой; half — выбрана часть. Клик не открывает карточку товара. */
+/** Галочка выбора; half — выбрана часть. Клик не открывает карточку товара. */
 function Check({ on, half, onToggle, title }: { on: boolean; half?: boolean; onToggle: (on: boolean) => void; title?: string }) {
-  const lit = on || half;
   return (
     <span
       role="checkbox"
       aria-checked={on ? true : half ? "mixed" : false}
       tabIndex={0}
       title={title}
+      className={"od-check" + (on || half ? " on" : "")}
       onClick={(e) => {
         e.stopPropagation();
         onToggle(!on);
@@ -516,45 +776,16 @@ function Check({ on, half, onToggle, title }: { on: boolean; half?: boolean; onT
           onToggle(!on);
         }
       }}
-      style={mix("width:18px;height:18px;border-radius:6px;flex:none;display:grid;place-items:center;color:#fff;cursor:pointer;transition:background .12s,border-color .12s", {
-        background: lit ? "var(--accent)" : "var(--surface)",
-        border: `1.5px solid ${lit ? "var(--accent)" : "var(--border-strong)"}`,
-      })}
     >
-      {on ? <Svg paths={I_CHECK} size={12} sw={3} /> : half ? <Svg paths={I_MINUS} size={12} sw={3} /> : null}
-    </span>
-  );
-}
-
-/** Аватар-буква; цвет — от имени, как на «Приёме» и «Выдаче». */
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
-
-function Avatar({ name, size }: { name: string; size: number }) {
-  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
-  return (
-    <span
-      style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:600", {
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.4),
-        background: AVATAR_BG[n % AVATAR_BG.length],
-      })}
-    >
-      {name.trim().slice(0, 1).toUpperCase()}
+      {on ? <Ico d={I.check} size={12} sw={3} /> : half ? <Ico d={I.minus} size={12} sw={3} /> : null}
     </span>
   );
 }
 
 function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  const a = n % 10;
+  const b = n % 100;
+  if (a === 1 && b !== 11) return one;
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few;
   return many;
 }

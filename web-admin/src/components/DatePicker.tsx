@@ -55,6 +55,7 @@ type Anim = "" | "next" | "prev" | "zoom";
 const ANIM: Record<Anim, string> = { "": "none", next: "dpNext .18s ease", prev: "dpPrev .18s ease", zoom: "dpZoom .16s ease" };
 
 export default function DatePicker({
+  popClass,
   value,
   onChange,
   min,
@@ -69,6 +70,8 @@ export default function DatePicker({
   style,
   words,
 }: {
+  /** Класс для выпадающего окна (оно рисуется порталом в body) — чтобы страница могла его оформить. */
+  popClass?: string;
   value: string;
   onChange: (v: string) => void;
   /** Границы выбора (YYYY-MM-DD), как у <input type="date">. */
@@ -273,6 +276,7 @@ export default function DatePicker({
           <div
             ref={pop}
             id={id}
+            className={popClass}
             role="dialog"
             aria-label="Выбор даты"
             // Клики внутри календаря не забирают фокус у поля — клавиатура продолжает работать.

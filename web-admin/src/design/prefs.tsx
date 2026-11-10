@@ -34,6 +34,7 @@ const Ctx = createContext<Prefs | undefined>(undefined);
 
 function applyPrefs(theme: Theme, scale: number) {
   const root = document.documentElement;
+  root.removeAttribute("data-pal"); // палитры убраны — снять атрибут, если остался
   root.setAttribute("data-theme", theme || "light");
   // zoom, а не transform: сохраняет раскладку и попадание по элементам.
   (root.style as CSSStyleDeclaration & { zoom: string }).zoom = String(scale || 1);
@@ -60,7 +61,6 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(readTheme);
   const [scale, setScaleState] = useState<number>(readScale);
 
-  // Применяем сразу на монтировании (и при внешнем изменении состояния).
   useEffect(() => {
     applyPrefs(theme, scale);
   }, [theme, scale]);

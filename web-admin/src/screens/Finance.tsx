@@ -1,719 +1,57 @@
 /**
- * Финансы — «касса и отчёт»:
- *  - тёмная карточка кассы: сколько денег поступило за период, график поступлений по дням
- *    и чем платили (наличные, карта, перевод);
- *  - два «разреза» суммы заказов: оплачено / долг и выкуп / прибыль — толстыми полосами;
- *  - помесячные столбики: высота — сумма заказов, зелёная часть — оплачено; под ними сводка;
- *  - должники лестницей и журнал поступлений по дням.
+ * Финансы — аналитика в стиле «ov»:
+ *  - период и сравнение с прошлым таким же периодом, выгрузка CSV;
+ *  - пять показателей с мини-графиками; выбранный — крупным графиком «этот / прошлый период»;
+ *  - оплата заказов (оплачено / долг), путь товаров, чем платили;
+ *  - клиенты периода, должники и последние оплаты; когда платят — по дням недели и часам.
  *
- * Сумма заказов — «Сумма» по дате заказа. Поступления — по дате оплаты.
- * Прибыль = Сумма − Реальная цена (выкуп), только где реальная цена указана.
+ * Сумма заказов и наценка — по дате заказа; поступления — по дате оплаты.
+ * Наценка = Сумма − Реальная цена, только где реальная цена указана.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { apiError } from "../api/client";
-import { getFinance, type Finance as FinanceData, type MonthRow } from "../api/domain";
-import { Empty, PeriodPicker, periodOf, type Period } from "../components/cargo";
+import { getFinance, getFinancePayments, type Finance as FinanceData, type FinancePayments, type PayGroup } from "../api/domain";
 import ItemModal from "../components/ItemModal";
+import SlideTabs from "../components/SlideTabs";
 import CountUp from "../design/CountUp";
-import { css, mix } from "../design/css";
-import { Icon } from "../design/icons";
 import { Page } from "../design/table";
-import { ModalError, SkeletonRows } from "../design/ui";
+import { ModalError } from "../design/ui";
 import { METHOD_LABEL, som, todayIso } from "../lib/cargo";
 import { useRefresh } from "../lib/events";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
+type PKey = "1" | "7" | "30" | "month" | "90" | "365";
+type Metric = "cost" | "profit" | "wbuy" | "delivery" | "weight" | "net";
+type Row = NonNullable<FinanceData["series"]>[number];
+type Tab = "top" | "debt" | "pay";
 
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
-const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
-const MONTHS_NOM = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
-const WEEKDAYS = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
+const MON = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const WD_FULL = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"];
+const WD_JS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
 const p2 = (n: number) => String(n).padStart(2, "0");
+const isoOf = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+const dt = (day: string) => new Date(`${day}T00:00:00`);
+const shift = (day: string, n: number) => {
+  const d = dt(day);
+  d.setDate(d.getDate() + n);
+  return isoOf(d);
+};
+const daysIn = (a: string, b: string) => Math.round((dt(b).getTime() - dt(a).getTime()) / 86400000) + 1;
+const dayShort = (day: string) => `${dt(day).getDate()} ${MON[dt(day).getMonth()]}`;
+/** «8 окт — 6 ноя»; через Новый год — с годами; один день — с днём недели. */
+const spanText = (a: string, b: string) =>
+  a === b ? `${dayShort(a)}, ${WD_JS[dt(a).getDay()]}` : a.slice(0, 4) !== b.slice(0, 4) ? `${dayShort(a)} ${a.slice(0, 4)} — ${dayShort(b)} ${b.slice(0, 4)}` : `${dayShort(a)} — ${dayShort(b)}`;
 const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
+const int = (n: number) => Math.round(n).toLocaleString("ru-RU");
 
-/** «1 октября — 8 октября» / «8 октября». */
-function periodText(from: string, to: string): string {
-  const a = new Date(`${from}T00:00:00`);
-  const b = new Date(`${to}T00:00:00`);
-  const one = (d: Date, y: boolean) => `${d.getDate()} ${MONTHS[d.getMonth()]}${y ? ` ${d.getFullYear()}` : ""}`;
-  if (from === to) return one(a, false);
-  const y = a.getFullYear() !== b.getFullYear();
-  return `${one(a, y)} — ${one(b, y)}`;
+function rangeOf(k: PKey) {
+  const t = todayIso();
+  return k === "month" ? { from: `${t.slice(0, 7)}-01`, to: t } : { from: todayIso(-(Number(k) - 1)), to: t };
 }
-
-export default function Finance({ isDesktop, toast }: { isDesktop: boolean; toast: Toast }) {
-  const [period, setPeriod] = useState<Period>(() => periodOf("month"));
-  const [data, setData] = useState<FinanceData | null>(null);
-  const [error, setError] = useState("");
-  const [open, setOpen] = useState<number | null>(null);
-
-  const load = useCallback(() => {
-    getFinance({ date_from: period.date_from, date_to: period.date_to })
-      .then((d) => {
-        setData(d);
-        setError("");
-      })
-      .catch((e) => setError(apiError(e, "Не удалось загрузить финансы")));
-  }, [period.date_from, period.date_to]);
-  useEffect(load, [load]);
-  useRefresh(load);
-
-  const t = data?.totals;
-
-  return (
-    <Page size="wide">
-      <div style={css("display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px")}>
-        <PeriodPicker value={period} onChange={setPeriod} />
-        <span style={css("margin-left:auto;font-size:12.5px;color:var(--text-4)")}>{periodText(period.date_from, period.date_to)}</span>
-      </div>
-      {error && <ModalError text={error} />}
-      {!data || !t ? (
-        !error && (
-          <div style={css("padding:18px;border-radius:20px;border:1px solid var(--border);background:var(--surface)")}>
-            <SkeletonRows rows={6} />
-          </div>
-        )
-      ) : (
-        <div style={css("display:flex;flex-direction:column;gap:16px")}>
-          <div className="fn-top">
-            <CashCard data={data} />
-            <div style={css("display:flex;flex-direction:column;gap:16px;min-width:0")}>
-              <Split
-                title="Сумма заказов за период"
-                total={t.sale}
-                hint={`${t.items} ${plural(t.items, "товар", "товара", "товаров")}`}
-                parts={[
-                  { label: "Оплачено", value: t.paid, grad: "linear-gradient(90deg,#34D399,#16A34A)", color: "var(--green)" },
-                  { label: "Не оплачено", value: t.debt, grad: "linear-gradient(90deg,#FB7185,#E5484D)", color: "var(--danger)" },
-                ]}
-              />
-              <Split
-                title="Наценка на товары"
-                total={t.with_cost ? t.cost + t.profit : 0}
-                value={t.with_cost ? `${t.profit > 0 ? "+" : ""}${som(t.profit)}` : "—"}
-                valueColor={t.with_cost ? (t.profit < 0 ? "var(--danger)" : "var(--green)") : undefined}
-                hint={t.with_cost ? `${pct(t.profit, t.cost)}% к выкупу${t.with_cost < t.items ? ` · по ${t.with_cost} из ${t.items} с выкупом` : ""} · без веса и доставки` : "нет цен выкупа"}
-                parts={[
-                  { label: "Выкуп", value: t.cost, grad: "linear-gradient(90deg,#C4B5FD,#8B5CF6)", color: "var(--violet)" },
-                  { label: "Наценка", value: t.profit, grad: "linear-gradient(90deg,#34D399,#0EA5E9)", color: t.profit < 0 ? "var(--danger)" : "var(--green)" },
-                ]}
-              />
-              <DebtNote total={t.debts_total} count={data.debtors.length} />
-            </div>
-          </div>
-
-          <MonthsCard months={data.months} />
-
-          <div className="fn-lists">
-            <Debtors list={data.debtors} />
-            <Payments data={data} onOpen={setOpen} isDesktop={isDesktop} />
-          </div>
-        </div>
-      )}
-      {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
-    </Page>
-  );
-}
-
-// --- Касса --------------------------------------------------------------------------------------
-
-const METHOD_TONE: Record<string, string> = { cash: "#34D399", card: "#7C9CFF", transfer: "#C4B5FD", import: "#FBBF24", other: "#94A3B8" };
-
-/** Тёмная «карта кассы»: поступления за период, график по дням и способы оплаты. */
-function CashCard({ data }: { data: FinanceData }) {
-  const days = useMemo(() => {
-    const raw = data.cash_in.by_day ?? [];
-    const one = (d: { day: string; amount: number }) => ({ label: dayWords(d.day), sub: WEEKDAYS[new Date(`${d.day}T00:00:00`).getDay()], amount: d.amount });
-    if (raw.length === 1) return [one(raw[0]), one(raw[0])];
-    if (raw.length <= 62) return raw.map(one);
-    const out: { label: string; sub: string; amount: number }[] = [];
-    for (let i = 0; i < raw.length; i += 7) {
-      const chunk = raw.slice(i, i + 7);
-      out.push({ label: `неделя с ${dayWords(chunk[0].day)}`, sub: `${chunk.length} ${plural(chunk.length, "день", "дня", "дней")}`, amount: chunk.reduce((a, d) => a + d.amount, 0) });
-    }
-    return out;
-  }, [data.cash_in.by_day]);
-  const byDay = data.cash_in.by_day ?? [];
-  const methods = data.cash_in.by_method ?? [];
-  const max = Math.max(1, ...days.map((d) => d.amount));
-  const best = byDay.reduce<{ day: string; amount: number } | null>((a, d) => (d.amount > (a?.amount ?? 0) ? d : a), null);
-  const active = byDay.filter((d) => d.amount > 0).length;
-  const avg = active ? Math.round(data.cash_in.amount / active) : 0;
-  const empty = data.cash_in.amount <= 0;
-  const [hover, setHover] = useState<number | null>(null);
-  const h = hover !== null && !empty ? days[hover] : null;
-  const share = h && data.cash_in.amount > 0 ? pct(h.amount, data.cash_in.amount) : 0;
-
-  // Плавная линия поступлений: точки на 100×40, сглаживание — через середины.
-  const path = useMemo(() => {
-    if (days.length < 2) return null;
-    const pts = days.map((d, i) => [(i / (days.length - 1)) * 100, 38 - (d.amount / max) * 32] as const);
-    let line = `M ${pts[0][0]} ${pts[0][1]}`;
-    for (let i = 1; i < pts.length; i++) {
-      const [x0, y0] = pts[i - 1];
-      const [x1, y1] = pts[i];
-      const mx = (x0 + x1) / 2;
-      line += ` C ${mx} ${y0} ${mx} ${y1} ${x1} ${y1}`;
-    }
-    return { line, area: `${line} L 100 40 L 0 40 Z`, pts };
-  }, [days, max]);
-
-  return (
-    <section className="fn-cash">
-      <div style={css("display:flex;align-items:center;gap:10px")}>
-        <span style={css("width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:var(--fc-chip);color:var(--fc-icon)")}>
-          <Icon name="finance" size={18} />
-        </span>
-        <span style={css("font-size:13px;color:var(--fc-mut)")}>Касса · поступило денег</span>
-        <span style={css(NUM + ";margin-left:auto;font-size:12px;color:var(--fc-dim)")}>
-          {data.cash_in.count} {plural(data.cash_in.count, "оплата", "оплаты", "оплат")}
-        </span>
-      </div>
-      <div style={css(NUM + ";margin-top:14px;font-size:40px;font-weight:600;letter-spacing:-.03em;line-height:1;color:var(--fc-text);white-space:nowrap")}>
-        <CountUp text={som(data.cash_in.amount)} />
-      </div>
-      {active ? (
-        <div className="fn-cash-stats">
-          <CashStat label="В среднем в день" value={som(avg)} sub="по дням с оплатами" />
-          <CashStat label="Лучший день" value={best ? som(best.amount) : "—"} sub={best ? dayWords(best.day) : ""} />
-          <CashStat label="Дней с оплатами" value={String(active)} tail={` из ${byDay.length}`} sub={`${pct(active, byDay.length)}% дней периода`} />
-        </div>
-      ) : (
-        <div style={css("margin-top:8px;font-size:12.5px;color:var(--fc-dim)")}>за период оплат не было</div>
-      )}
-
-      {/* График поступлений по дням; без оплат — бледный «призрак» графика и подсказка по центру */}
-      {empty ? (
-        <div className="fn-spark fn-cash-empty">
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none" width="100%" height="100%" aria-hidden>
-            <path d="M0 30 C 12 30 12 20 24 20 C 36 20 36 27 48 27 C 60 27 60 13 72 13 C 84 13 84 22 100 18" fill="none" className="fn-ghost-line" vectorEffect="non-scaling-stroke" />
-            <path d="M0 38 L 100 38" fill="none" className="fn-ghost-base" vectorEffect="non-scaling-stroke" />
-          </svg>
-          <div className="fn-cash-msg">
-            <span className="fn-cash-msg-icon">
-              <Icon name="finance" size={18} />
-            </span>
-            <span style={css("min-width:0")}>
-              <span style={css("display:block;font-size:13.5px;font-weight:500;color:var(--fc-text)")}>За этот период оплат не было</span>
-              <span style={css("display:block;font-size:12px;color:var(--fc-dim);margin-top:2px")}>поступления появятся здесь, как только примут оплату</span>
-            </span>
-          </div>
-        </div>
-      ) : (
-        <div className="fn-spark" onMouseLeave={() => setHover(null)}>
-        {path && (
-          <svg viewBox="0 0 100 40" preserveAspectRatio="none" width="100%" height="100%" aria-hidden>
-            <defs>
-              <linearGradient id="fnCashArea" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" style={{ stopColor: "var(--fc-area)", stopOpacity: 0.5 }} />
-                <stop offset="100%" style={{ stopColor: "var(--fc-area)", stopOpacity: 0 }} />
-              </linearGradient>
-            </defs>
-            <path d={path.area} fill="url(#fnCashArea)" />
-            <path d={path.line} fill="none" style={{ stroke: "var(--fc-line)" }} strokeWidth="1.6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-          </svg>
-        )}
-        {path && hover !== null && h && (
-          <>
-            <span className="fn-guide" style={{ left: `${path.pts[hover][0]}%` }} />
-            <span className="fn-spark-dot" style={{ left: `${path.pts[hover][0]}%`, top: `${(path.pts[hover][1] / 40) * 100}%` }} />
-            <span
-              className={"fn-tip" + (path.pts[hover][0] < 18 ? " left" : path.pts[hover][0] > 82 ? " right" : "") + (path.pts[hover][1] < 18 ? " below" : "")}
-              style={{ left: `${path.pts[hover][0]}%`, top: `${(path.pts[hover][1] / 40) * 100}%` }}
-            >
-              <span style={css("display:flex;align-items:baseline;gap:6px;white-space:nowrap")}>
-                <span style={css("font-size:12.5px;font-weight:500;color:var(--fc-tip-text)")}>{h.label}</span>
-                <span style={css("font-size:11.5px;color:var(--fc-tip-dim)")}>{h.sub}</span>
-              </span>
-              <span style={css(NUM + ";display:block;margin-top:4px;font-size:18px;font-weight:600;letter-spacing:-.02em;color:var(--fc-tip-text);white-space:nowrap")}>{som(h.amount)}</span>
-              <span style={css("display:flex;align-items:center;gap:8px;margin-top:6px")}>
-                <span style={css("flex:1;min-width:70px;height:5px;border-radius:999px;background:var(--fc-tip-track);overflow:hidden")}>
-                  <span style={mix("display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#6A8BFF,#34D399)", { width: `${Math.max(share, h.amount ? 3 : 0)}%` })} />
-                </span>
-                <span style={css(NUM + ";font-size:11.5px;color:var(--fc-tip-dim);white-space:nowrap")}>{h.amount ? `${share}% периода` : "оплат не было"}</span>
-              </span>
-            </span>
-          </>
-        )}
-        <div className="fn-spark-hit">
-          {days.map((_, i) => (
-            <span key={i} onMouseEnter={() => setHover(i)} />
-          ))}
-        </div>
-        </div>
-      )}
-
-      {/* Чем платили; без оплат — серые заготовки */}
-      {methods.length === 0 && (
-        <div style={css("margin-top:16px")} aria-hidden>
-          <div className="fn-methods">
-            <span style={{ flexGrow: 6, background: "var(--fc-track)" }} />
-            <span style={{ flexGrow: 3, background: "var(--fc-track)" }} />
-            <span style={{ flexGrow: 1, background: "var(--fc-track)" }} />
-          </div>
-          <div style={css("display:flex;gap:16px;margin-top:12px")}>
-            {[84, 70, 58].map((w) => (
-              <span key={w} className="fn-ghost-chip" style={{ width: w }} />
-            ))}
-          </div>
-        </div>
-      )}
-      {methods.length > 0 && (
-        <div style={css("margin-top:16px")}>
-          <div className="fn-methods">
-            {methods.map((m) => (
-              <span key={m.method} style={{ flexGrow: m.amount, background: METHOD_TONE[m.method] ?? METHOD_TONE.other }} />
-            ))}
-          </div>
-          <div style={css("display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:10px")}>
-            {methods.map((m) => (
-              <span key={m.method} style={css(NUM + ";display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--fc-mut);white-space:nowrap")}>
-                <span style={mix("width:8px;height:8px;border-radius:3px", { background: METHOD_TONE[m.method] ?? METHOD_TONE.other })} />
-                {METHOD_LABEL[m.method] ?? m.method}
-                <b style={css("color:var(--fc-text);font-weight:500")}>
-                  <CountUp text={som(m.amount)} />
-                </b>
-                <span style={css("color:var(--fc-faint)")}>
-                  <CountUp text={`${pct(m.amount, data.cash_in.amount)}%`} />
-                </span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** Плашка итога в карточке кассы: подпись, число и пояснение. */
-function CashStat({ label, value, tail, sub }: { label: string; value: string; tail?: string; sub: string }) {
-  return (
-    <div className="fn-cash-stat">
-      <span style={css("display:block;font-size:11.5px;color:var(--fc-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{label}</span>
-      <span style={css(NUM + ";display:block;margin-top:3px;font-size:15px;font-weight:500;color:var(--fc-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-        <CountUp text={value} />
-        {tail}
-      </span>
-      <span style={css("display:block;margin-top:1px;font-size:11.5px;color:var(--fc-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</span>
-    </div>
-  );
-}
-
-function dayWords(day: string): string {
-  if (day === todayIso()) return "сегодня";
-  if (day === todayIso(-1)) return "вчера";
-  const d = new Date(`${day}T00:00:00`);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
-}
-
-// --- Разрезы суммы ------------------------------------------------------------------------------
-
-/** Толстая полоса «из чего состоит сумма»: доли подписаны над полосой, числа — под ней. */
-function Split({ title, total, value, valueColor, hint, parts }: { title: string; total: number; value?: string; valueColor?: string; hint: string; parts: { label: string; value: number; grad: string; color: string }[] }) {
-  const sum = parts.reduce((a, p) => a + Math.max(0, p.value), 0);
-  return (
-    <section className="fn-split">
-      <div style={css("display:flex;align-items:baseline;gap:10px;flex-wrap:wrap")}>
-        <span style={css("font-size:13px;color:var(--text-2)")}>{title}</span>
-        <span style={mix(NUM + ";margin-left:auto;font-size:22px;font-weight:500;letter-spacing:-.02em;white-space:nowrap", { color: valueColor ?? "var(--text)" })}>{value ?? (total ? <CountUp text={som(total)} /> : "—")}</span>
-      </div>
-      {sum <= 0 ? (
-        <div className="fn-split-empty">за этот период данных нет</div>
-      ) : (
-      <div className="fn-split-bar">
-        {sum > 0 ? (
-          parts
-            .filter((p) => p.value > 0)
-            .map((p) => (
-              <span key={p.label} className="bar-grow" style={{ flexGrow: p.value, background: p.grad }}>
-                {pct(p.value, sum) >= 12 && <b>{pct(p.value, sum)}%</b>}
-              </span>
-            ))
-        ) : (
-          <span style={{ flexGrow: 1, background: "var(--hover)" }} />
-        )}
-      </div>
-      )}
-      <div style={css("display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline")}>
-        {parts.map((p) => (
-          <span key={p.label} style={css("display:inline-flex;align-items:baseline;gap:7px;white-space:nowrap")}>
-            <span style={mix("width:8px;height:8px;border-radius:3px;align-self:center", { background: p.grad })} />
-            <span style={css("font-size:12.5px;color:var(--text-3)")}>{p.label}</span>
-            <span style={mix(NUM + ";font-size:14px;font-weight:500", { color: p.value ? p.color : "var(--text-4)" })}>{som(p.value)}</span>
-          </span>
-        ))}
-        <span style={css("margin-left:auto;font-size:12px;color:var(--text-4)")}>{hint}</span>
-      </div>
-    </section>
-  );
-}
-
-function DebtNote({ total, count }: { total: number; count: number }) {
-  return (
-    <a href="#fn-debtors" className="fn-debt" onClick={(e) => { e.preventDefault(); document.getElementById("fn-debtors")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
-      <span style={css("width:34px;height:34px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#FB7185,#DC2626)")}>!</span>
-      <span style={css("min-width:0")}>
-        <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>Долги клиентов — за всё время, по невыданным товарам</span>
-        <span style={css(NUM + ";display:block;font-size:20px;font-weight:500;color:var(--danger);margin-top:1px")}>
-          <CountUp text={som(total)} />
-        </span>
-      </span>
-      <span style={css(NUM + ";margin-left:auto;font-size:12.5px;color:var(--text-3);white-space:nowrap")}>
-        {count} {plural(count, "должник", "должника", "должников")} ↓
-      </span>
-    </a>
-  );
-}
-
-// --- По месяцам ---------------------------------------------------------------------------------
-
-/**
- * Месяцы плитками (старые слева, новые справа): сумма, столбик-размер к лучшему месяцу,
- * доля оплаты полосой и рост к прошлому месяцу. Под плитками — полоса выбранного месяца:
- * пять цифр и сравнение каждой с прошлым месяцем.
- */
-function MonthsCard({ months }: { months: MonthRow[] }) {
-  const first = months.findIndex((m) => m.items > 0);
-  const list = first < 0 ? [] : months.slice(first);
-  const max = Math.max(1, ...list.map((m) => m.sale));
-  const [pick, setPick] = useState<string | null>(null);
-  useEffect(() => setPick(null), [months]);
-  const sel = list.find((m) => m.month === pick) ?? list[list.length - 1];
-  const selPrev = sel ? list[list.indexOf(sel) - 1] ?? null : null;
-
-  return (
-    <section className="fn-months">
-      <div style={css("display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px")}>
-        <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>По месяцам</span>
-        <span style={css("font-size:12px;color:var(--text-4)")}>нажмите на месяц — ниже его цифры и сравнение с прошлым</span>
-      </div>
-      {list.length === 0 ? (
-        <Empty icon="finance" title="Заказов пока нет" />
-      ) : (
-        <>
-          <div className="fn-tiles">
-            {list.map((m, i) => {
-              const prev = i > 0 ? list[i - 1] : null;
-              const paid = Math.min(m.paid, m.sale);
-              const debt = Math.max(0, m.sale - paid);
-              const mi = Number(m.month.slice(5, 7)) - 1;
-              const on = sel === m;
-              return (
-                <button key={m.month} type="button" className={"fn-tile" + (on ? " on" : "")} onClick={() => setPick(m.month)} aria-pressed={on}>
-                  <span style={css("display:flex;align-items:flex-start;gap:10px")}>
-                    <span style={css("flex:1;min-width:0")}>
-                      <span style={css("display:flex;align-items:baseline;gap:6px")}>
-                        <span style={css("font-size:13.5px;font-weight:500;color:var(--text)")}>{MONTHS_NOM[mi]}</span>
-                        <span style={css(NUM + ";font-size:11.5px;color:var(--text-4)")}>{m.month.slice(0, 4)}</span>
-                      </span>
-                      <span style={css(NUM + ";display:block;margin-top:6px;font-size:18px;font-weight:500;letter-spacing:-.02em;color:var(--text);white-space:nowrap")}>
-                        <CountUp text={som(m.sale)} />
-                      </span>
-                    </span>
-                    {/* Столбик: высота — сумма к лучшему месяцу, зелёное — оплачено */}
-                    <span className="fn-tile-col" title={`${pct(m.sale, max)}% от лучшего месяца`}>
-                      <span style={{ height: `${Math.max(6, pct(m.sale, max))}%` }}>
-                        {debt > 0 && <i style={{ flexGrow: debt, background: "linear-gradient(180deg,#FB7185,#E5484D)" }} />}
-                        {paid > 0 && <i style={{ flexGrow: paid, background: "linear-gradient(180deg,#34D399,#16A34A)" }} />}
-                      </span>
-                    </span>
-                  </span>
-                  <span className="fn-tile-bar">
-                    {paid > 0 && <i style={{ flexGrow: paid, background: "linear-gradient(90deg,#34D399,#16A34A)" }} />}
-                    {debt > 0 && <i style={{ flexGrow: debt, background: "linear-gradient(90deg,#FB7185,#E5484D)" }} />}
-                  </span>
-                  <span style={css("display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-top:8px;min-width:0")}>
-                    <span style={css(NUM + ";font-size:12px;color:var(--text-3);white-space:nowrap")}>
-                      оплачено{" "}
-                      <b style={css("font-weight:500;color:var(--green)")}>
-                        <CountUp text={`${pct(paid, m.sale)}%`} />
-                      </b>
-                    </span>
-                    <Delta now={m.sale} before={prev?.sale ?? null} current={m.month === todayIso().slice(0, 7)} />
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          {sel && <MonthDetail m={sel} prev={selPrev} best={max} />}
-        </>
-      )}
-    </section>
-  );
-}
-
-/** Рост к прошлому месяцу: «↑ 28%», «↓ 12%»; у текущего месяца — «идёт», у первого — «первый». */
-function Delta({ now, before, current, label, good = "up" }: { now: number; before: number | null; current?: boolean; label?: string; good?: "up" | "down" | "none" }) {
-  if (current && !label) {
-    const d = new Date();
-    const days = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-    return <span className="fn-delta now">идёт · {d.getDate()}/{days}</span>;
-  }
-  if (before === null || before <= 0) return <span className="fn-delta">{label ? "нет данных" : "первый"}</span>;
-  const p = Math.round(((now - before) / before) * 100);
-  return (
-    <span className={"fn-delta " + (good === "none" ? "" : (p >= 0) === (good === "up") ? "up" : "down")} title={label ? `к ${label}` : "к прошлому месяцу"}>
-      {p >= 0 ? "↑" : "↓"} {Math.abs(p)}%{label ? ` к ${label}` : ""}
-    </span>
-  );
-}
-
-/** Месяц в дательном падеже — для «к сентябрю», «к маю». */
-const MONTHS_DAT = ["январю", "февралю", "марту", "апрелю", "маю", "июню", "июлю", "августу", "сентябрю", "октябрю", "ноябрю", "декабрю"];
-/** И в творительном — для «сравнение с сентябрём». */
-const MONTHS_INS = ["январём", "февралём", "мартом", "апрелем", "маем", "июнем", "июлем", "августом", "сентябрём", "октябрём", "ноябрём", "декабрём"];
-
-/**
- * Полоса выбранного месяца: пять ячеек одной формы — подпись, число (бежит), полоса доли,
- * пояснение и сравнение с прошлым месяцем; строки у всех ячеек на одном уровне.
- */
-function MonthDetail({ m, prev, best }: { m: MonthRow; prev: MonthRow | null; best: number }) {
-  const mi = Number(m.month.slice(5, 7)) - 1;
-  const current = m.month === todayIso().slice(0, 7);
-  const vs = prev ? MONTHS_DAT[Number(prev.month.slice(5, 7)) - 1] : undefined;
-  const paid = Math.min(m.paid, m.sale);
-  const G = {
-    accent: "linear-gradient(90deg,#8FA6FF,#3E63DD)",
-    green: "linear-gradient(90deg,#34D399,#16A34A)",
-    red: "linear-gradient(90deg,#FB7185,#E5484D)",
-    violet: "linear-gradient(90deg,#C4B5FD,#8B5CF6)",
-    teal: "linear-gradient(90deg,#34D399,#0EA5E9)",
-  };
-  const cells: { label: string; value: string; color?: string; share: number; grad: string; sub: string; now?: number; before?: number | null; good?: "up" | "down" | "none" }[] = [
-    {
-      label: "Сумма заказов",
-      value: som(m.sale),
-      share: pct(m.sale, best),
-      grad: G.accent,
-      sub: `${m.items} ${plural(m.items, "товар", "товара", "товаров")} · ${pct(m.sale, best)}% от лучшего`,
-      now: m.sale,
-      before: prev?.sale ?? null,
-    },
-    { label: "Оплачено", value: som(paid), color: "var(--green)", share: pct(paid, m.sale), grad: G.green, sub: `${pct(paid, m.sale)}% суммы`, now: paid, before: prev ? Math.min(prev.paid, prev.sale) : null },
-    {
-      label: "Не оплачено",
-      value: som(m.debt),
-      color: m.debt > 0 ? "var(--danger)" : "var(--text-4)",
-      share: pct(m.debt, m.sale),
-      grad: G.red,
-      sub: m.debt > 0 ? `${pct(m.debt, m.sale)}% суммы` : "всё оплачено",
-      now: m.debt,
-      before: prev ? prev.debt : null,
-      good: "down",
-    },
-    {
-      label: "Выкуп",
-      value: m.with_cost ? som(m.cost) : "—",
-      share: m.with_cost ? pct(m.cost, m.sale) : 0,
-      grad: G.violet,
-      sub: m.with_cost ? `${pct(m.cost, m.sale)}% суммы` : "нет цен выкупа",
-      now: m.with_cost ? m.cost : undefined,
-      before: prev && prev.with_cost ? prev.cost : null,
-      good: "none",
-    },
-    {
-      label: "Наценка",
-      value: m.with_cost ? `${m.profit > 0 ? "+" : ""}${som(m.profit)}` : "—",
-      color: m.profit < 0 ? "var(--danger)" : "var(--green)",
-      share: m.with_cost ? Math.max(0, pct(m.profit, m.sale)) : 0,
-      grad: G.teal,
-      sub: m.with_cost ? `наценка ${pct(m.profit, m.cost)}%${m.with_cost < m.items ? ` · по ${m.with_cost} из ${m.items}` : ""}` : "нет цен выкупа",
-      now: m.with_cost ? m.profit : undefined,
-      before: prev && prev.with_cost ? prev.profit : null,
-    },
-  ];
-  return (
-    <div className="fn-mdetail" key={m.month}>
-      <div style={css("display:flex;align-items:baseline;gap:10px;flex-wrap:wrap")}>
-        <span style={css("font-size:16px;font-weight:500;color:var(--text)")}>
-          {MONTHS_NOM[mi]} {m.month.slice(0, 4)}
-        </span>
-        <span style={css("font-size:12.5px;color:var(--text-4)")}>
-          {current ? "месяц ещё идёт — сравнение с прошлым неполное" : prev ? `сравнение с ${MONTHS_INS[Number(prev.month.slice(5, 7)) - 1]}` : "первый месяц с заказами"}
-        </span>
-      </div>
-      <div className="fn-mcells">
-        {cells.map((c) => (
-          <div key={c.label} className="fn-mcell">
-            <span style={css("font-size:12px;color:var(--text-3)")}>{c.label}</span>
-            <span style={mix(NUM + ";font-size:20px;font-weight:500;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: c.value === "—" ? "var(--text-5)" : c.color ?? "var(--text)" })}>
-              <CountUp text={c.value} />
-            </span>
-            <span className="fn-mcell-bar">
-              {c.share > 0 && <span className="bar-grow" style={{ width: `${Math.max(3, Math.min(100, c.share))}%`, background: c.grad }} />}
-            </span>
-            <span style={css(NUM + ";font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{c.sub}</span>
-            <span style={css("display:flex;min-height:22px")}>
-              {c.now !== undefined && vs ? (
-                <Delta now={c.now} before={c.before ?? null} label={vs} good={c.good} />
-              ) : (
-                <span className="fn-delta">{vs ? "нет данных" : "первый месяц"}</span>
-              )}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// --- Должники и поступления ---------------------------------------------------------------------
-
-function Panel({ id, title, meta, total, totalColor, footer, children }: { id?: string; title: string; meta: string; total: string; totalColor: string; footer: string; children: ReactNode }) {
-  return (
-    <section id={id} className="fn-panel">
-      <div style={css("display:flex;align-items:baseline;gap:10px;padding:16px 18px 12px")}>
-        <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>{title}</span>
-        <span style={css(NUM + ";font-size:12.5px;color:var(--text-4)")}>{meta}</span>
-        <span style={mix(NUM + ";margin-left:auto;font-size:18px;font-weight:500;white-space:nowrap", { color: totalColor })}>{total}</span>
-      </div>
-      <div className="thin-scroll" style={css("flex:1;min-height:0;overflow-y:auto;border-top:1px solid var(--border-2)")}>
-        {children}
-      </div>
-      <div style={css("padding:9px 18px;border-top:1px solid var(--border-2);background:var(--surface-2);font-size:11.5px;color:var(--text-4)")}>{footer}</div>
-    </section>
-  );
-}
-
-function Debtors({ list }: { list: FinanceData["debtors"] }) {
-  const nav = useNavigate();
-  const max = list[0]?.debt || 1;
-  const total = list.reduce((s, d) => s + d.debt, 0);
-  return (
-    <Panel id="fn-debtors" title="Должники" meta={`${list.length}`} total={som(total)} totalColor="var(--danger)" footer="долг по невыданным товарам · нажмите — карточка клиента">
-      {list.length === 0 ? (
-        <PanelEmpty tone="green" title="Долгов нет" text="все клиенты рассчитались за невыданные товары" />
-      ) : (
-        list.map((d, i) => {
-          const days = Math.max(0, Math.round((new Date(todayIso()).getTime() - new Date(d.oldest.slice(0, 10)).getTime()) / 86400000));
-          return (
-            <div key={d.id} onClick={() => nav(`/customers/${d.id}`)} className="fn-debtor">
-              <span className={"fn-place" + (i < 3 ? " top" : "")}>{i + 1}</span>
-              <Avatar name={d.name} />
-              <span style={css("min-width:0")}>
-                <span style={css("display:block;font-size:13.5px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{d.name}</span>
-                <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                  {d.items} {plural(d.items, "товар", "товара", "товаров")} · долг с {dayWords(d.oldest.slice(0, 10))}
-                  {days >= 30 && <span style={css("color:var(--danger)")}> · {days} дн.</span>}
-                </span>
-              </span>
-              <span style={css("min-width:0;text-align:right")}>
-                <span style={css(NUM + ";display:block;font-size:14px;font-weight:500;color:var(--danger);white-space:nowrap")}>{som(d.debt)}</span>
-                <span style={css("display:block;height:5px;border-radius:999px;background:var(--hover);margin-top:6px;overflow:hidden")}>
-                  <span style={mix("display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#FB7185,#E5484D)", { width: `${Math.max(4, (d.debt / max) * 100)}%` })} />
-                </span>
-              </span>
-            </div>
-          );
-        })
-      )}
-    </Panel>
-  );
-}
-
-function Payments({ data, onOpen, isDesktop }: { data: FinanceData; onOpen: (id: number) => void; isDesktop: boolean }) {
-  const groups = useMemo(() => {
-    const g: { day: string; rows: FinanceData["payments"] }[] = [];
-    for (const p of data.payments) {
-      const d = new Date(p.paid_at);
-      const day = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
-      const last = g[g.length - 1];
-      if (last && last.day === day) last.rows.push(p);
-      else g.push({ day, rows: [p] });
-    }
-    return g;
-  }, [data.payments]);
-  return (
-    <Panel
-      title="Поступления"
-      meta={`${data.cash_in.count}`}
-      total={`${data.cash_in.amount ? "+" : ""}${som(data.cash_in.amount)}`}
-      totalColor="var(--green)"
-      footer={data.cash_in.count > data.payments.length ? `показаны последние ${data.payments.length} из ${data.cash_in.count} · нажмите — карточка товара` : "нажмите — карточка товара"}
-    >
-      {data.payments.length === 0 ? (
-        <PanelEmpty tone="accent" title="Оплат за период нет" text="выберите период побольше — например, «30 дней»" />
-      ) : (
-        groups.map((g) => {
-          const d = new Date(`${g.day}T00:00:00`);
-          const sum = g.rows.reduce((a, p) => a + p.amount, 0);
-          return (
-            <div key={g.day}>
-              <div className="fn-pay-day">
-                <span style={css("font-size:12.5px;font-weight:500;color:var(--text-2)")}>{g.day === todayIso() ? "Сегодня" : g.day === todayIso(-1) ? "Вчера" : `${d.getDate()} ${MONTHS[d.getMonth()]}`}</span>
-                <span style={css("font-size:11.5px;color:var(--text-4)")}>{WEEKDAYS[d.getDay()]}</span>
-                <span style={css(NUM + ";margin-left:auto;font-size:12px;color:var(--green)")}>+{som(sum)}</span>
-              </div>
-              {g.rows.map((p) => {
-                const at = new Date(p.paid_at);
-                return (
-                  <div key={p.id} onClick={() => p.item_id && onOpen(p.item_id)} className="fn-pay" style={p.item_id ? undefined : { cursor: "default" }}>
-                    <span style={css(NUM + ";font-size:12.5px;color:var(--text-3)")}>
-                      {p2(at.getHours())}:{p2(at.getMinutes())}
-                    </span>
-                    <span style={css("min-width:0")}>
-                      <span style={css("display:block;font-size:13.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{p.customer_name}</span>
-                      <span style={css("display:block;font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>
-                        {p.item_name}
-                        {p.comment ? ` · ${p.comment}` : ""}
-                      </span>
-                    </span>
-                    {isDesktop && (
-                      <span className="fn-method" style={{ ["--m" as string]: METHOD_TONE[p.method] ?? METHOD_TONE.other }}>
-                        {METHOD_LABEL[p.method] ?? p.method}
-                      </span>
-                    )}
-                    <span style={css(NUM + ";font-size:14px;font-weight:500;color:var(--green);text-align:right;white-space:nowrap")}>+{som(p.amount)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })
-      )}
-    </Panel>
-  );
-}
-
-/** Пустой список: бледные строки-заготовки (исчезают книзу) и подсказка по центру. */
-function PanelEmpty({ tone, title, text }: { tone: "green" | "accent"; title: string; text: string }) {
-  const grad = tone === "green" ? "linear-gradient(135deg,#34D399,#16A34A)" : "linear-gradient(135deg,#6A8BFF,#3E63DD)";
-  return (
-    <div className="fn-empty">
-      <div className="fn-empty-rows" aria-hidden>
-        {Array.from({ length: 8 }, (_, i) => (
-          <div key={i} className="fn-empty-row">
-            <span className="sk" style={{ width: 34, height: 34, borderRadius: "50%" }} />
-            <span style={css("flex:1;display:flex;flex-direction:column;gap:8px")}>
-              <span className="sk" style={{ width: `${[46, 60, 38, 54][i % 4]}%`, height: 9 }} />
-              <span className="sk" style={{ width: `${[30, 24, 36, 28][i % 4]}%`, height: 7 }} />
-            </span>
-            <span className="sk" style={{ width: 64, height: 10 }} />
-          </div>
-        ))}
-      </div>
-      <div className="fn-empty-msg">
-        <span style={mix("width:40px;height:40px;border-radius:13px;flex:none;display:grid;place-items:center;color:#fff;box-shadow:0 10px 20px -10px rgba(15,18,25,.45)", { background: grad })}>
-          {tone === "green" ? (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-          ) : (
-            <Icon name="finance" size={19} />
-          )}
-        </span>
-        <span style={css("min-width:0")}>
-          <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>{title}</span>
-          <span style={css("display:block;font-size:12.5px;color:var(--text-3);margin-top:2px")}>{text}</span>
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// --- Мелочи -------------------------------------------------------------------------------------
 
 function plural(n: number, one: string, few: string, many: string): string {
   const m10 = n % 10;
@@ -723,20 +61,1567 @@ function plural(n: number, one: string, few: string, many: string): string {
   return many;
 }
 
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
+/** Короткая подпись оси: «15 тыс», «1,2 млн». */
+function short(v: number, money: boolean): string {
+  const a = Math.abs(v);
+  const f = (x: number) => (Math.round(x * 10) / 10).toLocaleString("ru-RU");
+  if (a >= 1e6) return `${f(v / 1e6)} млн`;
+  if (a >= 1000) return `${f(v / 1000)} тыс`;
+  return money ? `${int(v)}` : int(v);
+}
 
-/** Аватар-буква; цвет — от имени, как на других страницах. */
-function Avatar({ name }: { name: string }) {
-  const n = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+/**
+ * Цепочка прибыли слева направо. Выкуп товаров — оборот (деньги ушли на товар и вернутся с оплатой),
+ * в прибыль не входит. Чистая прибыль = наценка + вес клиентам − выкуп веса − доставка.
+ */
+const METRICS: { key: Metric; op: string; label: string; title: string; basis: string; money: boolean; total: (d: FinanceData) => number; note: (d: FinanceData) => string }[] = [
+  {
+    key: "cost",
+    op: "",
+    label: "Выкуп товаров",
+    title: "Выкуп товаров",
+    basis: "по дате заказа · реальная цена товаров",
+    money: true,
+    total: (d) => d.money?.goods_cost ?? d.totals.cost,
+    note: (d) => (d.totals.with_cost < d.totals.items ? `по ${d.totals.with_cost} из ${d.totals.items} с ценой выкупа` : `${d.totals.items} ${plural(d.totals.items, "товар", "товара", "товаров")}`),
+  },
+  {
+    key: "profit",
+    op: "+",
+    label: "Наценка",
+    title: "Наценка",
+    basis: "по дате заказа · сумма − реальная цена",
+    money: true,
+    total: (d) => d.money?.markup ?? d.totals.profit,
+    note: (d) => (d.totals.cost > 0 ? `${pct(d.totals.profit, d.totals.cost)}% к выкупу` : "нет цен выкупа"),
+  },
+  {
+    key: "wbuy",
+    op: "−",
+    label: "Выкуп веса",
+    title: "Выкуп веса (карго)",
+    basis: "по дню прихода партии",
+    money: true,
+    total: (d) => d.money?.weight_buy ?? 0,
+    note: (d) => (d.money?.batches ? `${d.money.batches} ${plural(d.money.batches, "партия", "партии", "партий")} · карго` : "партий не было"),
+  },
+  {
+    key: "delivery",
+    op: "−",
+    label: "Доставка",
+    title: "Доставка (дорога)",
+    basis: "по дню прихода партии",
+    money: true,
+    total: (d) => d.money?.delivery ?? 0,
+    note: () => "дорога · по партиям",
+  },
+  {
+    key: "weight",
+    op: "+",
+    label: "Вес клиентам",
+    title: "Вес клиентам",
+    basis: "при выдаче — по дню выдачи, вписанный в партию — по дню прихода",
+    money: true,
+    total: (d) => d.money?.weight ?? 0,
+    note: (d) =>
+      d.money?.weight_pending ? `ещё ждём ${som(d.money.weight_pending)} при выдаче` : `${(d.money?.weight_kg ?? 0).toLocaleString("ru-RU")} кг · ${(d.money?.rate_usd ?? 0).toLocaleString("ru-RU")} $/кг`,
+  },
+  {
+    key: "net",
+    op: "=",
+    label: "Чистая прибыль",
+    title: "Чистая прибыль",
+    basis: "наценка + вес клиентам − выкуп веса − доставка",
+    money: true,
+    total: (d) => d.money?.net ?? d.totals.profit,
+    note: () => "наценка + вес − расходы",
+  },
+];
+const fmt = (m: (typeof METRICS)[number], v: number) => (m.money ? som(Math.round(v)) : int(v));
+
+function chunks(rows: Row[], size: number): Row[][] {
+  const out: Row[][] = [];
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
+  return out;
+}
+
+/** Значения показателя по группам дней; у среднего чека пустой день повторяет прошлый. */
+function valuesOf(m: Metric, groups: Row[][]): number[] {
+  const v = groups.map((g) => {
+    return g.reduce((a, r) => a + r[m], 0);
+  });
+  return v.length === 1 ? [v[0], v[0]] : v;
+}
+
+/**
+ * Плавная кривая через значения (монотонный сплайн, без выбросов за точки), разложенная
+ * на одинаковое число отрезков — так форма плавно перетекает при смене периода или показателя.
+ */
+function curve(vals: number[], y: (v: number) => number, samples = 120, xsIn?: number[]): string {
+  const n = vals.length;
+  const xs = xsIn ?? vals.map((_, i) => (i / (n - 1)) * 100);
+  const ys = vals.map(y);
+  const tg = tangents(xs.map((x, i) => [x, ys[i]]));
+  let d = "";
+  let i = 0;
+  for (let k = 0; k <= samples; k++) {
+    const X = (k / samples) * 100;
+    while (i < n - 2 && X > xs[i + 1]) i++;
+    const h = xs[i + 1] - xs[i] || 1;
+    const t = (X - xs[i]) / h;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const Y = (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h * tg[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h * tg[i + 1];
+    d += `${k ? "L" : "M"}${X.toFixed(2)} ${Y.toFixed(2)}`;
+  }
+  return d;
+}
+
+/** Первый кадр — линия на нуле, со следующего — настоящая: график плавно вырастает. */
+function useGrow() {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    let b = 0;
+    const a = requestAnimationFrame(() => (b = requestAnimationFrame(() => setOn(true))));
+    return () => {
+      cancelAnimationFrame(a);
+      cancelAnimationFrame(b);
+    };
+  }, []);
+  return on;
+}
+
+const dStyle = (d: string) => ({ d: `path("${d}")` }) as CSSProperties;
+
+/** Наклоны монотонного сплайна в точках. */
+function tangents(pts: number[][]): number[] {
+  const n = pts.length;
+  const s: number[] = [];
+  const t: number[] = [];
+  for (let i = 0; i < n - 1; i++) s.push((pts[i + 1][1] - pts[i][1]) / (pts[i + 1][0] - pts[i][0] || 1));
+  t[0] = s[0];
+  t[n - 1] = s[n - 2];
+  for (let i = 1; i < n - 1; i++) t[i] = s[i - 1] * s[i] <= 0 ? 0 : (s[i - 1] + s[i]) / 2;
+  for (let i = 0; i < n - 1; i++) {
+    if (s[i] === 0) {
+      t[i] = 0;
+      t[i + 1] = 0;
+      continue;
+    }
+    const a = t[i] / s[i];
+    const b = t[i + 1] / s[i];
+    const h = a * a + b * b;
+    if (h > 9) {
+      const k = 3 / Math.sqrt(h);
+      t[i] = k * a * s[i];
+      t[i + 1] = k * b * s[i];
+    }
+  }
+  return t;
+}
+
+function nice(raw: number): number {
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const n = raw / mag;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
+}
+
+const ARROW = { up: "M12 19V5m-6 6 6-6 6 6", down: "M12 5v14m6-6-6 6-6-6" };
+
+/**
+ * Изменение к прошлому периоду: «↑ 4,7%». Если в прошлом был ноль или минус, или сейчас минус —
+ * проценты врут (например «−509%»), поэтому показываем разницу в сомах: «↓ 31 051 с». Падение — контуром.
+ */
+function Delta({ now, before }: { now: number; before: number | null }) {
+  if (before === null || (before === 0 && now === 0)) return null;
+  const diff = now - before;
+  const byPct = before > 0 && now >= 0;
+  const a = Math.abs(byPct ? (diff / before) * 100 : 0);
   return (
-    <span style={mix("width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:13.5px;font-weight:600", { background: AVATAR_BG[n % AVATAR_BG.length] })}>
-      {name.trim().slice(0, 1).toUpperCase()}
+    <span className={"fn2-d" + (diff < 0 ? " dn" : "")} title={byPct ? "к прошлому периоду" : "разница с прошлым периодом"}>
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d={diff < 0 ? ARROW.down : ARROW.up} />
+      </svg>
+      {byPct ? `${a >= 100 ? int(a) : a.toFixed(1).replace(".", ",")}%` : som(Math.abs(Math.round(diff * 100) / 100))}
     </span>
+  );
+}
+
+export default function Finance({ toast }: { isDesktop: boolean; toast: Toast }) {
+  const [pk, setPk] = useState<PKey>("30");
+  const [cmp, setCmp] = useState(true);
+  const [metric, setMetric] = useState<Metric>("net");
+  const [tab, setTab] = useState<Tab>("top");
+  const [data, setData] = useState<FinanceData | null>(null);
+  const [prevData, setPrevData] = useState<FinanceData | null>(null);
+  const [error, setError] = useState("");
+  const [open, setOpen] = useState<number | null>(null);
+  // Период считается заново при каждой отрисовке — после полуночи «сегодня» сдвинется само.
+  const r = rangeOf(pk);
+  const seq = useRef(0);
+  const tableRef = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(() => {
+    const len = daysIn(r.from, r.to);
+    // Ответ на старый запрос (период уже переключили) не показываем.
+    const my = ++seq.current;
+    Promise.all([getFinance({ date_from: r.from, date_to: r.to }), getFinance({ date_from: shift(r.from, -len), date_to: shift(r.from, -1) })])
+      .then(([a, b]) => {
+        if (my !== seq.current) return;
+        setData(a);
+        setPrevData(b);
+        setError("");
+      })
+      .catch((e) => {
+        if (my === seq.current) setError(apiError(e, "Не удалось загрузить финансы"));
+      });
+  }, [r.from, r.to]);
+  useEffect(load, [load]);
+  useRefresh(load);
+
+  const prev = cmp ? prevData : null;
+  const m = METRICS.find((x) => x.key === metric)!;
+  const range = spanText(r.from, r.to);
+  const today = data?.series?.find((x) => x.day === todayIso());
+
+  const exportCsv = () => {
+    if (!data?.series) return;
+    const lines = [
+      "Дата;Выкуп товаров;Наценка;Выкуп веса;Доставка;Вес клиентам;Чистая прибыль;Поступило;Сумма заказов;Товаров",
+      ...data.series.map((x) => [x.day, x.cost, x.profit, x.wbuy, x.delivery, x.weight, x.net, x.cash, x.sale, x.items].join(";").replace(/./g, ",")),
+    ];
+    const url = URL.createObjectURL(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: `finance_${r.from}_${r.to}.csv` });
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const toDebtors = () => {
+    setTab("debt");
+    tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  return (
+    <Page size="wide">
+      <div className="ov fn2">
+        <div className="wx-head">
+          <HomeHead title="Финансы" />
+          <div className="wx-head-r">
+            {today && (
+              <span className="ov-live fn2-live">
+                <span className="ov-live-dot" aria-hidden />
+                <em className="fn2-live-d">сегодня</em>
+                <span className="fn2-live-v">
+                  <b>+{som(today.cash)}</b>
+                  <small>поступило</small>
+                </span>
+                <i className="fn2-live-sep" aria-hidden />
+                <span className="fn2-live-v">
+                  <b>
+                    {today.net > 0 ? "+" : today.net < 0 ? "−" : ""}
+                    {som(Math.abs(today.net))}
+                  </b>
+                  <small>прибыль</small>
+                </span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="fn2-bar">
+          <SlideTabs<PKey>
+            value={pk}
+            onChange={setPk}
+            counts={false}
+            options={[
+              ["1", "Сегодня"],
+              ["7", "7 дней"],
+              ["month", "Этот месяц"],
+              ["30", "30 дней"],
+              ["90", "90 дней"],
+              ["365", "12 месяцев"],
+            ]}
+          />
+          <span className="fn2-range">{range}</span>
+          <button type="button" className={"fn2-sw" + (cmp ? " on" : "")} onClick={() => setCmp(!cmp)} aria-pressed={cmp}>
+            <i />с прошлым периодом
+          </button>
+          <button type="button" className="fn2-btn" onClick={exportCsv} disabled={!data?.series}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 4v11m-5-5 5 5 5-5M5 20h14" />
+            </svg>
+            Экспорт CSV
+          </button>
+        </div>
+
+        {error && <ModalError text={error} />}
+        {!data ? (
+          !error && <Ghost />
+        ) : (
+          <>
+            <div className="fn2-kpis">
+              {METRICS.map((x, i) => (
+                <Kpi key={x.key} m={x} data={data} prev={prev} on={x.key === metric} onClick={() => setMetric(x.key)} delay={i} />
+              ))}
+            </div>
+            <div className="fn2-g1">
+              <BigChart m={m} data={data} prev={prev} busy={data.period.date_from !== r.from || data.period.date_to !== r.to} />
+              <div className="fn2-side">
+                <PaySplit data={data} prev={prev} onDebtors={toDebtors} />
+                <Methods data={data} />
+              </div>
+            </div>
+            <div className="fn2-g2">
+              <Funnel data={data} />
+              <When data={data} />
+            </div>
+            <div className="fn2-g3" ref={tableRef}>
+              <Table data={data} tab={tab} setTab={setTab} onOpen={setOpen} />
+            </div>
+          </>
+        )}
+      </div>
+      {open !== null && <ItemModal id={open} toast={toast} onClose={() => setOpen(null)} />}
+    </Page>
+  );
+}
+
+// --- Показатели ----------------------------------------------------------------------------------
+
+function Kpi({ m, data, prev, on, onClick, delay }: { m: (typeof METRICS)[number]; data: FinanceData; prev: FinanceData | null; on: boolean; onClick: () => void; delay: number }) {
+  const rows = data.series ?? [];
+  const vals = valuesOf(m.key, chunks(rows, rows.length > 31 ? Math.ceil(rows.length / 30) : 1));
+  const v = m.total(data);
+  const b = prev ? m.total(prev) : null;
+  const delta = b !== null && (b !== 0 || v !== 0);
+  return (
+    <button type="button" className={"fn2-k" + (on ? " on" : "")} onClick={onClick} aria-pressed={on} title={m.note(data)} style={{ animationDelay: `${delay * 50}ms` }}>
+      <small>
+        {m.op && <i className="fn2-op">{m.op}</i>}
+        {m.label}
+      </small>
+      <b>
+        <CountUp text={fmt(m, v)} />
+      </b>
+      <span className="fn2-k-d">
+        {delta ? (
+          <>
+            <Delta now={v} before={b} />
+            <em className="vs">к прошлому</em>
+          </>
+        ) : (
+          <em>{m.note(data)}</em>
+        )}
+      </span>
+      <Spark values={vals} />
+      <span className="fn2-k-go" aria-hidden>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M7 17 17 7M8 7h9v9" />
+        </svg>
+      </span>
+    </button>
+  );
+}
+
+/** Сглаживание для мини-графика (гауссово среднее соседей): без острых пиков, общий ход виден. */
+function soften(v: number[]): number[] {
+  if (v.length < 4) return v;
+  const r = Math.max(1, Math.round(v.length / 30));
+  return v.map((_, i) => {
+    let s = 0;
+    let w = 0;
+    for (let k = -2 * r; k <= 2 * r; k++) {
+      const j = i + k;
+      if (j < 0 || j >= v.length) continue;
+      const g = Math.exp(-(k * k) / (2 * r * r));
+      s += v[j] * g;
+      w += g;
+    }
+    return s / w;
+  });
+}
+
+function Spark({ values }: { values: number[] }) {
+  const id = "fs" + useId().replace(/[^a-zA-Z0-9]/g, "");
+  const sv = soften(values);
+  const hi = Math.max(...sv);
+  const lo = Math.min(0, ...sv);
+  const rg = hi - lo || 1;
+  const on = useGrow();
+  const d = curve(sv, (v) => (on ? 29 - ((v - lo) / rg) * 25 : 29), 60);
+  return (
+    <svg className="fn2-spark" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="currentColor" stopOpacity=".16" />
+          <stop offset=".85" stopColor="currentColor" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path className="g" fill={`url(#${id})`} style={dStyle(`${d} L100 32 L0 32 Z`)} />
+      <path className="l" style={dStyle(d)} vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+// --- Крупный график ------------------------------------------------------------------------------
+
+/** Слагаемые чистой прибыли: знак и откуда берётся сумма периода. */
+const PARTS: { key: "profit" | "weight" | "wbuy" | "delivery"; label: string; sign: 1 | -1; c: string }[] = [
+  { key: "profit", label: "Наценка", sign: 1, c: "c1" },
+  { key: "weight", label: "Вес клиентам", sign: 1, c: "c2" },
+  { key: "wbuy", label: "Выкуп веса", sign: -1, c: "c3" },
+  { key: "delivery", label: "Доставка", sign: -1, c: "c4" },
+];
+const ST_IC = {
+  up: "M7 17 17 7M8 7h9v9",
+  down: "M7 7l10 10M17 8v9H8",
+  avg: "M4 9c2.5-2.5 5-2.5 8 0s5.5 2.5 8 0M4 15c2.5-2.5 5-2.5 8 0s5.5 2.5 8 0",
+  days: "M7 3v3M17 3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z",
+  prev: "M3 12a9 9 0 1 0 2.6-6.4M3 4v4h4M12 8v4l3 2",
+};
+/** «+1 200 с», «−300 с», «0 с». */
+const signed = (v: number) => (v > 0 ? "+" : v < 0 ? "−" : "") + som(Math.abs(Math.round(v * 100) / 100));
+
+function BigChart({ m, data, prev, busy }: { m: (typeof METRICS)[number]; data: FinanceData; prev: FinanceData | null; busy: boolean }) {
+  const rows = data.series ?? [];
+  const size = rows.length > 92 ? 7 : 1;
+  const groups = chunks(rows, size);
+  // Суммы по дням (за год — по неделям).
+  const sumG = (g: Row[]) => g.reduce((a, r) => a + r[m.key], 0);
+  const curAll = groups.length ? groups.map(sumG) : [0];
+  const pGroups = prev?.series ? chunks(prev.series, size) : null;
+  const pvAll = pGroups ? pGroups.map(sumG).slice(0, curAll.length) : null;
+  // Пустое начало периода не показываем: график начинается чуть раньше первых сумм.
+  const firstAt = curAll.findIndex((v, i) => v !== 0 || (pvAll?.[i] ?? 0) !== 0);
+  const start = curAll.length > 10 && firstAt > curAll.length * 0.15 ? Math.max(0, firstAt - Math.max(1, Math.round(curAll.length * 0.04))) : 0;
+  const G = groups.slice(start);
+  const PG = pGroups ? pGroups.slice(start) : null;
+  const raw = curAll.slice(start);
+  const pRaw = pvAll ? pvAll.slice(start) : null;
+  const cur = raw.length === 1 ? [raw[0], raw[0]] : raw;
+  const pv = pRaw && pRaw.length ? (pRaw.length === 1 ? [pRaw[0], pRaw[0]] : pRaw) : null;
+  const n = cur.length;
+  const isNet = m.key === "net";
+  const total = m.total(data);
+
+  // «Горы»: суммы дней сглажены (соседние дни перетекают друг в друга), и самая высокая гора
+  // растянута ровно до настоящего максимума дня — шкала не врёт, точные суммы — в подсказке.
+  const sigma = Math.max(0.5, n / 60);
+  const R = Math.ceil(sigma * 3);
+  let wAll = 0;
+  for (let k = -R; k <= R; k++) wAll += Math.exp(-(k * k) / (2 * sigma * sigma));
+  // За краями периода — нули (а не «растягивание» соседей): крайние дни не завышаются.
+  const blur = (v: number[]) =>
+    v.map((_, i) => {
+      let a = 0;
+      for (let k = -R; k <= R; k++) {
+        const j = i + k;
+        if (j < 0 || j >= v.length) continue;
+        a += v[j] * Math.exp(-(k * k) / (2 * sigma * sigma));
+      }
+      return a / wAll;
+    });
+  const peak = (v: number[]) => Math.max(0, ...v.map(Math.abs));
+  const sm0 = blur(cur);
+  const kk = peak(sm0) > 0 ? peak(cur) / peak(sm0) : 1;
+  const sm = sm0.map((v) => v * kk);
+  const pm = pv ? blur(pv).map((v) => v * kk) : null;
+
+  // Шкала: ровные деления, ноль всегда на шкале; при минусе — ниже нуля.
+  const all = [...sm, ...(pm ?? [])];
+  const hi = Math.max(0, ...all);
+  const lo = Math.min(0, ...all);
+  const step = nice((hi - lo) / 4 || (m.money ? 250 : 1));
+  const top = Math.max(step, Math.ceil(hi / step) * step);
+  const bot = Math.floor(lo / step) * step;
+  const ticks: number[] = [];
+  for (let v = top; v >= bot - 1e-9; v -= step) ticks.push(v);
+  const y = (v: number) => (1 - (v - bot) / (top - bot)) * 100;
+  const x = (i: number) => (i / (n - 1)) * 100;
+  const zeroY = y(0);
+  const neg = bot < 0;
+
+  // Первый кадр — всё на нуле, дальше горы плавно поднимаются и перетекают при смене периода.
+  const on = useGrow();
+  const yy = (v: number) => (on ? y(v) : zeroY);
+  const line = curve(sm, yy, 320);
+  const pline = pm ? curve(pm, yy, 320) : null;
+  const area = `${line} L100 ${zeroY} L0 ${zeroY} Z`;
+
+  // Метка над самой высокой горой: сумма и день.
+  const iPk = peak(cur) > 0 ? cur.findIndex((v) => Math.abs(v) === peak(cur)) : -1;
+  const pkDay = iPk >= 0 ? G[Math.min(iPk, G.length - 1)]?.[0]?.day : undefined;
+  // Метка вершины ждёт, пока горы вырастут или перетекут, и появляется один раз — уже на своём месте.
+  const pkSig = `${m.key}|${data.period.date_from}|${data.period.date_to}|${iPk}|${iPk >= 0 ? cur[iPk] : 0}|${iPk >= 0 ? Math.round(y(sm[iPk]) * 10) : 0}|${iPk >= 0 ? Math.round(x(iPk) * 10) : 0}`;
+  // Строго: каждое переключение — новый номер; метка видна, только если для ЭТОГО номера линия
+  // уже дорисовалась и сейчас не движется (быстрые переключения туда-обратно её не «оживят» раньше времени).
+  const genRef = useRef({ sig: "", gen: 0 });
+  if (genRef.current.sig !== pkSig) genRef.current = { sig: pkSig, gen: genRef.current.gen + 1 };
+  const gen = genRef.current.gen;
+  const [shownGen, setShownGen] = useState(-1);
+  const [moving, setMoving] = useState(false);
+  const pkShow = shownGen === gen && !moving;
+  const curRef = useRef<SVGPathElement>(null);
+  // Линия снова поехала (например, сменилась шкала) — метка сразу прячется.
+  useEffect(() => {
+    const el = curRef.current;
+    if (!el) return;
+    const run = (e: TransitionEvent) => e.propertyName === "d" && setMoving(true);
+    const stop = (e: TransitionEvent) => e.propertyName === "d" && setMoving(false);
+    el.addEventListener("transitionrun", run);
+    el.addEventListener("transitionend", stop);
+    el.addEventListener("transitioncancel", stop);
+    return () => {
+      el.removeEventListener("transitionrun", run);
+      el.removeEventListener("transitionend", stop);
+      el.removeEventListener("transitioncancel", stop);
+    };
+  }, []);
+  // Показываем, только когда линия на экране реально совпала с конечной формой (сверка каждый кадр),
+  // без таймеров — на любом компьютере метка появится ровно тогда, когда гора дорисована.
+  useEffect(() => {
+    if (!on) return;
+    let raf = 0;
+    let same = 0;
+    const t0 = performance.now();
+    const norm = (d: string) => d.replace(/s+/g, "");
+    const tick = () => {
+      const el = curRef.current;
+      const target = el ? norm(el.style.getPropertyValue("d")) : "";
+      const now = el ? norm(getComputedStyle(el).getPropertyValue("d")) : "";
+      same = el && target && now === target ? same + 1 : 0;
+      if (same >= 3 && performance.now() - t0 > 1000) {
+        setMoving(false);
+        setShownGen(gen);
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [gen, on]);
+
+  const L = Math.min(n, 7);
+  const xl = Array.from({ length: L }, (_, k) => Math.round((k * (n - 1)) / Math.max(1, L - 1)));
+
+  // Итоги по дням периода (не по неделям графика).
+  const dayVals = rows.map((r) => r[m.key]);
+  const nDays = rows.length;
+  const sumDays = dayVals.reduce((a, v) => a + v, 0);
+  const iMax = dayVals.length ? dayVals.indexOf(Math.max(...dayVals)) : -1;
+  const iMin = dayVals.length ? dayVals.indexOf(Math.min(...dayVals)) : -1;
+  const dayOf = (i: number) => (i >= 0 ? dayShort(rows[i].day) : "—");
+  const plus = dayVals.filter((v) => v > 0).length;
+  const fmtS = (v: number) => (isNet ? signed(v) : fmt(m, v));
+  const prevRange = prev ? spanText(prev.period.date_from, prev.period.date_to) : "";
+  type Stat = { ic: keyof typeof ST_IC; label: string; value: string; sub: string; strip?: boolean; extra?: string };
+  const stats: Stat[] = isNet
+    ? [
+        { ic: "up", label: "Лучший день", value: iMax >= 0 ? signed(dayVals[iMax]) : "—", sub: dayOf(iMax) },
+        { ic: "down", label: "Худший день", value: iMin >= 0 ? signed(dayVals[iMin]) : "—", sub: dayOf(iMin) },
+        { ic: "avg", label: "В среднем в день", value: nDays ? signed(Math.round(sumDays / nDays)) : "—", sub: `за ${nDays} ${plural(nDays, "день", "дня", "дней")}` },
+        { ic: "days", label: "Дней в плюсе", value: `${plus} из ${nDays}`, sub: "", strip: true, extra: `${pct(plus, nDays)}%` },
+      ]
+    : [];
+
+  const box = useRef<HTMLDivElement>(null);
+  const [hvRaw, setHv] = useState<number | null>(null);
+  const hv = hvRaw === null ? null : Math.min(hvRaw, n - 1);
+  // Подсказка не исчезает резко: уводим мышь — она плавно гаснет на месте.
+  const [vis, setVis] = useState(false);
+  const move = (e: { clientX: number }) => {
+    const b = box.current?.getBoundingClientRect();
+    if (!b) return;
+    const i = Math.max(0, Math.min(n - 1, Math.round(((e.clientX - b.left) / b.width) * (n - 1))));
+    window.clearTimeout(hideT.current);
+    setHv(i);
+    // Первое появление — со следующего кадра, чтобы подсказка проявилась плавно, а не вспыхнула.
+    if (hvRaw === null) requestAnimationFrame(() => setVis(true));
+    else setVis(true);
+  };
+  // Уводим мышь — подсказка плавно гаснет и только потом убирается совсем.
+  const hideT = useRef(0);
+  const leave = () => {
+    setVis(false);
+    window.clearTimeout(hideT.current);
+    hideT.current = window.setTimeout(() => setHv(null), 280);
+  };
+  useEffect(() => () => window.clearTimeout(hideT.current), []);
+  // Сменили показатель или период, а мышь не над графиком — скрытую подсказку убираем сразу,
+  // чтобы она не мелькнула со старыми данными.
+  const visRef = useRef(vis);
+  visRef.current = vis;
+  useEffect(() => {
+    if (!visRef.current) setHv(null);
+  }, [m.key, data.period.date_from, data.period.date_to]);
+  const tipDay = (g: Row[][] | null, i: number) => {
+    const d = g?.[Math.min(i, g.length - 1)]?.[0]?.day;
+    if (!d) return "";
+    return size > 1 ? `неделя с ${dayShort(d)}` : `${dayShort(d)}, ${WD_JS[dt(d).getDay()]}`;
+  };
+  const hg = hv !== null ? G[Math.min(hv, G.length - 1)] ?? [] : [];
+
+  return (
+    <section className="ov-card fn2-big">
+      <div className="fn2-bh">
+        <div className="fn2-bh-l">
+          <span className="fn2-t">
+            {m.title}
+            <em>{size > 1 ? "по неделям" : "по дням"}</em>
+            <span className="fn2-info" tabIndex={0} aria-label="Как считается">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 7.5h.01M11 11.5h1v6h1" />
+              </svg>
+              <span className="fn2-info-tip" role="tooltip">
+                <span className="fn2-info-row">
+                  <small>Как считается</small>
+                  <span>{m.basis}</span>
+                </span>
+                {start > 0 && G[0]?.[0] && (
+                  <span className="fn2-info-row">
+                    <small>График</small>
+                    <span>с {dayShort(G[0][0].day)} — раньше сумм не было</span>
+                  </span>
+                )}
+              </span>
+            </span>
+          </span>
+          <span className="fn2-big-v">
+            <b className={total < 0 ? "neg" : ""}>
+              <CountUp text={isNet ? signed(total) : fmt(m, total)} />
+            </b>
+            {prev && !(total === 0 && m.total(prev) === 0) && <Delta now={total} before={m.total(prev)} />}
+          </span>
+        </div>
+        <div className="fn2-rng">
+          <span className="fn2-rng-i">
+            <i className="ln" />
+            <span>
+              <b>{spanText(data.period.date_from, data.period.date_to)}</b>
+              <small>этот период</small>
+            </span>
+          </span>
+          {pv && (
+            <span className="fn2-rng-i p">
+              <i className="ln dash" />
+              <span>
+                <b>{prevRange}</b>
+                <small>прошлый период</small>
+              </span>
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="fn2-plot">
+        <div className="fn2-y">
+          {ticks.map((v) => (
+            <span key={v} className={v === 0 && neg ? "z" : ""} style={{ top: `${y(v)}%` }}>
+              {short(v, m.money)}
+            </span>
+          ))}
+        </div>
+        <div className="fn2-area" ref={box} onMouseMove={move} onMouseLeave={leave}>
+          {ticks.map((v) => (
+            <i key={v} className="fn2-grid" style={{ top: `${y(v)}%` }} />
+          ))}
+          {neg && <i className="fn2-zero" style={{ top: `${zeroY}%` }} />}
+          <svg className="fn2-svg mtn" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
+            <defs>
+              <linearGradient id="fn2Fill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stopColor="currentColor" stopOpacity=".22" />
+                <stop offset=".55" stopColor="currentColor" stopOpacity=".07" />
+                <stop offset="1" stopColor="currentColor" stopOpacity="0" />
+              </linearGradient>
+              <linearGradient id="fn2FillDn" x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0" stopColor="currentColor" stopOpacity=".14" />
+                <stop offset="1" stopColor="currentColor" stopOpacity=".02" />
+              </linearGradient>
+              <clipPath id="fn2Up">
+                <rect className="clip" x="0" y="-20" width="100" style={{ height: zeroY + 20 }} />
+              </clipPath>
+              <clipPath id="fn2Dn">
+                <rect className="clip" x="0" width="100" style={{ y: zeroY, height: 120 - zeroY } as CSSProperties} />
+              </clipPath>
+            </defs>
+            <path className="fill" clipPath="url(#fn2Up)" fill="url(#fn2Fill)" style={dStyle(area)} />
+            <path className="fill" clipPath="url(#fn2Dn)" fill="url(#fn2FillDn)" style={{ ...dStyle(area), opacity: neg ? 1 : 0 }} />
+            <path className="prev" style={{ ...dStyle(pline ?? line), opacity: pline ? 1 : 0 }} vectorEffect="non-scaling-stroke" />
+            <path className="glow" style={dStyle(line)} vectorEffect="non-scaling-stroke" />
+            <path ref={curRef} className="cur" style={dStyle(line)} vectorEffect="non-scaling-stroke" />
+          </svg>
+          {iPk >= 0 && pkDay && pkShow && (
+            <Fragment key={gen}>
+              <i className={"fn2-pk-dot in" + (busy ? " busy" : "") + (vis && hv !== null ? " off" : "")} style={{ left: `${x(iPk)}%`, top: `${yy(sm[iPk])}%` }} />
+              <span
+                className={"fn2-pk in" + (busy ? " busy" : "") + (x(iPk) > 55 ? " l" : "") + (cur[iPk] < 0 ? " neg" : "") + (vis && hv !== null ? " off" : "")}
+                style={{ left: `${x(iPk)}%`, top: `${yy(sm[iPk])}%` }}
+              >
+                <i className="fn2-pk-ic">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d={cur[iPk] < 0 ? ARROW.down : ARROW.up} />
+                  </svg>
+                </i>
+                <span>
+                  <b>{fmtS(cur[iPk])}</b>
+                  <small>
+                    {isNet ? (cur[iPk] < 0 ? "худший день" : "лучший день") : size > 1 ? "лучшая неделя" : "пик"} · {size > 1 ? `с ${dayShort(pkDay)}` : dayShort(pkDay)}
+                  </small>
+                </span>
+              </span>
+            </Fragment>
+          )}
+          {hv !== null && (
+            <>
+              <i className={"fn2-cross" + (vis ? " on" : "")} style={{ left: `${x(hv)}%` }} />
+              <i className={"fn2-dot" + (vis ? " on" : "")} style={{ left: `${x(hv)}%`, top: `${y(sm[hv])}%` }} />
+              <span className={"fn2-tip" + (x(hv) > 62 ? " r" : "") + (vis ? " on" : "")} style={{ left: `${x(hv)}%` }}>
+                <small>{tipDay(G, hv)}</small>
+                <b>{fmtS(cur[hv])}</b>
+                {isNet ? (
+                  <span className="fn2-tip-parts">
+                    {PARTS.map((p) => {
+                      const v = hg.reduce((a, r) => a + r[p.key], 0);
+                      return (
+                        <span key={p.key} className={"fn2-tip-r" + (v ? "" : " z")}>
+                          <i className={p.c} />
+                          <span>{p.label}</span>
+                          <span>{v ? signed(p.sign * v) : "—"}</span>
+                        </span>
+                      );
+                    })}
+                  </span>
+                ) : (
+                  total > 0 && (
+                    <span className="fn2-tip-parts">
+                      <span className="fn2-tip-r">
+                        <i className="c1" />
+                        <span>доля периода</span>
+                        <span>{pct(cur[hv], total)}%</span>
+                      </span>
+                    </span>
+                  )
+                )}
+                {pv && pv[hv] !== undefined && (
+                  <span className="fn2-tip-p">
+                    <span>
+                      Прошлый · {tipDay(PG, hv)}
+                      <b>{fmtS(pv[hv])}</b>
+                    </span>
+                    <em>
+                      {cur[hv] - pv[hv] >= 0 ? "↑" : "↓"} {som(Math.abs(Math.round(cur[hv] - pv[hv])))}
+                    </em>
+                  </span>
+                )}
+              </span>
+            </>
+          )}
+        </div>
+        <div className="fn2-x">
+          {xl.map((i, k) => (
+            <span key={k} className={xl.length === 1 ? "" : k === 0 ? "f" : k === xl.length - 1 ? "e" : ""} style={{ left: xl.length === 1 ? "50%" : `${x(i)}%` }}>
+              {dayShort(G[Math.min(i, G.length - 1)]?.[0]?.day ?? todayIso())}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {stats.length > 0 && (
+      <div className="fn2-st4">
+        {stats.map((st) => (
+          <div key={st.ic} className="fn2-st">
+            <span className={"fn2-st-ic" + (st.ic === "up" ? " ink" : "")}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d={ST_IC[st.ic]} />
+              </svg>
+            </span>
+            <span className="fn2-st-t">
+              <small>{st.label}</small>
+              <b>{st.value}</b>
+              {st.strip ? (
+                <span className="fn2-strip-r">
+                  <span className="fn2-strip" title={`${st.extra ? st.extra + " · " : ""}${size > 1 ? "по неделям" : "по дням"}: тёмные — в плюсе, серые — в минусе`}>
+                    {curAll.map((v, i) => (
+                      <i key={i} className={v > 0 ? "p" : v < 0 ? "m" : ""} />
+                    ))}
+                  </span>
+                </span>
+              ) : (
+                <em>{st.sub}</em>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      )}
+    </section>
+  );
+}
+
+// --- Оплата заказов ------------------------------------------------------------------------------
+
+const PAY_IC = {
+  badge: "M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76ZM9 12l2 2 4-4",
+  wallet: "M19 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6M3 8h16a2 2 0 0 1 2 2v2M14.5 18.5l2 2 4-4",
+  hourglass: "M6 3h12M6 21h12M7.5 3v3.5a4.5 4.5 0 0 0 9 0V3M7.5 21v-3.5a4.5 4.5 0 0 1 9 0V21",
+  check: "M20 6 9 17l-5-5",
+  clock: "M12 7v5l3 2M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z",
+  users: "M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1M9.5 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM21 19v-1a4 4 0 0 0-3-3.9M16 3.1a3.5 3.5 0 0 1 0 6.8",
+  arrow: "M5 12h14m-6-6 6 6-6 6",
+  trend: "m22 7-8.5 8.5-5-5L2 17M16 7h6v6",
+};
+const PayIc = ({ d, size = 14 }: { d: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d={d} />
+  </svg>
+);
+
+/** Оплата заказов периода: доля оплаты крупно и полосой, две плитки (оплачено / долг), долги за всё время и вывод. */
+function PaySplit({ data, prev, onDebtors }: { data: FinanceData; prev: FinanceData | null; onDebtors: () => void }) {
+  const t = data.totals;
+  // Долг хоть на сом — уже «1%», чтобы не показывать «100% оплачено» при живом долге.
+  const debtOf = (x: FinanceData["totals"]) => (x.sale > 0 ? Math.max(x.debt > 0 ? 1 : 0, Math.round((x.debt / x.sale) * 100)) : 0);
+  const debtPct = debtOf(t);
+  const paidPct = t.sale > 0 ? 100 - debtPct : 0;
+  const paidItems = t.items - t.unpaid_items;
+  const prevPct = prev && prev.totals.sale > 0 ? 100 - debtOf(prev.totals) : null;
+  const diff = prevPct === null ? null : paidPct - prevPct;
+  const debtors = data.debtors_count ?? data.debtors.length;
+  const note = !t.sale
+    ? "За период заказов нет — оплаты по ним появятся здесь."
+    : t.debt === 0 && (diff === null || diff === 0)
+      ? "Все заказы периода оплачены — долгов нет."
+    : diff === null
+      ? `Не оплачено ${som(t.debt)} у ${t.unpaid_items} ${plural(t.unpaid_items, "товара", "товаров", "товаров")} этого периода.`
+      : diff === 0
+        ? `Доля оплаты такая же, как в прошлом периоде — ${paidPct}%.`
+        : `Оплачено ${paidPct}% — на ${Math.abs(diff)} п.п. ${diff > 0 ? "больше" : "меньше"}, чем в прошлом периоде (${prevPct}%).`;
+  const on = useGrow();
+  return (
+    <section className="ov-card fn2-pay">
+      <div className="fn2-ch">
+        <span className="fn2-t">Оплата заказов</span>
+        <span className="fn2-chip">
+          {som(t.sale)}
+          <em>сумма заказов</em>
+        </span>
+      </div>
+
+      <div className="fn2-pay-hero">
+        <span className="fn2-pay-big">
+          <b>
+            <CountUp text={`${paidPct}%`} />
+          </b>
+          <small>оплачено</small>
+        </span>
+        <span className="fn2-pay-debt">
+          <small>долг</small>
+          <b>{t.sale ? `${debtPct}%` : "—"}</b>
+        </span>
+      </div>
+      <div className="fn2-pay-bar" role="img" aria-label={`Оплачено ${paidPct}%, долг ${debtPct}%`}>
+        {t.sale > 0 && <i style={{ width: on ? `${paidPct}%` : 0 }} />}
+        {t.debt > 0 && <i className="d" style={{ width: on ? `${debtPct}%` : 0 }} />}
+      </div>
+
+      <div className="fn2-pay-tiles">
+        <div className="fn2-pt2">
+          <div className="fn2-pt2-h">
+            <i>
+              <PayIc d={PAY_IC.badge} size={17} />
+            </i>
+            <small>Оплачено</small>
+          </div>
+          <b>
+            <CountUp text={som(t.paid)} />
+          </b>
+          <em>
+            {paidItems} {plural(paidItems, "товар", "товара", "товаров")} без долга
+          </em>
+          {prev && !(t.paid === 0 && prev.totals.paid === 0) && (
+            <span className="fn2-pt2-d">
+              <Delta now={t.paid} before={prev.totals.paid} />
+              <small>к прошлому</small>
+            </span>
+          )}
+        </div>
+        <div className="fn2-pt2 debt">
+          <div className="fn2-pt2-h">
+            <i>
+              <PayIc d={PAY_IC.hourglass} size={16} />
+            </i>
+            <small>Не оплачено</small>
+          </div>
+          <b>
+            <CountUp text={som(t.debt)} />
+          </b>
+          <em>{t.unpaid_items ? `${t.unpaid_items} ${plural(t.unpaid_items, "товар", "товара", "товаров")} с долгом` : "долгов нет"}</em>
+          {prev && !(t.debt === 0 && prev.totals.debt === 0) && (
+            <span className="fn2-pt2-d">
+              <Delta now={t.debt} before={prev.totals.debt} />
+              <small>к прошлому</small>
+            </span>
+          )}
+        </div>
+      </div>
+
+      <button type="button" className="fn2-pay-all" onClick={onDebtors} title="Долг по невыданным товарам — открыть список должников">
+        <span className="fn2-pay-all-ic">
+          <PayIc d={PAY_IC.users} size={16} />
+        </span>
+        <span>
+          <b>Долги за всё время</b>
+          <small>
+            {debtors} {plural(debtors, "должник", "должника", "должников")} · не выдано
+          </small>
+        </span>
+        <b className="v">
+          <CountUp text={som(t.debts_total)} />
+        </b>
+        <span className="go">
+          <PayIc d={PAY_IC.arrow} size={13} />
+        </span>
+      </button>
+
+      <p className="fn2-pay-note">
+        <PayIc d={PAY_IC.trend} size={15} />
+        <span>{note}</span>
+      </p>
+    </section>
+  );
+}
+
+// --- Путь товаров -------------------------------------------------------------------------------
+
+const STEP_IC = {
+  cart: "M3 4h2l2.4 11.2a1 1 0 0 0 1 .8h8.9a1 1 0 0 0 1-.8L20 8H6.2M9 20.5h.01M17 20.5h.01",
+  truck: "M3 6h11v10H3zM14 9h4l3 3v4h-7M7 19.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM17 19.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z",
+  home: "M3 21V8l9-5 9 5v13M7 21v-8h10v8M7 17h10",
+  done: "M21 12a9 9 0 1 1-9-9M21 4 12 13l-3-3",
+};
+
+/**
+ * Путь товаров, заказанных за период: четыре шага по порядку (сколько дошло и где застряли)
+ * и полоса «где товары сейчас».
+ */
+function Funnel({ data }: { data: FinanceData }) {
+  const s = data.stages ?? { ordered: 0, in_transit: 0, in_stock: 0, issued: 0 };
+  const total = s.ordered + s.in_transit + s.in_stock + s.issued;
+  const on = useGrow();
+  const word = (n: number) => `${n} ${plural(n, "товар", "товара", "товаров")}`;
+  const steps: { ic: keyof typeof STEP_IC; label: string; n: number; sub: string }[] = [
+    { ic: "cart", label: "Заказано", n: total, sub: "за период" },
+    { ic: "truck", label: "Отправлено", n: total - s.ordered, sub: s.ordered ? `${s.ordered} ждут отправки` : "все отправлены" },
+    { ic: "home", label: "На складе", n: s.in_stock + s.issued, sub: s.in_transit ? `${s.in_transit} ещё в пути` : "все прибыли" },
+    { ic: "done", label: "Выдано", n: s.issued, sub: s.in_stock ? `${s.in_stock} ждут выдачи` : "все выданы" },
+  ];
+  const now: { k: string; label: string; n: number }[] = [
+    { k: "o", label: "Ждут отправки", n: s.ordered },
+    { k: "t", label: "В пути", n: s.in_transit },
+    { k: "s", label: "На складе", n: s.in_stock },
+    { k: "i", label: "Выдано", n: s.issued },
+  ];
+  return (
+    <section className="ov-card fn2-way">
+      <div className="fn2-ch">
+        <span className="fn2-t">Путь товаров</span>
+        <span className="fn2-chip">
+          {word(total)}
+          <em>заказано за период</em>
+        </span>
+      </div>
+
+      <div className="fn2-way-in">
+      <div className="fn2-steps">
+        {steps.map((st, k) => (
+          <Fragment key={st.ic}>
+            {k > 0 && (
+              <span className="fn2-step-arr" aria-hidden>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m9 6 6 6-6 6" />
+                </svg>
+              </span>
+            )}
+            <div className={"fn2-step" + (k === steps.length - 1 ? " last" : "")}>
+              <div className="fn2-step-h">
+                <i>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d={STEP_IC[st.ic]} />
+                  </svg>
+                </i>
+                <small>{st.label}</small>
+              </div>
+              <div className="fn2-step-n">
+                <b>
+                  <CountUp text={int(st.n)} />
+                </b>
+                <em>{total ? `${pct(st.n, total)}%` : "—"}</em>
+              </div>
+              <span className="fn2-step-bar">
+                <i style={{ width: on && total ? `${Math.max(st.n ? 2 : 0, (st.n / total) * 100)}%` : 0, transitionDelay: `${k * 90}ms` }} />
+              </span>
+              <span className="fn2-step-sub">{st.sub}</span>
+            </div>
+          </Fragment>
+        ))}
+      </div>
+
+      <div className="fn2-now">
+        <div className="fn2-now-h">
+          <span>Где товары сейчас</span>
+          <small>{total ? `${pct(s.issued, total)}% уже у клиентов` : "заказов нет"}</small>
+        </div>
+        <div className="fn2-now-bar">
+          {total > 0 ? (
+            now.map((x) => (x.n > 0 ? <i key={x.k} className={x.k} style={{ flexGrow: on ? x.n : 0.0001 }} title={`${x.label}: ${word(x.n)}`} /> : null))
+          ) : (
+            <i className="e" style={{ flexGrow: 1 }} />
+          )}
+        </div>
+        <div className="fn2-now-l">
+          {now.map((x) => (
+            <span key={x.k} className={x.n ? "" : "z"}>
+              <i className={x.k} />
+              {x.label}
+              <b>{int(x.n)}</b>
+              <em>{total ? `${pct(x.n, total)}%` : ""}</em>
+            </span>
+          ))}
+        </div>
+      </div>
+      </div>
+    </section>
+  );
+}
+
+// --- Чем платили --------------------------------------------------------------------------------
+
+const METHOD_TONE: Record<string, string> = { cash: "var(--ov-ink)", transfer: "#8E8D87", card: "#5C5B56", import: "#B8B7B1", other: "#D3D2CC" };
+
+/** Чем платили: кольцо долей (наведение — доля в центре), способы с полосками и средней оплатой. */
+function Methods({ data }: { data: FinanceData }) {
+  const ms = data.cash_in.by_method ?? [];
+  const total = ms.reduce((a, x) => a + x.amount, 0);
+  const count = ms.reduce((x, m) => x + m.count, 0);
+  const [hv, setHv] = useState<string | null>(null);
+  const on = useGrow();
+  const R = 56;
+  const C = 2 * Math.PI * R;
+  const gap = ms.length > 1 ? 4 : 0;
+  const h = hv ? ms.find((x) => x.method === hv) ?? null : null;
+  const tone = (m: string) => METHOD_TONE[m] ?? METHOD_TONE.other;
+  let off = 0;
+  return (
+    <section className="ov-card fn2-meth2">
+      <div className="fn2-ch">
+        <span className="fn2-t">Чем платили</span>
+        <span className="fn2-chip">
+          {som(total)}
+          <em>поступило</em>
+        </span>
+      </div>
+      <div className="fn2-meth2-in">
+        <div className="fn2-donut2">
+          <svg viewBox="0 0 140 140" aria-hidden>
+            <circle cx="70" cy="70" r={R} className="trk" />
+            {total > 0 &&
+              ms.map((x) => {
+                const len = (x.amount / total) * C;
+                const el = (
+                  <circle
+                    key={x.method}
+                    cx="70"
+                    cy="70"
+                    r={R}
+                    className={"seg" + (hv === x.method ? " on" : hv ? " dim" : "")}
+                    style={{ stroke: tone(x.method), strokeDasharray: `${on ? Math.max(0.6, len - gap) : 0} ${C}`, strokeDashoffset: -off }}
+                    onMouseEnter={() => setHv(x.method)}
+                    onMouseLeave={() => setHv(null)}
+                  />
+                );
+                off += len;
+                return el;
+              })}
+          </svg>
+          <span className="fn2-donut2-c">
+            {h ? (
+              <>
+                <b>{pct(h.amount, total)}%</b>
+                <small>{METHOD_LABEL[h.method] ?? h.method}</small>
+              </>
+            ) : (
+              <>
+                <b>
+                  <CountUp text={int(count)} />
+                </b>
+                <small>{plural(count, "оплата", "оплаты", "оплат")}</small>
+              </>
+            )}
+          </span>
+        </div>
+        <div className="fn2-ml2">
+          {ms.length === 0 ? (
+            <p className="fn2-pay-note">
+              <PayIc d={PAY_IC.clock} size={15} />
+              <span>За период оплат не было — способы оплаты появятся здесь.</span>
+            </p>
+          ) : (
+            ms.map((x) => (
+              <div key={x.method} className={"fn2-ml2-r" + (hv === x.method ? " on" : hv ? " dim" : "")} onMouseEnter={() => setHv(x.method)} onMouseLeave={() => setHv(null)}>
+                <div className="fn2-ml2-h">
+                  <i style={{ background: tone(x.method) }} />
+                  <b>{METHOD_LABEL[x.method] ?? x.method}</b>
+                  <span className="v">{som(x.amount)}</span>
+                  <em>{pct(x.amount, total)}%</em>
+                </div>
+                <span className="fn2-ml2-bar">
+                  <i style={{ width: on ? `${total ? Math.max(1.5, (x.amount / total) * 100) : 0}%` : 0, background: tone(x.method) }} />
+                </span>
+                <small>
+                  {x.count} {plural(x.count, "оплата", "оплаты", "оплат")}
+                  {x.count > 1 ? ` · в среднем ${som(Math.round(x.amount / x.count))}` : ""}
+                </small>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      {count > 0 && (
+        <div className="fn2-meth2-f">
+          <span>В среднем за одну оплату</span>
+          <b>{som(Math.round(total / count))}</b>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// --- Клиенты, должники, оплаты -------------------------------------------------------------------
+
+const initials = (name: string) =>
+  name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0] ?? "")
+    .join("")
+    .toUpperCase() || "?";
+
+function Table({ data, tab, setTab, onOpen }: { data: FinanceData; tab: Tab; setTab: (t: Tab) => void; onOpen: (id: number) => void }) {
+  const nav = useNavigate();
+  const top = data.top_customers ?? [];
+  const debt = data.debtors;
+  const pay = data.payments;
+  const max = Math.max(1, ...(tab === "top" ? top.map((x) => x.sale) : tab === "debt" ? debt.map((x) => x.debt) : pay.map((x) => x.amount)));
+  const head = tab === "pay" ? ["Время", "Клиент и товар", "Способ", "Сумма"] : ["#", "Клиент", "Товаров", tab === "debt" ? "Долг" : "Сумма"];
+  const empty = (tab === "top" ? top : tab === "debt" ? debt : pay).length === 0;
+  return (
+    <section className="ov-card fn2-tbl">
+      <div className="fn2-ch">
+        <span className="fn2-t">{tab === "top" ? "Клиенты периода" : tab === "debt" ? "Должники" : "Оплаты"}</span>
+        <SlideTabs<Tab>
+          value={tab}
+          onChange={setTab}
+          options={[
+            ["top", "По сумме", top.length],
+            ["debt", "Должники", data.debtors_count ?? debt.length],
+            ["pay", "Оплаты", data.cash_in.count],
+          ]}
+        />
+        <button type="button" className="fn2-link" onClick={() => nav("/customers")}>
+          Все клиенты
+        </button>
+      </div>
+      {tab === "pay" ? (
+        <PayGroups from={data.period.date_from} to={data.period.date_to} onOpen={onOpen} />
+      ) : (
+      <>
+      <div className="fn2-tr fn2-th">
+        {head.map((h, k) => (
+          <span key={k}>{h}</span>
+        ))}
+        <span />
+      </div>
+      <div className="fn2-tb thin-scroll">
+        {empty ? (
+          <p className="fn2-note fn2-tempty">{tab === "top" ? "За период заказов нет." : tab === "debt" ? "Долгов нет — все рассчитались." : "За период оплат не было."}</p>
+        ) : tab === "top" ? (
+          top.map((c, k) => (
+            <button type="button" key={c.id} className="fn2-tr" onClick={() => nav(`/customers/${c.id}`)}>
+              <span className="fn2-rk">{k + 1}</span>
+              <Who name={c.name} sub={c.debt > 0 ? `долг ${som(c.debt)}` : c.code ? `код ${c.code}` : "без долга"} />
+              <span className="fn2-c">{c.items}</span>
+              <b className="fn2-c">{som(c.sale)}</b>
+              <Bar v={c.sale} max={max} first={k === 0} />
+            </button>
+          ))
+        ) : tab === "debt" ? (
+          debt.map((d, k) => {
+            const days = Math.max(0, Math.round((dt(todayIso()).getTime() - dt(d.oldest.slice(0, 10)).getTime()) / 86400000));
+            return (
+              <button type="button" key={d.id} className="fn2-tr" onClick={() => nav(`/customers/${d.id}`)}>
+                <span className="fn2-rk">{k + 1}</span>
+                <Who name={d.name} sub={`долг с ${dayShort(d.oldest.slice(0, 10))} · ${days} дн.`} />
+                <span className="fn2-c">{d.items}</span>
+                <b className="fn2-c">{som(d.debt)}</b>
+                <Bar v={d.debt} max={max} first={k === 0} />
+              </button>
+            );
+          })
+        ) : (
+          pay.map((p, k) => {
+            const at = new Date(p.paid_at);
+            return (
+              <button type="button" key={p.id} className="fn2-tr" onClick={() => p.item_id && onOpen(p.item_id)} style={p.item_id ? undefined : { cursor: "default" }}>
+                <span className="fn2-rk tm">
+                  {p2(at.getHours())}:{p2(at.getMinutes())}
+                  <small>{dayShort(isoOf(at))}</small>
+                </span>
+                <Who name={p.customer_name} sub={p.item_name + (p.comment ? ` · ${p.comment}` : "")} />
+                <span className="fn2-c">{METHOD_LABEL[p.method] ?? p.method}</span>
+                <b className="fn2-c">+{som(p.amount)}</b>
+                <Bar v={p.amount} max={max} first={k === 0} />
+              </button>
+            );
+          })
+        )}
+      </div>
+      {tab === "debt" && (data.debtors_count ?? 0) > debt.length && <p className="fn2-more">показаны {debt.length} с самым большим долгом из {data.debtors_count}</p>}
+      </>
+      )}
+    </section>
+  );
+}
+
+const KIND: Record<PayGroup["kind"], string> = { issue: "Выдача", bulk: "Оплата нескольких товаров", order: "Оплата при заказе", import: "Загружено из Excel", pay: "Оплата" };
+const hm = (iso: string) => {
+  const d = new Date(iso);
+  return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+};
+
+/** Оплаты по посещениям: один клиент — одна карточка (товары + вес за раз), раскрывается; внизу — страницы. */
+function PayGroups({ from, to, onOpen }: { from: string; to: string; onOpen: (id: number) => void }) {
+  const PER = 8;
+  const [page, setPage] = useState(1);
+  const [res, setRes] = useState<FinancePayments | null>(null);
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => setPage(1), [from, to]);
+  useEffect(() => {
+    let alive = true;
+    getFinancePayments({ date_from: from, date_to: to, page, per: PER })
+      .then((d) => {
+        if (!alive) return;
+        setRes(d);
+        // Все посещения закрыты — нужное раскрывают сами.
+        setOpened(new Set());
+      })
+      .catch(() => alive && setRes(null));
+    return () => {
+      alive = false;
+    };
+  }, [from, to, page]);
+  const pages = res ? Math.max(1, Math.ceil(res.total_groups / PER)) : 1;
+  const go = (p: number) => {
+    setPage(p);
+    box.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const toggle = (k: string) =>
+    setOpened((o) => {
+      const n = new Set(o);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
+  const word = (n: number) => `${n} ${plural(n, "товар", "товара", "товаров")}`;
+  const kg = (v: number) => `${v.toLocaleString("ru-RU", { maximumFractionDigits: 2 })} кг`;
+
+  // Пока грузится — заготовка той же высоты, что и список: страница не «прыгает».
+  if (!res)
+    return (
+      <div className="fn2-pgs" aria-hidden>
+        <div className="fn2-pg-th">
+          <span>Время</span>
+          <span>Клиент и что оплатил</span>
+          <span>Способ</span>
+          <span>Сумма</span>
+          <span />
+        </div>
+        {Array.from({ length: PER }, (_, k) => (
+          <div key={k} className="fn2-pg fn2-pg-ghost">
+            <span className="sk" style={{ width: 40, height: 12 }} />
+            <span className="sk" style={{ width: 34, height: 34, borderRadius: 11 }} />
+            <span className="sk" style={{ width: `${[34, 26, 40, 30][k % 4]}%`, height: 11 }} />
+            <span className="sk" style={{ width: 90, height: 14, marginLeft: "auto" }} />
+          </div>
+        ))}
+        <div className="hx-foot od-foot fn2-pg-foot">
+          <span className="sk" style={{ width: 220, height: 10 }} />
+        </div>
+      </div>
+    );
+  if (!res.groups.length) return <p className="fn2-note fn2-tempty">За период оплат не было.</p>;
+  return (
+    <div className="fn2-pgs" ref={box}>
+      <div className="fn2-pg-th">
+        <span>Время</span>
+        <span>Клиент и что оплатил</span>
+        <span>Способ</span>
+        <span>Сумма</span>
+        <span />
+      </div>
+      {res.groups.map((g) => {
+        const on = opened.has(g.key);
+        const d = new Date(g.at);
+        const what = [g.items.length ? word(g.items.length) : "", g.weight ? `вес ${kg(g.weight.kg)}` : ""].filter(Boolean).join(" + ");
+        return (
+          <div key={g.key} className={"fn2-pg" + (on ? " on" : "")}>
+            <button type="button" className="fn2-pg-h" onClick={() => toggle(g.key)} aria-expanded={on}>
+              <span className="fn2-pg-time">
+                <b>{hm(g.at)}</b>
+                <small>{dayShort(isoOf(d))}</small>
+              </span>
+              <Who name={g.customer_name} sub={`${KIND[g.kind]} · ${what}`} />
+              <span className="fn2-pg-m">{g.methods.map((m) => METHOD_LABEL[m.method] ?? m.method).join(" + ")}</span>
+              <span className="fn2-pg-sum">
+                {g.with_cost > 0 && g.markup !== 0 && (
+                  <span className="fn2-pg-mkp" title="Наценка с этого посещения">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d={PAY_IC.trend} />
+                    </svg>
+                    {g.markup > 0 ? "+" : "−"}
+                    {som(Math.abs(g.markup))}
+                  </span>
+                )}
+                <b>+{som(g.total)}</b>
+              </span>
+              <i className="fn2-pg-chev" aria-hidden>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </i>
+            </button>
+            {on && (
+              <div className="fn2-pg-b2">
+                <div className="fn2-pg-t">
+                  <div className="fn2-pg-tr th">
+                    <span>Товар</span>
+                    <span>Кол-во</span>
+                    <span>Сумма</span>
+                    <span>Выкуп</span>
+                    <span>Наценка</span>
+                    <span>Оплачено</span>
+                  </div>
+                  {g.items.map((it) => (
+                    <button type="button" key={it.payment_id} className="fn2-pg-tr" onClick={() => onOpen(it.item_id)} title="Открыть товар">
+                      <span className="fn2-pg-who">
+                        <i>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M21 8 12 3 3 8v8l9 5 9-5V8ZM3 8l9 5 9-5M12 13v8" />
+                          </svg>
+                        </i>
+                        <span>
+                          <b>{it.name}</b>
+                          <small>{it.code ? `код ${it.code}` : "без кода"}</small>
+                        </span>
+                      </span>
+                      <span className="c">{it.qty} шт</span>
+                      <span className="c">{som(it.sale)}</span>
+                      <span className="c mu">{it.cost !== null ? som(it.cost) : "—"}</span>
+                      <span className="c">
+                        {it.markup !== null && it.markup !== 0 ? (
+                          <em className="fn2-pg-mk2">
+                            {it.markup > 0 ? "+" : "−"}
+                            {som(Math.abs(it.markup))}
+                          </em>
+                        ) : (
+                          <span className="mu">—</span>
+                        )}
+                      </span>
+                      <b className="c">{som(it.amount)}</b>
+                    </button>
+                  ))}
+                  {g.weight && (
+                    <div className="fn2-pg-tr w">
+                      <span className="fn2-pg-who">
+                        <i>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                            <path d="M12 4a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5ZM6.5 9h11l2.5 11H4L6.5 9Z" />
+                          </svg>
+                        </i>
+                        <span>
+                          <b>Вес</b>
+                          <small>по вашей цене за кг</small>
+                        </span>
+                      </span>
+                      <span className="c">{kg(g.weight.kg)}</span>
+                      <span className="c mu">{g.weight.kg > 0 ? `${som(Math.round(g.weight.som / g.weight.kg))}/кг` : "—"}</span>
+                      <span className="c mu">—</span>
+                      <span className="c mu">—</span>
+                      <b className="c">{som(g.weight.som)}</b>
+                    </div>
+                  )}
+                </div>
+                {g.methods.length > 1 && (
+                  <p className="fn2-pg-split">
+                    Оплата:
+                    {g.methods.map((m, k) => (
+                      <span key={m.method}>
+                        {k > 0 && " + "}
+                        {METHOD_LABEL[m.method] ?? m.method} <b>{som(m.amount)}</b>
+                      </span>
+                    ))}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <footer className="hx-foot od-foot fn2-pg-foot">
+        <small>
+          {(page - 1) * PER + 1}–{Math.min(res.total_groups, page * PER)} из {res.total_groups} посещений · {res.total_payments} {plural(res.total_payments, "оплата", "оплаты", "оплат")} · {som(res.amount)}
+        </small>
+        {pages > 1 && (
+          <span className="hx-pages">
+            <button type="button" onClick={() => go(Math.max(1, page - 1))} disabled={page <= 1} aria-label="Назад">
+              ‹
+            </button>
+            <b>
+              {page} / {pages}
+            </b>
+            <button type="button" onClick={() => go(Math.min(pages, page + 1))} disabled={page >= pages} aria-label="Дальше">
+              ›
+            </button>
+          </span>
+        )}
+      </footer>
+    </div>
+  );
+}
+
+function Who({ name, sub }: { name: string; sub: string }) {
+  return (
+    <span className="fn2-who">
+      <i>{initials(name)}</i>
+      <span>
+        <b>{name}</b>
+        <small>{sub}</small>
+      </span>
+    </span>
+  );
+}
+
+function Bar({ v, max, first }: { v: number; max: number; first: boolean }) {
+  return (
+    <span className="fn2-tbar">
+      <i className={first ? "on" : ""} style={{ width: `${Math.max(2, (v / max) * 100)}%` }} />
+    </span>
+  );
+}
+
+// --- Когда платят -------------------------------------------------------------------------------
+
+/** Когда платят: вывод крупно, столбики-капсулы с долями, плитки (будни/выходные/тише всего или части суток). */
+function When({ data }: { data: FinanceData }) {
+  const [mode, setMode] = useState<"wd" | "hr">("wd");
+  const on = useGrow();
+  const vals = mode === "wd" ? data.by_weekday ?? Array<number>(7).fill(0) : data.by_hour ?? Array<number>(24).fill(0);
+  const total = vals.reduce((x, v) => x + v, 0);
+  const mx = Math.max(0, ...vals);
+  const best = total > 0 ? vals.indexOf(mx) : -1;
+  const nameOf = (i: number) => (mode === "wd" ? WD_FULL[i] : `${p2(i)}:00–${p2((i + 1) % 24)}:00`);
+  const WD_ON = ["в понедельник", "во вторник", "в среду", "в четверг", "в пятницу", "в субботу", "в воскресенье"];
+
+  return (
+    <section className="ov-card fn2-when2">
+      <div className="fn2-ch">
+        <span className="fn2-t">Когда платят</span>
+        <SlideTabs<"wd" | "hr">
+          value={mode}
+          onChange={setMode}
+          counts={false}
+          options={[
+            ["wd", "Дни недели"],
+            ["hr", "Часы"],
+          ]}
+        />
+      </div>
+
+      <p className="fn2-wk-ins2">
+        <i>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d={mode === "wd" ? "M8 2.5v3.5M16 2.5v3.5M3.5 10h17M5.5 4.5h13a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-12a2 2 0 0 1 2-2Z" : "M12 7.5V12l3 2M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Z"} />
+          </svg>
+        </i>
+        {best < 0 ? (
+          <span>За период оплат не было</span>
+        ) : (
+          <span>
+            <b>{mode === "wd" ? `Чаще всего ${WD_ON[best]}` : `Чаще всего с ${p2(best)}:00 до ${p2((best + 1) % 24)}:00`}</b> · {som(mx)} · {pct(mx, total)}%
+          </span>
+        )}
+      </p>
+
+      <div className={"fn2-wk" + (mode === "hr" ? " hr" : "")} key={mode}>
+        {vals.map((v, i) => {
+          const h = mx > 0 ? (v / mx) * 100 : 0;
+          return (
+            <div key={i} className={"fn2-wk-col" + (i === best ? " best" : "")}>
+              {mode === "wd" && <span className="fn2-wk-pct">{total ? `${pct(v, total)}%` : ""}</span>}
+              <div className="fn2-wk-trk">
+                <i style={{ height: on ? `${v > 0 ? Math.max(4, h) : 0}%` : 0, animationDelay: `${i * (mode === "wd" ? 45 : 14)}ms` }} />
+                <span className="fn2-wk-tip">
+                  <b>{som(v)}</b>
+                  <small>
+                    {nameOf(i)} · {pct(v, total)}%
+                  </small>
+                </span>
+              </div>
+              <em>{mode === "hr" ? (i % 3 ? "" : String(i)) : WD[i]}</em>
+            </div>
+          );
+        })}
+      </div>
+      {mode === "hr" && (
+        <div className="fn2-wk-day" aria-hidden>
+          <span>ночь</span>
+          <span>утро</span>
+          <span>день</span>
+          <span>вечер</span>
+        </div>
+      )}
+
+    </section>
+  );
+}
+
+// --- Заготовка на время загрузки ----------------------------------------------------------------
+
+function Ghost() {
+  return (
+    <div className="fn2-ghost" aria-hidden>
+      <div className="fn2-kpis">
+        {[0, 1, 2, 3, 4].map((k) => (
+          <div key={k} className="fn2-k">
+            <span className="sk" style={{ width: "46%", height: 9 }} />
+            <span className="sk" style={{ width: "62%", height: 22, marginTop: 10 }} />
+            <span className="sk" style={{ width: "100%", height: 30, marginTop: 14 }} />
+          </div>
+        ))}
+      </div>
+      <div className="fn2-g1">
+        <div className="ov-card">
+          <span className="sk" style={{ width: "24%", height: 10 }} />
+          <span className="sk" style={{ width: "100%", height: 300, marginTop: 18, borderRadius: 14 }} />
+        </div>
+        <div className="ov-card">
+          <span className="sk" style={{ width: "40%", height: 10 }} />
+          <span className="sk" style={{ width: "100%", height: 10, marginTop: 30 }} />
+          <span className="sk" style={{ width: "80%", height: 10, marginTop: 30 }} />
+          <span className="sk" style={{ width: "70%", height: 10, marginTop: 20 }} />
+        </div>
+      </div>
+    </div>
   );
 }

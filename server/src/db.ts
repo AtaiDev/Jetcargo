@@ -452,6 +452,12 @@ const MIGRATIONS: string[] = [
   CREATE INDEX IF NOT EXISTS ix_notifications_customer ON notifications(customer_id);
   INSERT OR IGNORE INTO app_settings (key, value) VALUES ('pickup_address', '');
   `,
+  // 13. Выдача в долг: сколько осталось неоплаченным, когда товар отдали без полной оплаты.
+  //     Только у новых выдач с «Выдачи»; старые выдачи считаются оплаченными, как и раньше.
+  //     Только новая колонка — существующие данные не меняются.
+  `
+  ALTER TABLE issues ADD COLUMN credit REAL NOT NULL DEFAULT 0;
+  `,
 ];
 
 function migrate() {

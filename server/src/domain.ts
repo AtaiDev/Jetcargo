@@ -205,13 +205,16 @@ export interface ItemView {
   transit_shipped_at: string | null;
   /** Вес посылки при выдаче (кг), если его записали. */
   issue_weight_kg: number | null;
+  /** Выдан в долг: сколько оставили неоплаченным при выдаче (0 — выдан с оплатой). */
+  issue_credit: number | null;
 }
 
 const ITEM_COLS = `id, order_id, customer_id, customer_name, customer_phone, customer_code, order_date,
   name, code, qty, price, price_cny, real_price, cost, sale, paid, debt, pay_status, split_with, comment,
   status, arrived_at, issued_at, issue_id, import_id, batch_id, created_at, updated_at,
   stage, transit_id, transit_waybill, transit_shipped_at,
-  (SELECT weight_kg FROM issues WHERE issues.id = v_items.issue_id) AS issue_weight_kg`;
+  (SELECT weight_kg FROM issues WHERE issues.id = v_items.issue_id) AS issue_weight_kg,
+  (SELECT credit FROM issues WHERE issues.id = v_items.issue_id) AS issue_credit`;
 
 export function items(where = "1 = 1", params: Param[] = [], tail = "ORDER BY order_date DESC, id DESC"): ItemView[] {
   return all<ItemView>(`SELECT ${ITEM_COLS} FROM v_items WHERE ${where} ${tail}`, ...params);
@@ -224,14 +227,16 @@ export function itemOr404(id: number): ItemView {
 }
 
 /**
- * Настоящий долг по товару. Правило владельца: без оплаты товар не выдаётся, значит
- * у выданного товара долга нет (даже если оплата не записана — например, из Excel).
+ * Настоящий долг по товару. Выданный товар считается оплаченным (даже если оплата не записана —
+ * например, из Excel), кроме выдачи в долг: тогда долг остаётся, пока клиент не оплатит.
  * Записи об оплатах не меняются — меняется только то, что считаем долгом.
  */
-export const openDebt = (i: Pick<ItemView, "status" | "debt">) => (i.status === "issued" ? 0 : i.debt);
+export const openDebt = (i: Pick<ItemView, "status" | "debt"> & { issue_credit?: number | null }) =>
+  i.status === "issued" && !(i.issue_credit && i.issue_credit > 0) ? 0 : i.debt;
 
 /** SQL-условие «товар с настоящим долгом» для v_items (алиас можно передать). */
-export const openDebtSql = (alias = "") => `(${alias}debt > 0 AND ${alias}status <> 'issued')`;
+export const openDebtSql = (alias = "") =>
+  `(${alias}debt > 0 AND (${alias}status <> 'issued' OR EXISTS (SELECT 1 FROM issues ci WHERE ci.id = ${alias}issue_id AND ci.credit > 0)))`;
 
 /**
  * Вес по уведомлениям клиента, который ещё не взяли (уведомление не отменено и не привязано к выдаче).

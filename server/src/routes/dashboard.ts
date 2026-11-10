@@ -583,13 +583,82 @@ dashboardRouter.get("/finance", (req, res) => {
               'Вес ' || REPLACE(printf('%.2f', COALESCE(s.weight_kg, 0)), '.', ',') || ' кг',
               c.id, c.name, u.login
          FROM issues s JOIN customers c ON c.id = s.customer_id AND c.deleted_at IS NULL LEFT JOIN users u ON u.id = s.user_id
-        WHERE s.weight_som > 0 AND s.issued_at >= ? AND s.issued_at < ?
+        WHERE s.deleted_at IS NULL AND s.weight_som > 0 AND s.issued_at >= ? AND s.issued_at < ?
      ) ORDER BY paid_at DESC, id DESC LIMIT 50`,
     since, until, since, until
   );
   // Дни для графика поступлений: с первой оплаты периода (не раньше), не больше 400 последних дней.
   const firstPay = cash.reduce<string | null>((a, p) => (a === null || localDay(p.paid_at) < a ? localDay(p.paid_at) : a), null);
   const dayFrom = [from, firstPay ?? to, addDays(to, -399)].reduce((a, b) => (b > a ? b : a));
+
+  // Ряды по дням для графиков страницы: заказы (по дате заказа) и поступления (по дате оплаты).
+  const inP = inRange(list, from, to);
+  // Деньги по дням — по тем же правилам, что общая прибыль (profitFor):
+  //  выкуп товаров и наценка — по дате заказа; вес при выдаче — по дню выдачи;
+  //  вес, вписанный в партии, выкуп веса и доставка — по дню прихода партии.
+  const bs = batchesWithCalc(list);
+  const ws = issueWeights();
+  type Day = { sale: number; items: number; priced: number; profit: number; cost: number; cash: number; weight: number; wbuy: number; delivery: number };
+  const dayMap = new Map<string, Day>();
+  const slot = (d: string) => dayMap.get(d) ?? dayMap.set(d, { sale: 0, items: 0, priced: 0, profit: 0, cost: 0, cash: 0, weight: 0, wbuy: 0, delivery: 0 }).get(d)!;
+  for (const i of inP) {
+    const d = slot(i.order_date);
+    d.sale += i.sale;
+    d.items += 1;
+    if (i.sale > 0) d.priced += 1;
+    if (i.cost !== null) {
+      d.profit += i.sale - i.cost;
+      d.cost += i.cost;
+    }
+  }
+  // День недели и час оплаты — по времени Бишкека (на сервере часовой пояс может быть UTC).
+  const zoned = new Intl.DateTimeFormat("en-US", { timeZone: process.env.APP_TZ || "Asia/Bishkek", weekday: "short", hour: "numeric", hourCycle: "h23" });
+  const WD_IDX: Record<string, number> = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+  const byWeekday = Array(7).fill(0) as number[];
+  const byHour = Array(24).fill(0) as number[];
+  for (const p of cash) {
+    slot(localDay(p.paid_at)).cash += p.amount;
+    // Оплаты из Excel: способ, день и час неизвестны (дата — от даты заказа, время подставлено) —
+    // в «когда платят» их не берём, иначе картина по дням и часам будет ложной.
+    if (p.method === "import") continue;
+    const parts = zoned.formatToParts(new Date(p.paid_at));
+    byWeekday[WD_IDX[parts.find((x) => x.type === "weekday")?.value ?? "Mon"] ?? 0] += p.amount;
+    byHour[Number(parts.find((x) => x.type === "hour")?.value ?? 0) % 24] += p.amount;
+  }
+  for (const w of ws) {
+    const day = localDay(w.issued_at);
+    if (day >= from && day <= to) slot(day).weight += w.som;
+  }
+  for (const b of bs) {
+    const day = batchDay(b);
+    if (day < from || day > to) continue;
+    const d = slot(day);
+    d.weight += b.calc.client_manual_som;
+    d.wbuy += b.calc.buy_som;
+    d.delivery += b.calc.delivery_som;
+  }
+  const pf = profitFor(list, bs, ws, from, to);
+  const series = dayList(from > addDays(to, -399) ? from : addDays(to, -399), to).map((day) => {
+    const d = dayMap.get(day);
+    if (!d) return { day, sale: 0, items: 0, priced: 0, profit: 0, cost: 0, cash: 0, weight: 0, wbuy: 0, delivery: 0, net: 0 };
+    return {
+      day, sale: r2(d.sale), items: d.items, priced: d.priced, profit: r2(d.profit), cost: r2(d.cost), cash: r2(d.cash),
+      weight: r2(d.weight), wbuy: r2(d.wbuy), delivery: r2(d.delivery), net: r2(d.profit + d.weight - d.wbuy - d.delivery),
+    };
+  });
+  // Клиенты периода по сумме заказов.
+  const byCustomer = new Map<number, { id: number; name: string; code: string | null; items: number; qty: number; sale: number; debt: number }>();
+  for (const i of inP) {
+    const c = byCustomer.get(i.customer_id) ?? byCustomer.set(i.customer_id, { id: i.customer_id, name: i.customer_name, code: i.customer_code, items: 0, qty: 0, sale: 0, debt: 0 }).get(i.customer_id)!;
+    c.items += 1;
+    c.qty += i.qty;
+    c.sale += i.sale;
+    c.debt += openDebt(i);
+  }
+  const topCustomers = [...byCustomer.values()].sort((a, b) => b.sale - a.sale).slice(0, 8).map((c) => ({ ...c, sale: r2(c.sale), debt: r2(c.debt) }));
+  // Где сейчас товары, заказанные в периоде.
+  const stages = { ordered: 0, in_transit: 0, in_stock: 0, issued: 0 };
+  for (const i of inP) stages[i.stage] += 1;
 
   res.json({
     period: { date_from: from, date_to: to },
@@ -599,7 +668,8 @@ dashboardRouter.get("/finance", (req, res) => {
       count: cash.length,
       // Чем платили и по дням — для разбивки способов оплаты и графика поступлений.
       by_method: Object.values(
-        cash.reduce<Record<string, { method: string; amount: number; count: number }>>((acc, p) => {
+        // Способ оплаты: только известные (наличные, перевод…); оплаты из Excel без способа сюда не идут.
+        cash.filter((p) => p.method !== "import").reduce<Record<string, { method: string; amount: number; count: number }>>((acc, p) => {
           const m = (acc[p.method] ??= { method: p.method, amount: 0, count: 0 });
           m.amount += p.amount;
           m.count += 1;
@@ -610,7 +680,129 @@ dashboardRouter.get("/finance", (req, res) => {
     },
     months: byMonth(list, lastMonths(12, to)),
     debtors,
+    // Должников всего (в списке — первые 50).
+    debtors_count: get<{ n: number }>(`SELECT COUNT(DISTINCT customer_id) AS n FROM v_items WHERE ${openDebtSql()}`)?.n ?? 0,
     payments,
+    series,
+    top_customers: topCustomers,
+    stages,
+    by_weekday: byWeekday.map(r2),
+    by_hour: byHour.map(r2),
+    // Цепочка прибыли периода: выкуп товаров (не расход — оборот), наценка, вес клиентам,
+    // выкуп веса, доставка; чистая прибыль = наценка + вес − выкуп веса − доставка (как на «Обзоре»).
+    money: {
+      goods_cost: r2(pt.cost),
+      with_cost: pt.with_cost,
+      items: pt.items,
+      markup: pf.goods,
+      weight: r2(pf.issue_weight + pf.client),
+      weight_kg: pf.issue_weight_kg,
+      weight_buy: pf.buy,
+      delivery: pf.delivery,
+      net: pf.total,
+      batches: pf.batches,
+      // Вес по партиям периода, о котором клиентам уже сообщили, но они ещё не забрали — придёт при выдаче.
+      weight_pending: r2(bs.filter((b) => { const d = batchDay(b); return d >= from && d <= to; }).reduce((x, b) => x + b.calc.client_auto_pending_som, 0)),
+      rate_usd: Number(get<{ value: string }>("SELECT value FROM app_settings WHERE key = 'weight_rate_usd'")?.value ?? 2.8),
+    },
+  });
+});
+
+/**
+ * Оплаты периода по «посещениям»: оплаты одного клиента подряд (не дальше 15 минут друг от друга) —
+ * например, выдача: товары и вес за один раз. По каждому посещению: товары, вес, итого и наценка.
+ * Наценка оплаты = доля оплаты в сумме товара × (сумма − реальная цена) — так частичные оплаты
+ * одного товара в сумме дают ровно его наценку, без задвоения. Страницами, новые сверху.
+ */
+dashboardRouter.get("/finance/payments", (req, res) => {
+  const { from, to } = period(req.query);
+  const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+  const per = Math.min(50, Math.max(1, Math.floor(Number(req.query.per) || 10)));
+  const since = new Date(`${from}T00:00:00`).toISOString();
+  const until = new Date(`${addDays(to, 1)}T00:00:00`).toISOString();
+  const rows = all<{
+    id: number; amount: number; method: string; paid_at: string; comment: string; item_id: number | null; item_name: string;
+    sale: number | null; cost: number | null; kg: number | null; customer_id: number; customer_name: string; code: string | null; qty: number | null;
+  }>(
+    `SELECT p.id, p.amount, p.method, p.paid_at, p.comment, v.id AS item_id, v.name AS item_name, v.sale, v.cost, NULL AS kg,
+            v.customer_id, v.customer_name, v.code, v.qty
+       FROM payments p JOIN v_items v ON v.id = p.order_item_id
+      WHERE p.deleted_at IS NULL AND p.paid_at >= ? AND p.paid_at < ?
+     UNION ALL
+     SELECT -s.id, s.weight_som, s.weight_method, s.issued_at, 'вес при выдаче', NULL, 'Вес', NULL, NULL, COALESCE(s.weight_kg, 0),
+            c.id, c.name, NULL, NULL
+       FROM issues s JOIN customers c ON c.id = s.customer_id AND c.deleted_at IS NULL
+      WHERE s.deleted_at IS NULL AND s.weight_som > 0 AND s.issued_at >= ? AND s.issued_at < ?`,
+    since, until, since, until
+  );
+  rows.sort((a, b) => a.customer_id - b.customer_id || (a.paid_at < b.paid_at ? -1 : a.paid_at > b.paid_at ? 1 : a.id - b.id));
+
+  type Group = {
+    key: string; customer_id: number; customer_name: string; first_at: string; at: string; last: number;
+    methods: Map<string, number>; comments: string[];
+    items: { payment_id: number; item_id: number; name: string; code: string | null; qty: number; sale: number; cost: number | null; amount: number; markup: number | null }[];
+    weight_kg: number; weight_som: number; items_sum: number; total: number; markup: number; with_cost: number;
+  };
+  const GAP = 15 * 60 * 1000;
+  const groups: Group[] = [];
+  let g: Group | null = null;
+  for (const r of rows) {
+    const t = Date.parse(r.paid_at);
+    if (!g || g.customer_id !== r.customer_id || t - g.last > GAP) {
+      g = {
+        key: `${r.customer_id}-${r.id}`, customer_id: r.customer_id, customer_name: r.customer_name, first_at: r.paid_at, at: r.paid_at, last: t,
+        methods: new Map(), comments: [], items: [], weight_kg: 0, weight_som: 0, items_sum: 0, total: 0, markup: 0, with_cost: 0,
+      };
+      groups.push(g);
+    }
+    g.last = t;
+    g.at = r.paid_at;
+    g.methods.set(r.method, (g.methods.get(r.method) ?? 0) + r.amount);
+    g.comments.push(r.comment);
+    g.total += r.amount;
+    if (r.item_id === null) {
+      g.weight_kg += r.kg ?? 0;
+      g.weight_som += r.amount;
+    } else {
+      const sale = r.sale ?? 0;
+      const markup = r.cost !== null && sale > 0 ? (Math.min(r.amount, sale) / sale) * (sale - r.cost) : null;
+      g.items.push({ payment_id: r.id, item_id: r.item_id, name: r.item_name, code: r.code, qty: r.qty ?? 1, sale: r2(sale), cost: r.cost === null ? null : r2(r.cost), amount: r2(r.amount), markup: markup === null ? null : r2(markup) });
+      g.items_sum += r.amount;
+      if (markup !== null) {
+        g.markup += markup;
+        g.with_cost += 1;
+      }
+    }
+  }
+  groups.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  const kindOf = (x: Group) => {
+    if (x.methods.size === 1 && x.methods.has("import")) return "import";
+    if (x.weight_som > 0 || x.comments.some((c) => c.includes("выдач"))) return "issue";
+    if (x.comments.every((c) => c.includes("массов"))) return "bulk";
+    if (x.comments.every((c) => c.includes("оформлени"))) return "order";
+    return "pay";
+  };
+  res.json({
+    page,
+    per,
+    total_groups: groups.length,
+    total_payments: rows.length,
+    amount: r2(rows.reduce((x, r) => x + r.amount, 0)),
+    groups: groups.slice((page - 1) * per, page * per).map((x) => ({
+      key: x.key,
+      kind: kindOf(x),
+      customer_id: x.customer_id,
+      customer_name: x.customer_name,
+      first_at: x.first_at,
+      at: x.at,
+      methods: [...x.methods.entries()].map(([method, amount]) => ({ method, amount: r2(amount) })).sort((p, q) => q.amount - p.amount),
+      items: x.items.sort((a, b) => b.amount - a.amount),
+      weight: x.weight_som > 0 ? { kg: r2(x.weight_kg), som: r2(x.weight_som) } : null,
+      items_sum: r2(x.items_sum),
+      total: r2(x.total),
+      markup: r2(x.markup),
+      with_cost: x.with_cost,
+    })),
   });
 });
 

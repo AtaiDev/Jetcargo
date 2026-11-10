@@ -25,6 +25,7 @@ const parse = (v: string) => {
 const fmt = (h: number, m: number) => `${pad(h)}:${pad(m)}`;
 
 export default function TimePicker({
+  popClass,
   value,
   onChange,
   auto,
@@ -34,6 +35,8 @@ export default function TimePicker({
   fontSize = 13,
   ariaLabel = "Время",
 }: {
+  /** Класс для выпадающего окна (оно рисуется порталом в body) — чтобы страница могла его оформить. */
+  popClass?: string;
   value: string;
   onChange: (v: string) => void;
   /** Время идёт само («сейчас») — в поле так и подписано. */
@@ -185,6 +188,7 @@ export default function TimePicker({
           <div
             ref={pop}
             id={id}
+            className={popClass}
             role="dialog"
             aria-label="Выбор времени"
             onMouseDown={(e) => e.preventDefault()}

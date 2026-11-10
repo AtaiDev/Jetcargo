@@ -1,14 +1,15 @@
 /**
  * Уведомления клиентам о поступлении товара — через WhatsApp.
  *
- *  - сверху: сколько клиентов ещё не уведомлены, сколько уведомлены и ждут, сколько взять за вес
- *    и адрес выдачи (он попадает в сообщение);
+ *  - сверху: сколько клиентов ещё не уведомлены (и доля уведомлённых), кто уведомлён и ждёт,
+ *    сколько возьмём за вес, долг за товар на складе и адрес выдачи (он попадает в сообщение);
  *  - слева — клиенты с товаром на складе: сначала кого ещё не уведомили (дольше ждут — выше);
- *  - справа — уведомление выбранному клиенту: что пришло, вес посылки → сумма за вес (кг × $ за кг ×
- *    курс, до копеек), долг за товар и итог к оплате; ниже — готовое сообщение. «Отправить в WhatsApp»
- *    открывает чат с текстом и отмечает клиента уведомлённым. Сумму за вес возьмут на «Выдаче».
+ *  - справа — уведомление выбранному клиенту: что пришло, вес посылки → сумма за вес (кг × цена
+ *    1 кг, вверх до целого сома), долг за товар и итог к оплате; рядом — готовое сообщение.
+ *    «Отправить в WhatsApp» открывает чат с текстом и отмечает клиента уведомлённым.
+ *    Сумму за вес возьмут на «Выдаче».
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { apiError } from "../api/client";
@@ -16,26 +17,53 @@ import { cancelNotify, listNotify, sendNotify, updateSettings, type Notice, type
 import { useAuth } from "../auth/AuthContext";
 import { Confirm } from "../components/cargo";
 import CountUp from "../design/CountUp";
-import { MONO, css, mix } from "../design/css";
-import { I_CHECK, I_SEARCH, Icon, Svg } from "../design/icons";
+import { I_CHECK, I_SEARCH, Svg } from "../design/icons";
 import { Page } from "../design/table";
 import { HButton, ModalError, ModalShell, btnPrimary, useModalClose } from "../design/ui";
 import { dateTime, som } from "../lib/cargo";
 import { emit, useRefresh } from "../lib/events";
+import { HomeHead } from "./overview/Home";
 
 type Toast = (kind: "success" | "error", text: string) => void;
 type Tab = "todo" | "sent" | "all";
 
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
 const r2 = (n: number) => Math.round(n * 100) / 100;
 /** Вверх до целого сома: 100,01 → 101 (так же считает сервер). */
-const ceilSom = (n: number) => Math.ceil(r2(n) - 1e-9);
+const ceilSom = (n: number) => Math.ceil(r2(n) - 1e-9) || 0;
+const pc = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
 
-const STATUS: Record<NotifyRow["status"], { label: string; fg: string; bg: string; dot: string }> = {
-  new: { label: "не уведомлён", fg: "var(--amber)", bg: "var(--amber-tint)", dot: "var(--amber-dot)" },
-  more: { label: "есть новые", fg: "var(--accent-strong)", bg: "var(--accent-tint)", dot: "var(--accent)" },
-  sent: { label: "уведомлён", fg: "var(--green)", bg: "var(--green-tint)", dot: "var(--green-dot)" },
+/** Статус клиента — приглушённой точкой, как на «Приёме». */
+const STATUS: Record<NotifyRow["status"], { label: string; dot: "warn" | "info" | "ok" }> = {
+  new: { label: "Не уведомлён", dot: "warn" },
+  more: { label: "Есть новые", dot: "info" },
+  sent: { label: "Уведомлён", dot: "ok" },
 };
+
+const TABS: [Tab, string][] = [
+  ["todo", "Ждут"],
+  ["sent", "Уведомлены"],
+  ["all", "Все"],
+];
+
+/** Значки сводки — линейные, в одном стиле. */
+const I = {
+  bell: ["M10.27 21a2 2 0 0 0 3.46 0", "M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"],
+  sent: ["M7.9 20A9 9 0 1 0 4 16.1L2 22Z", "m9 12 2 2 4-4"],
+  scale: ["m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z", "m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z", "M7 21h10", "M12 3v18", "M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"],
+  wallet: ["M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1", "M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"],
+  pin: ["M20 10c0 5-5.54 10.19-7.4 11.8a1 1 0 0 1-1.2 0C9.54 20.19 4 15 4 10a8 8 0 0 1 16 0", "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"],
+  pen: ["M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5Z", "m15 5 4 4"],
+  bag: ["M6.5 8h11l2.3 12H4.2L6.5 8Z", "M9 8a3 3 0 0 1 6 0"],
+};
+function Ico({ d, size = 18 }: { d: string[]; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {d.map((p) => (
+        <path key={p} d={p} />
+      ))}
+    </svg>
+  );
+}
 
 export default function Notify({ toast }: { isDesktop?: boolean; toast: Toast }) {
   const { user } = useAuth();
@@ -65,7 +93,12 @@ export default function Notify({ toast }: { isDesktop?: boolean; toast: Toast })
     (r) => !q || r.name.toLowerCase().replace(/\s/g, "").includes(q) || r.phone.replace(/\D/g, "").includes(q.replace(/\D/g, "") || "~") || r.items.some((i) => i.code.toLowerCase().includes(q))
   );
   const pendingWeight = r2(rows.reduce((s, r) => s + r.notices.reduce((a, n) => a + n.weight_som, 0), 0));
+  const stockDebt = rows.reduce((s, r) => s + r.stock_debt, 0);
+  const stockSale = rows.reduce((s, r) => s + r.stock_sale, 0);
   const current = rows.find((r) => r.id === sel) ?? shown[0] ?? null;
+  const share = pc(sent.length, rows.length);
+  const tabIx = TABS.findIndex(([k]) => k === tab);
+  const count = { todo: todo.length, sent: sent.length, all: rows.length };
 
   // Выбранный клиент пропал из списка (например, его товар выдали) — выбираем первого.
   useEffect(() => {
@@ -74,88 +107,94 @@ export default function Notify({ toast }: { isDesktop?: boolean; toast: Toast })
 
   return (
     <Page size="wide">
-      {/* Сводка */}
-      <section className="nt-hero">
-        <Stat tone="amber" icon={<Icon name="notify" size={18} />} label="Ждут уведомления" value={data ? String(todo.length) : null} sub={data ? `${plural(todo.length, "клиент", "клиента", "клиентов")} с товаром на складе` : ""} onClick={() => setTab("todo")} active={tab === "todo"} />
-        <Stat tone="green" icon={<Svg paths={I_CHECK} size={17} sw={2.4} />} label="Уведомлены, ждём" value={data ? String(sent.length) : null} sub="ещё не забрали товар" onClick={() => setTab("sent")} active={tab === "sent"} />
-        <Stat tone="violet" icon={<WeightIcon />} label="Возьмём за вес" value={data ? som(pendingWeight) : null} sub="по отправленным уведомлениям" />
-        <Address value={data?.pickup_address ?? null} canEdit={isAdmin} toast={toast} onSaved={load} />
-      </section>
+      <div className="ov nf">
+        <HomeHead title="Уведомления" />
 
-      {error && (
-        <div style={css("margin-bottom:12px")}>
-          <ModalError text={error} />
-        </div>
-      )}
+        {/* ===== Сводка: кого уведомить, что возьмём, адрес ===== */}
+        <section className="nf-top">
+          <div className="nf-hero">
+            <span className="nf-hero-i">
+              <Ico d={I.bell} size={20} />
+            </span>
+            <span className="nf-hero-t">
+              <small>Ждут уведомления</small>
+              <b>{data ? <CountUp text={String(todo.length)} /> : "—"}</b>
+              <em>{data ? `${plural(todo.length, "клиент", "клиента", "клиентов")} с товаром на складе` : "загружаю…"}</em>
+            </span>
+            <Ring pct={share} label="уведомлены" dark />
+          </div>
+          <Kpi icon={I.sent} label="Уведомлены, ждём" value={data && String(sent.length)} sub="ещё не забрали товар" ring={data ? share : undefined} onClick={() => setTab("sent")} />
+          <Kpi icon={I.scale} label="Возьмём за вес" value={data && som(pendingWeight)} sub={data ? `${som(data.tariff.weight_rate_som)} за 1 кг · на «Выдаче»` : ""} />
+          <Kpi icon={I.wallet} label="Долг за товар" value={data && som(stockDebt)} sub="на складе, не оплачено" ring={data ? pc(stockDebt, stockSale) : undefined} />
+          <AddressCard value={data?.pickup_address ?? null} canEdit={isAdmin} toast={toast} onSaved={load} />
+        </section>
 
-      <div className="nt-grid">
-        {/* Клиенты */}
-        <aside className="nt-list">
-          <div className="nt-list-head">
-            <div className="nt-tabs" role="tablist">
-              {(
-                [
-                  ["todo", "Не уведомлены", todo.length],
-                  ["sent", "Уведомлены", sent.length],
-                  ["all", "Все", rows.length],
-                ] as [Tab, string, number][]
-              ).map(([k, label, n]) => (
+        {error && <ModalError text={error} />}
+
+        <div className="nf-grid">
+          {/* ===== Клиенты ===== */}
+          <aside className="ov-card paper nf-list">
+            <div className="rx-modes-t" role="tablist" aria-label="Кого показать" style={{ "--i": tabIx } as CSSProperties}>
+              <span className="rx-mt-thumb" aria-hidden />
+              {TABS.map(([k, label]) => (
                 <button key={k} type="button" role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-                  {label}
-                  <span style={css(NUM + ";color:var(--text-4)")}>{data ? n : "…"}</span>
+                  <b>{label}</b>
+                  <span className="nf-tab-n">{data ? count[k] : "…"}</span>
                 </button>
               ))}
             </div>
-            <label className="nt-search">
+            <label className="rx-as-in">
               <Svg paths={I_SEARCH} size={15} />
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя, телефон или код товара" aria-label="Поиск клиента" />
             </label>
-          </div>
-          <div className="nt-rows thin-scroll">
-            {!data ? (
-              Array.from({ length: 6 }, (_, i) => <GhostRow key={i} i={i} />)
-            ) : shown.length === 0 ? (
-              <div className="nt-empty">
-                <span className="nt-empty-i">
-                  <Svg paths={I_CHECK} size={20} sw={2.4} />
-                </span>
-                <span style={css("font-size:14px;font-weight:500;color:var(--text)")}>{q ? "Никого не нашли" : tab === "todo" ? "Все уведомлены" : tab === "sent" ? "Пока никого не уведомили" : "На складе нет товаров"}</span>
-                <span style={css("font-size:12.5px;color:var(--text-4)")}>{q ? "Проверьте имя или телефон" : tab === "todo" ? "Новые появятся, когда товар примут на склад" : ""}</span>
-              </div>
-            ) : (
-              <>
-                {shown.map((r) => (
-                  <ClientRow key={r.id} r={r} active={current?.id === r.id} onClick={() => setSel(r.id)} />
-                ))}
-                {shown.length < 6 && Array.from({ length: 6 - shown.length }, (_, i) => <GhostRow key={"g" + i} i={i} faded />)}
-              </>
-            )}
-          </div>
-        </aside>
+            <div className="nf-rows thin-scroll">
+              {!data ? (
+                <div className="nf-ghosts">{Array.from({ length: 7 }, (_, i) => <GhostRow key={i} i={i} />)}</div>
+              ) : (
+                <>
+                  {shown.map((r, i) => (
+                    <ClientRow key={r.id} r={r} i={i} active={current?.id === r.id} onClick={() => setSel(r.id)} />
+                  ))}
+                  {shown.length === 0 && (
+                    <div className="nf-none">
+                      <b>{q ? "Никого не нашли" : tab === "todo" ? "Все уведомлены" : tab === "sent" ? "Пока никого не уведомили" : "На складе нет товаров"}</b>
+                      <small>{q ? "проверьте имя, телефон или код" : tab === "todo" ? "новые появятся, когда товар примут на склад" : ""}</small>
+                    </div>
+                  )}
+                  {/* Заглушки только заполняют остаток — прокрутку не вызывают */}
+                  <div className="nf-ghosts">{Array.from({ length: Math.max(0, 7 - shown.length) }, (_, i) => <GhostRow key={"g" + i} i={i} faded />)}</div>
+                </>
+              )}
+            </div>
+          </aside>
 
-        {/* Уведомление */}
-        {current && data ? (
-          <Composer key={current.id + ":" + current.notices.length} row={current} data={data} toast={toast} onChanged={load} />
-        ) : (
-          <section className="nt-comp nt-comp-empty">
-            {!data ? (
-              <div style={css("display:flex;flex-direction:column;gap:14px;padding:20px")} aria-hidden>
-                <span className="sk" style={css("width:220px;height:16px")} />
-                <span className="sk" style={css("height:110px;border-radius:14px")} />
-                <span className="sk" style={css("height:70px;border-radius:14px")} />
-                <span className="sk" style={css("height:220px;border-radius:14px")} />
-              </div>
-            ) : (
-              <div className="nt-empty" style={css("flex:1")}>
-                <span className="nt-empty-i">
-                  <Icon name="notify" size={22} />
-                </span>
-                <span style={css("font-size:15px;font-weight:500;color:var(--text)")}>Выберите клиента слева</span>
-                <span style={css("font-size:12.5px;color:var(--text-4)")}>введите вес посылки — сообщение для WhatsApp соберётся само</span>
-              </div>
-            )}
-          </section>
-        )}
+          {/* ===== Уведомление ===== */}
+          {current && data ? (
+            <Composer key={current.id + ":" + current.notices.length} row={current} data={data} toast={toast} onChanged={load} />
+          ) : (
+            <section className="ov-card paper nf-comp nf-comp-empty">
+              {!data ? (
+                <div className="nf-sk" aria-hidden>
+                  <span className="sk" style={{ width: "40%", height: 18 }} />
+                  <span className="sk" style={{ height: 120 }} />
+                  <span className="sk" style={{ height: 64 }} />
+                  <span className="sk" style={{ height: 180 }} />
+                </div>
+              ) : (
+                <div className="nf-pick4">
+                  <span className="nf-pick4-i">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 12.5 3 8.5 8.5 0 0 1 21 11.5Z" />
+                      <path d="M8.5 11.5h.01M12.5 11.5h.01M16.5 11.5h.01" />
+                    </svg>
+                  </span>
+                  <b>Выберите клиента слева</b>
+                  <small>введите вес посылки — сообщение для WhatsApp соберётся само</small>
+                </div>
+              )}
+            </section>
+          )}
+        </div>
       </div>
     </Page>
   );
@@ -163,40 +202,48 @@ export default function Notify({ toast }: { isDesktop?: boolean; toast: Toast })
 
 // --- Сводка ---------------------------------------------------------------------------------------
 
-const TONE = {
-  amber: { bg: "var(--amber-tint)", fg: "var(--amber)", dot: "var(--amber-dot)" },
-  green: { bg: "var(--green-tint)", fg: "var(--green)", dot: "var(--green-dot)" },
-  violet: { bg: "var(--violet-tint)", fg: "var(--violet)", dot: "var(--violet-dot)" },
-  sky: { bg: "var(--sky-tint)", fg: "var(--sky)", dot: "var(--sky-dot)" },
-} as const;
+/** Кольцо доли: тонкое, с процентом внутри. */
+/** Доля — «водой» в скруглённом окошке: уровень = процент, поверхность мягко колышется. */
+function Ring({ pct, label, dark }: { pct: number; label: string; dark?: boolean }) {
+  const y = (1 - Math.max(0, Math.min(100, pct)) / 100) * 46;
+  return (
+    <span className={"nf-wave" + (dark ? " dark" : "")} title={`${pct}% ${label}`}>
+      <svg viewBox="0 0 64 52" preserveAspectRatio="none" aria-hidden>
+        <g className="lvl" style={{ transform: `translateY(${y}px)` }}>
+          <path className="w2" d="M0 6 Q8 1 16 6 T32 6 T48 6 T64 6 T80 6 T96 6 T112 6 T128 6 V70 H0Z" />
+          <path className="w1" d="M0 6 Q8 1 16 6 T32 6 T48 6 T64 6 T80 6 T96 6 T112 6 T128 6 V70 H0Z" />
+        </g>
+      </svg>
+      <b>{pct}%</b>
+    </span>
+  );
+}
 
-function Stat({ tone, icon, label, value, sub, onClick, active }: { tone: keyof typeof TONE; icon: React.ReactNode; label: string; value: string | null; sub: string; onClick?: () => void; active?: boolean }) {
-  const t = TONE[tone];
+function Kpi({ icon, label, value, sub, ring, onClick }: { icon: string[]; label: string; value?: string | null; sub: string; ring?: number; onClick?: () => void }) {
   const body = (
     <>
-      <span className="nt-stat-i" style={{ background: t.bg, color: t.fg }}>
-        {icon}
+      <span className="nf-k-i">
+        <Ico d={icon} />
       </span>
-      <span style={css("min-width:0")}>
-        <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>{label}</span>
-        <span style={css(NUM + ";display:block;margin-top:2px;font-size:22px;font-weight:500;line-height:1.15;color:var(--text);white-space:nowrap")}>
-          {value === null ? <span className="sk" style={css("display:inline-block;width:60px;height:18px")} /> : <CountUp text={value} />}
-        </span>
-        <span style={css("display:block;margin-top:2px;font-size:12px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{sub}</span>
+      <span className="nf-k-t">
+        <small>{label}</small>
+        {value == null ? <span className="sk" style={{ width: "60%", height: 20, margin: "3px 0" }} /> : <b>{<CountUp text={value} />}</b>}
+        <em>{sub}</em>
       </span>
+      {ring !== undefined && <Ring pct={ring} label={label.toLowerCase()} />}
     </>
   );
   return onClick ? (
-    <button type="button" className={"nt-stat click" + (active ? " on" : "")} style={{ ["--c" as string]: t.dot }} onClick={onClick}>
+    <button type="button" className="nf-k link" onClick={onClick}>
       {body}
     </button>
   ) : (
-    <div className="nt-stat">{body}</div>
+    <div className="nf-k">{body}</div>
   );
 }
 
 /** Адрес выдачи — пишется в каждом сообщении; меняет администратор. */
-function Address({ value, canEdit, toast, onSaved }: { value: string | null; canEdit: boolean; toast: Toast; onSaved: () => void }) {
+function AddressCard({ value, canEdit, toast, onSaved }: { value: string | null; canEdit: boolean; toast: Toast; onSaved: () => void }) {
   const [text, setText] = useState(value ?? "");
   const [busy, setBusy] = useState(false);
   useEffect(() => setText(value ?? ""), [value]);
@@ -216,83 +263,62 @@ function Address({ value, canEdit, toast, onSaved }: { value: string | null; can
   }
 
   return (
-    <div className={"nt-stat nt-addr" + (value !== null && !value ? " need" : "")}>
-      <span className="nt-stat-i" style={{ background: TONE.sky.bg, color: TONE.sky.fg }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0Z" />
-          <circle cx="12" cy="10" r="3" />
-        </svg>
+    <label className={"nf-k nf-addr" + (value !== null && !value ? " need" : "")}>
+      <span className="nf-k-i">
+        <Ico d={I.pin} />
       </span>
-      <span style={css("min-width:0;flex:1")}>
-        <span style={css("display:block;font-size:12.5px;color:var(--text-3)")}>Адрес выдачи · в сообщении</span>
-        <span style={css("display:flex;align-items:center;gap:6px;margin-top:4px")}>
-          <input
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && dirty && save()}
-            disabled={!canEdit || value === null}
-            placeholder={canEdit ? "например, ул. Ленина 1" : "не указан"}
-            aria-label="Адрес выдачи"
-          />
-          {canEdit && dirty && (
-            <HButton onClick={save} disabled={busy} className="nt-save" s="" hover="">
-              {busy ? "…" : "Сохранить"}
-            </HButton>
-          )}
-        </span>
+      <span className="nf-k-t">
+        <small>Адрес выдачи · в сообщении</small>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && dirty && save()}
+          disabled={!canEdit || value === null}
+          placeholder={canEdit ? "например, ул. Ленина 1" : "не указан"}
+          aria-label="Адрес выдачи"
+        />
+        <em>{dirty ? "Enter — сохранить" : "клиент увидит его в каждом сообщении"}</em>
       </span>
-    </div>
+      {canEdit &&
+        (dirty ? (
+          <button type="button" className="nf-addr-save" onClick={save} disabled={busy}>
+            {busy ? "…" : "Сохранить"}
+          </button>
+        ) : (
+          <span className="nf-addr-pen" aria-hidden>
+            <Ico d={I.pen} size={15} />
+          </span>
+        ))}
+    </label>
   );
 }
 
 // --- Список клиентов --------------------------------------------------------------------------------
 
-const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
-];
-
-function Avatar({ name, size }: { name: string; size: number }) {
-  const n = [...name].reduce((s, ch) => s + ch.charCodeAt(0), 0);
-  const letters = name
+const letters = (name: string) =>
+  name
     .split(/\s+/)
     .map((w) => w.replace(/[^\p{L}]/gu, ""))
     .filter(Boolean)
     .slice(0, 2)
     .map((w) => w[0].toUpperCase())
-    .join("");
-  return (
-    <span style={mix("border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-weight:500", { width: size, height: size, fontSize: Math.round(size * 0.36), background: AVATAR_BG[n % AVATAR_BG.length] })}>
-      {letters || "?"}
-    </span>
-  );
-}
+    .join("") || "?";
 
-function ClientRow({ r, active, onClick }: { r: NotifyRow; active: boolean; onClick: () => void }) {
+function ClientRow({ r, i, active, onClick }: { r: NotifyRow; i: number; active: boolean; onClick: () => void }) {
   const st = STATUS[r.status];
   const days = r.first_arrived ? Math.max(0, Math.floor((Date.now() - new Date(r.first_arrived).getTime()) / 86400000)) : 0;
   return (
-    <button type="button" className={"nt-row" + (active ? " on" : "")} onClick={onClick} style={{ ["--c" as string]: st.dot }}>
-      <Avatar name={r.name} size={40} />
-      <span style={css("min-width:0;flex:1")}>
-        <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{r.name}</span>
-        <span style={css(NUM + ";display:block;font-size:12.5px;color:var(--text-3)")}>{r.phone || "без телефона"}</span>
-        <span style={css("display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:5px;font-size:12px;color:var(--text-4)")}>
-          <span style={css(NUM)}>
-            {r.items.length} {plural(r.items.length, "товар", "товара", "товаров")} · {som(r.stock_sale)}
-          </span>
-          <span>· на складе {days === 0 ? "с сегодня" : `${days} ${plural(days, "день", "дня", "дней")}`}</span>
-        </span>
+    <button type="button" className={"nf-row" + (active ? " on" : "")} onClick={onClick} style={{ animationDelay: `${Math.min(i, 10) * 25}ms` }}>
+      <span className="rx-av">{letters(r.name)}</span>
+      <span className="nf-row-m">
+        <b>{r.name}</b>
+        <small>
+          {r.items.length} {plural(r.items.length, "товар", "товара", "товаров")} · {days === 0 ? "с сегодня" : `${days} ${plural(days, "день", "дня", "дней")}`}
+        </small>
       </span>
-      <span style={css("display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none")}>
-        <span className="nt-badge" style={{ color: st.fg, background: st.bg }}>
-          <span style={mix("width:6px;height:6px;border-radius:50%", { background: st.dot })} />
-          {r.status === "more" ? `+${r.fresh} ${st.label}` : st.label}
-        </span>
-        {r.stock_debt > 0 && <span style={css(NUM + ";font-size:12px;color:var(--danger)")}>долг {som(r.stock_debt)}</span>}
+      <span className="nf-row-r">
+        <span className={"rx-pill-st " + st.dot}>{r.status === "more" ? `+${r.fresh} новых` : st.label}</span>
+        <small>{r.stock_debt > 0 ? `долг ${som(r.stock_debt)}` : "оплачено"}</small>
       </span>
     </button>
   );
@@ -300,13 +326,13 @@ function ClientRow({ r, active, onClick }: { r: NotifyRow; active: boolean; onCl
 
 function GhostRow({ i, faded }: { i: number; faded?: boolean }) {
   return (
-    <div className="nt-row ghost" style={faded ? { opacity: Math.max(0.15, 0.6 - i * 0.12) } : undefined} aria-hidden>
-      <span className="sk" style={css("width:40px;height:40px;border-radius:50%;flex:none")} />
-      <span style={css("flex:1;display:flex;flex-direction:column;gap:8px")}>
-        <span className="sk" style={mix("height:10px", { width: `${[62, 48, 70, 55, 66, 44][i % 6]}%` })} />
-        <span className="sk" style={css("width:38%;height:8px")} />
+    <div className="nf-row ghost" style={faded ? { opacity: Math.max(0.2, 0.75 - i * 0.12) } : undefined} aria-hidden>
+      <span className="sk rx-sk-av" />
+      <span className="nf-row-m">
+        <span className="sk" style={{ width: `${[62, 48, 70, 55, 66, 44, 58][i % 7]}%`, height: 10 }} />
+        <span className="sk" style={{ width: "38%", height: 8, marginTop: 7 }} />
       </span>
-      <span className="sk" style={css("width:70px;height:20px;border-radius:999px")} />
+      <span className="sk" style={{ width: 74, height: 10 }} />
     </div>
   );
 }
@@ -324,7 +350,7 @@ function parseKg(v: string): number | null {
 const fmtKg = (kg: number) => kg.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtNum = (n: number) => n.toLocaleString("ru-RU", { maximumFractionDigits: 4 });
 /** Сумма для сообщения: «1 230 сом», «246,40 сом» (обычные пробелы — WhatsApp не путает). */
-const msgSom = (n: number) => `${som(n).replace(/ с$/, "").replace(/ /g, " ")} сом`;
+const msgSom = (n: number) => `${som(n).replace(/ с$/, "").replace(/ /g, " ")} сом`;
 
 /**
  * Как открывать WhatsApp. Приложение WhatsApp для Windows портит эмодзи в тексте из ссылки (они
@@ -363,7 +389,7 @@ type MsgData = { name: string; address: string; count: number; kg: number; weigh
  */
 function buildMessage(p: MsgData & { remind: boolean }): string {
   const first = p.name.trim().split(/\s+/)[0] || p.name.trim();
-  const kg = p.kg ? fmtKg(p.kg).replace(/\u00a0/g, " ") : "";
+  const kg = p.kg ? fmtKg(p.kg).replace(/ /g, " ") : "";
   const lines = p.remind
     ? [
         `Здравствуйте, ${first}! 👋`,
@@ -417,6 +443,16 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
   };
   const weightRef = useRef<HTMLInputElement>(null);
   const t = data.tariff;
+  // Высота чата идёт за сообщением плавно: строки веса появляются — блок растёт без рывка.
+  const chatIn = useRef<HTMLDivElement>(null);
+  const [chatH, setChatH] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = chatIn.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setChatH(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Новый вес вводим, только когда есть товары без уведомления; иначе — напоминание без нового веса.
   const canWeigh = row.status !== "sent";
@@ -468,8 +504,8 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
     [row, data.pickup_address, kgTotal, weightTotal, debt, total, canWeigh]
   );
   const phone = waPhone(row.phone);
-  // Доллары — точно (2,996 $), иначе формула не сходится с суммой.
   const lastNotice = row.notices[0];
+  const st = STATUS[row.status];
 
   async function record(how: "wa" | "app" | "copy") {
     setError("");
@@ -529,231 +565,177 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
     try {
       await navigator.clipboard.writeText(message);
     } catch {
-      /* буфер недоступен — текст виден ниже, можно выделить вручную */
+      /* буфер недоступен — текст виден рядом, можно выделить вручную */
     }
     void record("copy");
   }
 
   return (
-    <section className="nt-comp">
+    <section className="ov-card paper nf-comp">
       {/* Клиент */}
-      <div className="nt-comp-head">
-        <Avatar name={row.name} size={46} />
-        <span style={css("min-width:0;flex:1")}>
-          <HButton onClick={() => nav(`/customers/${row.id}`)} className="nt-name" s="" hover="" title="Открыть клиента">
+      <header className="nf-head">
+        <span className="nf-head-av">{letters(row.name)}</span>
+        <span className="nf-head-id">
+          <button type="button" onClick={() => nav(`/customers/${row.id}`)} title="Открыть клиента">
             {row.name}
-          </HButton>
-          <span style={css(NUM + ";display:block;font-size:13px;color:var(--text-3)")}>{row.phone || "телефон не указан"}</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M7 17 17 7M8 7h9v9" />
+            </svg>
+          </button>
+          <span>{row.phone || "телефон не указан"}</span>
         </span>
-        <span className="nt-badge big" style={{ color: STATUS[row.status].fg, background: STATUS[row.status].bg }}>
-          <span style={mix("width:7px;height:7px;border-radius:50%", { background: STATUS[row.status].dot })} />
-          {row.status === "more" ? `пришло ещё ${row.fresh}` : STATUS[row.status].label}
+        <span className="nf-head-st">
+          <span className={"rx-pill-st " + st.dot}>{row.status === "more" ? `Пришло ещё ${row.fresh}` : st.label}</span>
+          <small>
+            {row.items.length} {plural(row.items.length, "товар", "товара", "товаров")} на складе · {som(row.stock_sale)}
+          </small>
         </span>
-      </div>
+      </header>
 
-      <div className="nt-comp-body">
-        <div className="nt-left">
-          {/* Уже уведомлён: когда, сколько раз, вес и что будет дальше — одной карточкой */}
-          {lastNotice && (
-            <div className={"nt-status" + (canWeigh ? " more" : "")}>
-              <div className="nt-status-head">
-                <span className="nt-status-i">
-                  <Svg paths={I_CHECK} size={16} sw={2.6} />
-                </span>
-                <span style={css("flex:1;min-width:0")}>
-                  <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>Клиент уведомлён</span>
-                  <span style={css(NUM + ";display:block;font-size:12px;color:var(--text-3)")}>
-                    {dateTime(lastNotice.sent_at)}
-                    {row.notices.length > 1 ? ` · ${row.notices.length} ${plural(row.notices.length, "уведомление", "уведомления", "уведомлений")}` : ""}
+      <div className="nf-body">
+        <div className="nf-left">
+          {/* Что пришло */}
+          <div className="nf-sec">
+            <h3>Товары на складе</h3>
+            <div className="nf-items thin-scroll">
+              {row.items.map((i) => (
+                <div key={i.id} className="nf-item">
+                  <span className="nf-item-n">
+                    <b>
+                      {i.name}
+                      {!i.notified && row.notices.length > 0 && <em>новый</em>}
+                    </b>
+                    <small>{i.code || "без кода"}</small>
                   </span>
-                </span>
-                <HButton onClick={() => setCancel(lastNotice)} className="nt-status-cancel" s="" hover="" title="Отменить последнее уведомление">
-                  отменить
-                </HButton>
-              </div>
-              {prevKg > 0 && (
-                <div className="nt-status-money">
-                  <span>
-                    <span className="nt-status-k">Вес</span>
-                    <b>{fmtKg(prevKg)} кг</b>
-                  </span>
-                  <span>
-                    <span className="nt-status-k">За вес</span>
-                    <b style={css("color:var(--violet)")}>{som(prevSom)}</b>
-                  </span>
-                  <span>
-                    <span className="nt-status-k">Берём</span>
-                    <b>при выдаче</b>
+                  <span className="nf-item-q">{i.qty} шт</span>
+                  <span className="nf-item-s">
+                    <b>{i.sale > 0 ? som(i.sale) : "—"}</b>
+                    <small>{i.sale <= 0 ? "только вес" : i.debt > 0 ? `долг ${som(i.debt)}` : "оплачено"}</small>
                   </span>
                 </div>
-              )}
-              <div className="nt-status-hint">
-                {canWeigh
-                  ? `Пришло ещё ${row.fresh} ${plural(row.fresh, "товар", "товара", "товаров")} — введите вес новой посылки и отправьте ещё одно уведомление.`
-                  : "Все товары уже в уведомлении. Можно напомнить клиенту — сумма к оплате не изменится."}
-              </div>
-            </div>
-          )}
-
-          {/* Что пришло */}
-          <div className="nt-items">
-            <div className="nt-sec-title">
-              На складе · {row.items.length} {plural(row.items.length, "товар", "товара", "товаров")}
-            </div>
-            {row.items.map((i) => (
-              <div key={i.id} className="nt-item">
-                <span style={css("min-width:0")}>
-                  <span style={css("display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)")}>
-                    <span style={css("white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{i.name}</span>
-                    {!i.notified && row.notices.length > 0 && <span className="nt-new">новый</span>}
+              ))}
+              <div className="nf-ghosts">
+              {Array.from({ length: Math.max(0, 4 - row.items.length) }, (_, k) => (
+                <div key={"g" + k} className="nf-item ghost" aria-hidden style={{ opacity: 0.8 - k * 0.2 }}>
+                  <span className="nf-item-n">
+                    <span className="sk" style={{ width: `${[56, 42, 64][k % 3]}%`, height: 9 }} />
+                    <span className="sk" style={{ width: "34%", height: 7, marginTop: 6 }} />
                   </span>
-                  <span style={css(MONO + ";display:block;font-size:11.5px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis")}>{i.code || "без кода"}</span>
-                </span>
-                <span style={css(NUM + ";font-size:12.5px;color:var(--text-3);white-space:nowrap")}>{i.qty} шт</span>
-                <span style={css("text-align:right;white-space:nowrap")}>
-                  <span style={css(NUM + ";display:block;font-size:13px;color:var(--text)")}>{som(i.sale)}</span>
-                  <span style={mix(NUM + ";display:block;font-size:11.5px", { color: i.debt > 0 ? "var(--danger)" : "var(--green)" })}>{i.debt > 0 ? `долг ${som(i.debt)}` : "оплачено"}</span>
-                </span>
+                  <span className="sk" style={{ width: 26, height: 9, margin: "0 auto" }} />
+                  <span className="sk" style={{ width: 60, height: 9, marginLeft: "auto" }} />
+                </div>
+              ))}
               </div>
-            ))}
+            </div>
           </div>
 
-          {/* Вес */}
-          {canWeigh && (
-            <div className={"nt-weight" + (bad ? " bad" : kg ? " on" : "")}>
-              <label className="nt-weight-in">
-                <span className="nt-weight-i">
+          {/* Вес и итог — одной панелью внизу колонки */}
+          <div className="nf-pay">
+            {/* Уже уведомлён: когда, вес и сумма — на месте веса */}
+            {lastNotice && (
+              <div className="nf-sent">
+                <span className="rx-mi">
+                  <Svg paths={I_CHECK} size={15} sw={2.4} />
+                </span>
+                <span className="nf-weight-t">
+                  <small>
+                    Уведомлён {dateTime(lastNotice.sent_at)}
+                    {row.notices.length > 1 ? ` · ${row.notices.length} ${plural(row.notices.length, "раз", "раза", "раз")}` : ""}
+                  </small>
+                  <span>
+                    {prevKg > 0 ? `${fmtKg(prevKg)} кг · за вес ${som(prevSom)}` : "без веса"} · {canWeigh ? `пришло ещё ${row.fresh}` : "можно напомнить"}
+                  </span>
+                </span>
+                <button type="button" className="nf-cancel" onClick={() => setCancel(lastNotice)} title="Отменить последнее уведомление">
+                  Отменить
+                </button>
+              </div>
+            )}
+            {canWeigh && (
+              <label className={"nf-weight" + (bad ? " bad" : kg ? " on" : "")}>
+                <span className="rx-mi">
                   <WeightIcon />
                 </span>
-                <span style={css("font-size:13px;color:var(--text-3);white-space:nowrap")}>{row.notices.length ? "Вес новой посылки" : "Вес посылки"}</span>
-                <input ref={weightRef} value={weight} onChange={(e) => setWeight(e.target.value.replace(/[^\d.,\s]/g, ""))} inputMode="decimal" placeholder="0,00" aria-label="Вес посылки, кг" aria-invalid={bad} autoFocus={window.innerWidth > 1000} />
-                <span style={css("font-size:13px;color:var(--text-4)")}>кг</span>
-              </label>
-              <div className="nt-weight-calc">
-                {bad ? (
-                  <span style={css("color:var(--danger)")}>Введите вес числом, например 1,07</span>
-                ) : kg ? (
-                  <>
-                    <span style={css(NUM)}>
-                      {fmtKg(kg)} кг × {fmtNum(rateSom)} с{exactSom !== weightSom ? ` = ${som(exactSom)}` : ""}
-                    </span>
-                    <b style={css(NUM + ";margin-left:auto;font-weight:500;color:var(--text);white-space:nowrap")} title={exactSom !== weightSom ? "округляем вверх до целого сома" : undefined}>
-                      {exactSom !== weightSom ? "→ " : "= "}
-                      {som(weightSom)}
-                    </b>
-                  </>
-                ) : (
+                <span className="nf-weight-t">
+                  <small>{row.notices.length ? "Вес новой посылки" : "Вес посылки"}</small>
                   <span>
-                    {fmtNum(rateSom)} с за кг ({fmtNum(t.weight_rate_usd)} $ × {fmtNum(t.usd_rate)}) · без веса — уведомим только о долге
+                    {bad
+                      ? "введите вес числом, например 1,07"
+                      : kg
+                        ? `${fmtKg(kg)} кг × ${fmtNum(rateSom)} с${exactSom !== weightSom ? ` = ${som(exactSom)}, вверх до сома` : ""}`
+                        : `${fmtNum(rateSom)} с за 1 кг · без веса — только долг`}
                   </span>
-                )}
+                </span>
+                <span className="nf-weight-in">
+                  <input ref={weightRef} value={weight} onChange={(e) => setWeight(e.target.value.replace(/[^\d.,\s]/g, ""))} inputMode="decimal" placeholder="0,00" aria-label="Вес посылки, кг" aria-invalid={bad} autoFocus={window.innerWidth > 1000} />
+                  <small>кг</small>
+                </span>
+              </label>
+            )}
+            <div className="nf-pay-rows">
+              <div className="nf-pay-r">
+                <span>За вес{kgTotal ? ` · ${fmtKg(kgTotal)} кг` : ""}</span>
+                <i />
+                <b>{weightTotal > 0 ? som(weightTotal) : "—"}</b>
+              </div>
+              <div className="nf-pay-r">
+                <span>Долг за товар</span>
+                <i />
+                <b>{debt > 0 ? som(debt) : "нет"}</b>
               </div>
             </div>
-          )}
-
-          {/* Итог */}
-          <div className="nt-sum">
-            {weightTotal > 0 && <SumRow label={`Вес · ${fmtKg(kgTotal)} кг`} value={som(weightTotal)} color="var(--violet)" />}
-            <SumRow label="Долг за товар" value={debt > 0 ? som(debt) : "нет"} color={debt > 0 ? "var(--danger)" : "var(--text-3)"} />
-            <SumRow label="Итого к оплате" value={som(total)} color={total > 0 ? "var(--text)" : "var(--green)"} strong />
-          </div>
-
-          {/* Остаток колонки — бледные строки-заготовки и подсказка, что будет дальше */}
-          <div className="nt-fill">
-            <div className="nt-fill-rows" aria-hidden>
-              {Array.from({ length: 10 }, (_, i) => (
-                <span key={i} className="nt-fill-row">
-                  <span className="sk" style={css("width:28px;height:28px;border-radius:9px;flex:none")} />
-                  <span style={css("flex:1;display:flex;flex-direction:column;gap:7px")}>
-                    <span className="sk" style={mix("height:8px", { width: `${[58, 44, 66, 50, 62, 40][i % 6]}%` })} />
-                    <span className="sk" style={mix("height:6px", { width: `${[30, 38, 26, 34][i % 4]}%` })} />
-                  </span>
-                  <span className="sk" style={css("width:48px;height:8px;flex:none")} />
-                </span>
-              ))}
-            </div>
-            <div className="nt-fill-msg">
-              <span className="nt-fill-steps">
-                <span className="nt-fill-step">
-                  <b>1</b> Отправить
-                </span>
-                <span className="nt-fill-arrow">→</span>
-                <span className="nt-fill-step">
-                  <b>2</b> Клиент пришёл
-                </span>
-                <span className="nt-fill-arrow">→</span>
-                <span className="nt-fill-step">
-                  <b>3</b> «Выдача»
-                </span>
+            <div className="nf-pay-total">
+              <span>
+                <b>Итого к оплате</b>
+                <small>берём при выдаче</small>
               </span>
-              <span style={css("display:block;margin-top:8px;font-size:12px;line-height:1.45;color:var(--text-4)")}>
-                Клиент отметится уведомлённым — сумму за вес возьмут на «Выдаче»
-              </span>
+              <strong key={total}>{som(total)}</strong>
             </div>
           </div>
         </div>
 
         {/* Сообщение */}
-        <div className="nt-right">
-          <div className="nt-sec-title">Сообщение для WhatsApp</div>
-          <div className="nt-chat">
-            <div className="nt-bubble">
-              {message}
-              <span className="nt-bubble-time">
-                {new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} ✓✓
-              </span>
-            </div>
-            {/* Ниже — бледные пузыри-заготовки: здесь будет ответ клиента */}
-            <div className="nt-ghost-chat" aria-hidden>
-              {[
-                [62, 1],
-                [38, 1],
-                [54, 0],
-                [70, 1],
-                [44, 0],
-                [58, 1],
-              ].map(([w, inc], i) => (
-                <span key={i} className={"nt-ghost-bubble" + (inc ? " in" : "")} style={{ width: `${w}%` }}>
-                  <span />
-                  <span style={{ width: `${[70, 50, 84, 60, 40, 76][i]}%` }} />
-                </span>
-              ))}
+        <div className="nf-right">
+          <div className="nf-chat" style={chatH ? { height: chatH + 28 } : undefined}>
+            <div ref={chatIn} className="nf-chat-in">
+              <div className="nf-chat-day">сообщение клиенту</div>
+              <div className="nf-bubble">
+                {message}
+                <span className="nf-bubble-time">{new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} ✓✓</span>
+              </div>
             </div>
           </div>
           {error && <ModalError text={error} />}
-          <div className="nt-actions">
-            <HButton
+          {!phone && <div className="nf-warn">У клиента нет телефона — скопируйте текст и отправьте вручную.</div>}
+          <div className="nf-actions">
+            <button
+              type="button"
+              className="nf-wa"
               onClick={() => trySend("send")}
               disabled={!phone || bad || busy}
-              className="nt-wa"
-              s=""
-              hover=""
               title={!phone ? "У клиента нет телефона" : IS_MOBILE || waMode === "web" ? "Откроется чат с готовым текстом" : "Текст скопируется, откроется чат — нажмите Ctrl+V и Enter"}
             >
               <WaIcon />
               {busy ? "Сохраняю…" : canWeigh ? "Отправить в WhatsApp" : "Напомнить в WhatsApp"}
-            </HButton>
-            <HButton onClick={() => trySend("copy")} disabled={bad || busy} className="nt-copy" s="" hover="" title="Скопировать текст и отметить уведомление">
-              Скопировать и отметить
-            </HButton>
+            </button>
+            <button type="button" className="nf-copy" onClick={() => trySend("copy")} disabled={bad || busy} title="Скопировать текст и отметить уведомление">
+              Скопировать<span className="nf-more"> и отметить</span>
+            </button>
           </div>
           {!IS_MOBILE && (
-            <div className="nt-wamode">
-              <span style={css("font-size:12px;color:var(--text-3);white-space:nowrap")}>Открывать в</span>
-              <span className="nt-wamode-seg" role="radiogroup" aria-label="Как открывать WhatsApp">
+            <div className="nf-wamode">
+              <span className="nf-wamode-seg" role="radiogroup" aria-label="Как открывать WhatsApp" style={{ "--i": waMode === "web" ? 0 : 1 } as CSSProperties}>
+                <span className="nf-wamode-thumb" aria-hidden />
                 <button type="button" role="radio" aria-checked={waMode === "web"} className={waMode === "web" ? "on" : ""} onClick={() => setWaMode("web")}>
                   WhatsApp Web
                 </button>
                 <button type="button" role="radio" aria-checked={waMode === "app"} className={waMode === "app" ? "on" : ""} onClick={() => setWaMode("app")}>
-                  Приложении
+                  Приложение
                 </button>
               </span>
-              <span className="nt-wamode-hint">
-                {waMode === "web" ? "текст и иконки придут целыми" : "текст скопируется — в чате нажмите Ctrl+V и Enter (иконки сохранятся)"}
-              </span>
+              <small>{waMode === "web" ? "текст и иконки придут целыми" : "текст скопируется — в чате Ctrl+V и Enter"}</small>
             </div>
           )}
-          {!phone && <div style={css("font-size:12px;color:var(--amber)")}>У клиента нет телефона — скопируйте текст и отправьте вручную.</div>}
         </div>
       </div>
 
@@ -777,20 +759,15 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
           }
         >
           <div className="mf-body">
-            <div className="nt-noweight">
-              <span className="nt-noweight-i">
-                <WeightIcon />
-              </span>
-              <span style={css("min-width:0")}>
-                <span style={css("display:block;font-size:14px;font-weight:500;color:var(--text)")}>За вес ничего не возьмём</span>
-                <span style={css("display:block;margin-top:3px;font-size:12.5px;line-height:1.5;color:var(--text-3)")}>
-                  В сообщении будет только долг за товар{debt > 0 ? ` — ${som(debt)}` : ""}, а на «Выдаче» сумма за вес не добавится. Взвесьте посылку и введите вес, чтобы клиент сразу знал, сколько платить.
-                </span>
+            <div className="nf-noweight">
+              <b>За вес ничего не возьмём</b>
+              <span>
+                В сообщении будет только долг за товар{debt > 0 ? ` — ${som(debt)}` : ""}, а на «Выдаче» сумма за вес не добавится. Взвесьте посылку и введите вес, чтобы клиент сразу знал, сколько платить.
               </span>
             </div>
             <div className="mf-total">
               <span>Сейчас к оплате в сообщении</span>
-              <b style={css("font-weight:500;color:var(--text);font-variant-numeric:tabular-nums")}>{som(total)}</b>
+              <b style={{ fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>{som(total)}</b>
             </div>
           </div>
         </ModalShell>
@@ -818,15 +795,6 @@ function Composer({ row, data, toast, onChanged }: { row: NotifyRow; data: Notif
         />
       )}
     </section>
-  );
-}
-
-function SumRow({ label, value, color, strong }: { label: string; value: string; color?: string; strong?: boolean }) {
-  return (
-    <div className={"nt-sum-row" + (strong ? " strong" : "")}>
-      <span>{label}</span>
-      <span style={mix(NUM + ";white-space:nowrap", { color: color ?? "var(--text)" })}>{value}</span>
-    </div>
   );
 }
 
@@ -860,13 +828,8 @@ function NoWeightFoot({ onSkip, onWeigh }: { onSkip: () => void; onWeigh: () => 
   );
 }
 
-function WeightIcon() {
-  return (
-    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M6.5 8h11l2.3 12H4.2L6.5 8Z" />
-      <path d="M9 8a3 3 0 0 1 6 0" />
-    </svg>
-  );
+function WeightIcon(): ReactNode {
+  return <Ico d={I.scale} size={16} />;
 }
 
 function WaIcon() {
@@ -884,4 +847,3 @@ function plural(n: number, one: string, few: string, many: string): string {
   if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few;
   return many;
 }
-

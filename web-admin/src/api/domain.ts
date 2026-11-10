@@ -382,7 +382,7 @@ export const listScans = (params: { q?: string; result?: string; since?: string;
 
 export const issueLookup = (q: string) => api.get<CustomerBrief[]>("/issue/lookup", { params: { q } }).then((r) => r.data);
 /** weight_som — сумма за вес по уведомлениям, которую видел кассир (сервер сверит). */
-export const issueItems = (body: { customer_id: number; item_ids: number[]; payment_amount?: number; comment?: string; weight_som?: number }) =>
+export const issueItems = (body: { customer_id: number; item_ids: number[]; payment_amount?: number; comment?: string; weight_som?: number; method?: "cash" | "transfer" }) =>
   api.post<{ issue_id: number; items: Item[] }>("/issues", body).then((r) => r.data);
 
 export interface IssueRow {
@@ -402,10 +402,22 @@ export interface IssueRow {
 }
 export interface IssueList extends Page<IssueRow> {
   /** debt — сколько по выданным товарам ещё не оплачено; paid_now — принято при выдаче. */
-  summary: { items: number; qty: number; sale: number; customers: number; debt?: number; paid_now?: number; weight_kg?: number; weight_som?: number };
+  summary: { items: number; qty: number; sale: number; customers: number; debt?: number; paid_now?: number; weight_kg?: number; weight_som?: number; cash?: number; transfer?: number; credit?: number };
   /** Выдачи по дням (день — в часовом поясе из tz). */
   by_day?: { day: string; issues: number; items: number; sale: number }[];
 }
+/** Забрали в долг: клиент, сколько товаров и долг по ним, когда забрал. */
+export interface CreditRow {
+  id: number;
+  name: string;
+  phone: string;
+  items: number;
+  debt: number;
+  since: string;
+  last: string;
+  item_ids: number[];
+}
+export const listCredit = () => api.get<CreditRow[]>("/issues/credit").then((r) => r.data);
 export const listIssues = (params: { q?: string; since?: string; until?: string; limit?: number; offset?: number; tz?: number }) =>
   api.get<IssueList>("/issues", { params }).then((r) => r.data);
 
@@ -588,6 +600,7 @@ export interface Finance {
   cash_in: { amount: number; count: number; by_method?: { method: string; amount: number; count: number }[]; by_day?: { day: string; amount: number }[] };
   months: MonthRow[];
   debtors: { id: number; name: string; phone: string; debt: number; items: number; oldest: string }[];
+  debtors_count?: number;
   payments: {
     id: number;
     amount: number;
@@ -601,7 +614,41 @@ export interface Finance {
     customer_name: string;
     user_login: string | null;
   }[];
+  /** Новые поля страницы «Финансы» (старый сервер их не присылает). */
+  series?: { day: string; sale: number; items: number; priced?: number; profit: number; cost: number; cash: number; weight: number; wbuy: number; delivery: number; net: number }[];
+  /** Цепочка прибыли периода (как на «Обзоре»): net = markup + weight − weight_buy − delivery. */
+  money?: { goods_cost: number; with_cost: number; items: number; markup: number; weight: number; weight_kg: number; weight_buy: number; delivery: number; net: number; batches: number; weight_pending?: number; rate_usd: number };
+  top_customers?: { id: number; name: string; code: string | null; items: number; qty: number; sale: number; debt: number }[];
+  stages?: { ordered: number; in_transit: number; in_stock: number; issued: number };
+  by_weekday?: number[];
+  by_hour?: number[];
 }
+/** Оплаты периода, собранные в посещения клиента (выдача: товары + вес за один раз). */
+export interface PayGroup {
+  key: string;
+  kind: "issue" | "bulk" | "order" | "import" | "pay";
+  customer_id: number;
+  customer_name: string;
+  first_at: string;
+  at: string;
+  methods: { method: string; amount: number }[];
+  items: { payment_id: number; item_id: number; name: string; code: string | null; qty: number; sale: number; cost: number | null; amount: number; markup: number | null }[];
+  weight: { kg: number; som: number } | null;
+  items_sum: number;
+  total: number;
+  markup: number;
+  with_cost: number;
+}
+export interface FinancePayments {
+  page: number;
+  per: number;
+  total_groups: number;
+  total_payments: number;
+  amount: number;
+  groups: PayGroup[];
+}
+export const getFinancePayments = (params: { date_from: string; date_to: string; page: number; per: number }) =>
+  api.get<FinancePayments>("/finance/payments", { params }).then((r) => r.data);
 export const getFinance = (params: { date_from?: string; date_to?: string }) =>
   api.get<Finance>("/finance", { params }).then((r) => r.data);
 
