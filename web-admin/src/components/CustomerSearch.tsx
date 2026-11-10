@@ -19,14 +19,6 @@ import { fullPhone, localDigits } from "./PhoneInput";
 const LIMIT = 8;
 const MIN = 2;
 
-/** Цвет аватарки — по id, чтобы у клиента он всегда был один и тот же. */
-const AVATARS = [
-  ["var(--accent-tint)", "var(--accent-strong)"],
-  ["var(--violet-tint)", "var(--violet)"],
-  ["var(--green-tint)", "var(--green)"],
-  ["var(--amber-tint)", "var(--amber)"],
-] as const;
-
 /** Для сравнения без учёта регистра и ё/е (длина строки не меняется). */
 const fold = (s: string) => s.toLowerCase().replace(/ё/g, "е");
 /** Цифры телефона из запроса — как на сервере: без ведущего 0. */
@@ -34,7 +26,7 @@ const queryDigits = (q: string) => q.replace(/\D/g, "").replace(/^0/, "");
 /** Похоже на номер: только цифры и знаки номера, цифр не меньше шести. */
 const looksLikePhone = (q: string) => /^[\d\s()+-]+$/.test(q) && q.replace(/\D/g, "").length >= 6;
 
-const MARK = "background:color-mix(in srgb, var(--accent) 20%, transparent);color:inherit;border-radius:3px;padding:0 1px";
+const MARK = "background:color-mix(in srgb, var(--text) 11%, transparent);color:var(--text);font-weight:700;border-radius:4px;padding:0 2px";
 
 function markName(name: string, q: string): ReactNode {
   const i = fold(name).indexOf(fold(q));
@@ -222,7 +214,7 @@ export default function CustomerSearch({
         <div
           role="listbox"
           style={css(
-            "position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:30;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 40px rgba(15,18,25,.16),0 2px 8px rgba(15,18,25,.06);overflow:hidden;animation:pop .14s ease"
+            "position:absolute;top:calc(100% + 8px);left:0;right:0;z-index:30;background:var(--surface);border:0;border-radius:18px;box-shadow:0 0 0 1px color-mix(in srgb,var(--text) 8%,transparent),0 22px 48px -18px rgba(15,18,25,.32);overflow:hidden;animation:pop .16s ease"
           )}
         >
           {res?.error && !pending ? (
@@ -272,7 +264,7 @@ export default function CustomerSearch({
               </div>
               <div
                 className="hide-sm"
-                style={css("display:flex;gap:14px;padding:8px 14px;border-top:1px solid var(--border-2);background:var(--surface-2);font-size:11px;color:var(--text-4)")}
+                style={css("display:flex;gap:14px;padding:9px 16px;border-top:1px solid color-mix(in srgb,var(--text) 7%,transparent);background:color-mix(in srgb,var(--text) 2.5%,var(--surface));font-size:11px;color:var(--text-4)")}
               >
                 <span>
                   <Kbd>↑</Kbd> <Kbd>↓</Kbd> выбор
@@ -293,7 +285,6 @@ export default function CustomerSearch({
 }
 
 function Row({ c, i, q, active, onHover, onPick }: { c: CustomerRow; i: number; q: string; active: boolean; onHover: () => void; onPick: () => void }) {
-  const [bg, fg] = AVATARS[c.id % AVATARS.length];
   return (
     <button
       type="button"
@@ -303,11 +294,11 @@ function Row({ c, i, q, active, onHover, onPick }: { c: CustomerRow; i: number; 
       onPointerMove={() => !active && onHover()}
       onClick={onPick}
       style={mix(
-        "display:flex;align-items:center;gap:11px;width:100%;padding:8px 10px;border:none;border-radius:9px;text-align:left;cursor:pointer;color:var(--text);transition:background .1s",
-        { background: active ? "var(--hover)" : "transparent" }
+        "display:flex;align-items:center;gap:12px;width:100%;padding:9px 12px;border:none;border-radius:12px;text-align:left;cursor:pointer;color:var(--text);transition:background .12s",
+        { background: active ? "color-mix(in srgb,var(--text) 6%,var(--surface))" : "transparent" }
       )}
     >
-      <span style={mix("width:36px;height:36px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:14px;font-weight:700", { background: bg, color: fg })}>
+      <span style={mix("width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:14px;font-weight:700;color:var(--text);transition:background .12s", { background: active ? "var(--surface)" : "color-mix(in srgb,var(--text) 7%,var(--surface))", boxShadow: active ? "0 0 0 1px color-mix(in srgb,var(--text) 12%,transparent)" : "none" })}>
         {c.name.trim().slice(0, 1).toUpperCase() || "?"}
       </span>
       <span style={css("flex:1;min-width:0")}>
@@ -318,11 +309,11 @@ function Row({ c, i, q, active, onHover, onPick }: { c: CustomerRow; i: number; 
         </span>
       </span>
       {c.debt > 0 ? (
-        <Badge bg="var(--danger-tint)" fg="var(--danger)">
+        <Badge bg="transparent" fg="#9C3B2E">
           долг {som(c.debt)}
         </Badge>
       ) : c.in_stock > 0 ? (
-        <Badge bg="var(--green-tint)" fg="var(--green)">
+        <Badge bg="transparent" fg="var(--text-3)">
           на складе {c.in_stock}
         </Badge>
       ) : null}
@@ -344,7 +335,7 @@ function Row({ c, i, q, active, onHover, onPick }: { c: CustomerRow; i: number; 
 }
 
 function Badge({ bg, fg, children }: { bg: string; fg: string; children: ReactNode }) {
-  return <span style={mix("flex:none;padding:3px 9px;border-radius:10px;font-size:11.5px;font-weight:600;white-space:nowrap", { background: bg, color: fg })}>{children}</span>;
+  return <span style={mix("flex:none;padding:0 2px;font-size:12.5px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums", { background: bg, color: fg })}>{children}</span>;
 }
 
 function State({
