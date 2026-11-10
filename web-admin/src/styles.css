@@ -6419,3 +6419,172 @@ i.wt-skel{width:24px;height:24px;border-radius:50%}
 .ihs-row.undone .ihs-live b{font-size:13px;letter-spacing:0}
 }
 @container (min-width:561px) and (max-width:820px){.ihs-live>span{flex-direction:row;align-items:baseline;gap:6px}}
+
+/* «Заказ сохранён»: шапка (галочка, клиент), полоса фактов с разделителями, низ — что в заказе и действия; один мягкий блик при появлении */
+.no-saved{display:flex;flex-direction:column;align-items:stretch;flex-wrap:nowrap;gap:12px;padding:16px;overflow:hidden}
+.no-saved::before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 35%,color-mix(in srgb,var(--ov-text) 6%,transparent) 50%,transparent 65%) 0 0/250% 100% no-repeat;background-position:120% 0;animation:noSvShine 1.6s .35s cubic-bezier(.4,0,.2,1) both}
+@keyframes noSvShine{from{background-position:120% 0}to{background-position:-60% 0}}
+.no-sv-top{position:relative;display:flex;align-items:center;gap:13px;padding-right:36px}
+.no-sv-top .no-saved-ic{width:44px;height:44px}
+.no-sv-h{min-width:0;display:flex;flex-direction:column;gap:5px}
+.no-sv-h>b{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:16px;font-weight:600;letter-spacing:-.01em;color:var(--ov-text)}
+.no-sv-h>b i{padding:2px 9px;border-radius:99px;background:var(--ov-stone);font-style:normal;font-size:11px;font-weight:600;color:var(--ov-text)}
+.no-sv-who{display:flex;align-items:center;gap:7px;min-width:0;font-size:13px}
+.no-sv-av{flex:none;width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:var(--ov-stone);color:var(--ov-text);font-size:10.5px;font-weight:700}
+.no-sv-who .nm{min-width:0;font-weight:600;color:var(--ov-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.no-sv-who .ph{flex:none;font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ov-mute);white-space:nowrap}
+.no-sv-top .no-saved-x{top:50%;right:0;margin-top:-14px}
+.no-sv-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:0;border-radius:14px;background:color-mix(in srgb,var(--ov-text) 3.5%,var(--ov-paper));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ov-text) 6%,transparent);animation:fn2In .4s .1s ease backwards}
+.no-sv-facts>div{min-width:0;display:flex;flex-direction:column;gap:3px;padding:10px 14px}
+.no-sv-facts>div+div{box-shadow:inset 1px 0 0 color-mix(in srgb,var(--ov-text) 8%,transparent)}
+.no-sv-facts dt{font-size:11px;color:var(--ov-mute)}
+.no-sv-facts dd{margin:0;font-size:14.5px;font-weight:600;letter-spacing:-.01em;color:var(--ov-text);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.no-sv-facts .owe dd{color:#9C3B2E}
+.no-sv-foot{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px}
+.no-sv-pv{flex:1 1 180px;min-width:0;font-size:12.5px;color:var(--ov-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.no-sv-pv small{margin-right:8px;font-size:11px;color:var(--ov-mute)}
+.no-sv-foot .no-saved-a{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.no-sv-foot .no-saved-a .no-btn{height:36px;padding:0 13px;font-size:12.5px}
+@media (max-width:640px){
+.no-sv-facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+.no-sv-facts>div:nth-child(3){box-shadow:inset 0 1px 0 color-mix(in srgb,var(--ov-text) 8%,transparent)}
+.no-sv-facts>div:nth-child(4){box-shadow:inset 1px 0 0 color-mix(in srgb,var(--ov-text) 8%,transparent),inset 0 1px 0 color-mix(in srgb,var(--ov-text) 8%,transparent)}
+.no-sv-foot .no-saved-a{width:100%}
+.no-sv-foot .no-saved-a .no-btn{flex:1;justify-content:center;padding:0 8px}
+.no-sv-who .ph{display:none}
+}
+@media (prefers-reduced-motion:reduce){.no-saved::before{animation:none;display:none}}
+
+/* «Заказ сохранён» — одной строкой, невысокая: галочка, кто, главное (товары · сумма · оплата · когда), действия */
+.no-saved.sv1{flex-direction:row;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:10px 10px 10px 12px;border-radius:18px}
+.sv1 .no-saved-ic{width:34px;height:34px}
+.sv1 .no-saved-ic::after{inset:-3px;border-width:1.5px}
+.sv1-t{flex:none;min-width:0;max-width:220px;display:flex;flex-direction:column;gap:1px}
+.sv1-t b{font-size:14px;font-weight:600;letter-spacing:-.01em;color:var(--ov-text);white-space:nowrap}
+.sv1-t small{display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;color:var(--ov-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sv1-t small i{flex:none;padding:0 6px;border-radius:99px;background:var(--ov-stone);font-style:normal;font-size:10.5px;font-weight:600;color:var(--ov-text);line-height:16px}
+.sv1-f{flex:1 1 auto;min-width:0;display:flex;align-items:center;flex-wrap:wrap;gap:4px 0;padding-left:14px;border-left:1px solid color-mix(in srgb,var(--ov-text) 9%,transparent)}
+.sv1-f em{display:inline-flex;align-items:center;font-style:normal;font-size:13px;font-weight:500;color:var(--ov-mute);white-space:nowrap;font-variant-numeric:tabular-nums}
+.sv1-f em+em::before{content:"";width:3px;height:3px;margin:0 9px;border-radius:50%;background:color-mix(in srgb,var(--ov-text) 25%,transparent)}
+.sv1-f em.b{font-weight:700;color:var(--ov-text)}
+.sv1-f em.owe{color:#9C3B2E;font-weight:600}
+.sv1-a{flex:none;display:flex;align-items:center;gap:6px;margin-left:auto}
+.sv1-a .no-btn{height:34px;padding:0 12px;font-size:12.5px}
+.sv1-a .no-saved-x{position:static;width:30px;height:30px}
+@media (max-width:760px){.sv1-f{order:3;flex-basis:100%;padding:8px 0 0;border-left:0;border-top:1px dashed color-mix(in srgb,var(--ov-text) 10%,transparent)}.sv1-a{order:4;width:100%}.sv1-a .no-btn{flex:1;justify-content:center;padding:0 8px}.sv1-t{flex:1;max-width:none}}
+@media (max-width:760px){.sv1 .sv1-a .no-saved-x{position:absolute;top:12px;right:10px}.sv1-t{padding-right:34px}}
+/* одной строкой: середина ужимается (без переноса), лишнее мягко гаснет справа */
+@media (min-width:761px){.no-saved.sv1{flex-wrap:nowrap}.sv1-t{max-width:200px}.sv1-f{flex:1 1 0;flex-wrap:nowrap;overflow:hidden;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 18px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 18px),transparent)}.sv1-f em{font-size:12.5px}.sv1-f em+em::before{margin:0 8px}}
+@media (max-width:760px){.sv1-f{flex-wrap:nowrap;overflow:hidden}.sv1-f em{font-size:12px}.sv1-f em+em::before{margin:0 7px}}
+@media (min-width:761px){.sv1-a .no-btn.ghost{padding:0 9px}.sv1-a{gap:5px}.no-saved.sv1{gap:10px 12px}}
+
+/* «Заказ сохранён» v3: одна аккуратная строка ~72px — галочка с волной, кто, четыре факта с подписями, действия; на узком факты уходят второй строкой */
+.no-saved.sv2{container-type:inline-size;position:relative;display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:12px 16px;padding:14px 18px 14px 16px;border-radius:20px;overflow:hidden}
+.sv2-ic{position:relative;flex:none;width:44px;height:44px;display:grid;place-items:center;border-radius:50%;background:var(--ov-ink);color:var(--ov-ink-fg);box-shadow:0 10px 20px -12px rgba(10,10,10,.8)}
+.sv2-ic::after{content:"";position:absolute;inset:0;border-radius:50%;animation:imWave 2.2s cubic-bezier(.25,.6,.35,1) 3}
+.sv2-t{flex:0 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px}
+.sv2-t>b{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:600;letter-spacing:-.015em;color:var(--ov-text);white-space:nowrap}
+.sv2-t>b i{padding:2px 8px;border-radius:99px;background:var(--ov-stone);font-style:normal;font-size:10.5px;font-weight:600;letter-spacing:0;color:var(--ov-text)}
+.sv2-who{display:flex;align-items:center;gap:7px;min-width:0;font-size:13px;white-space:nowrap}
+.sv2-who .av{flex:none;width:20px;height:20px;display:grid;place-items:center;border-radius:50%;background:var(--ov-stone);font-size:10.5px;font-weight:700;color:var(--ov-text)}
+.sv2-who .nm{min-width:0;font-weight:600;color:var(--ov-text);overflow:hidden;text-overflow:ellipsis}
+.sv2-who .ph{flex:none;font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ov-mute)}
+.sv2-f{flex:1 1 auto;min-width:0;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,auto);justify-content:center;align-items:stretch;margin:0 4px;border-radius:14px;background:color-mix(in srgb,var(--ov-text) 3.5%,var(--ov-paper));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ov-text) 6%,transparent)}
+.sv2-f>span{min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:8px 16px}
+.sv2-f>span+span{box-shadow:inset 1px 0 0 color-mix(in srgb,var(--ov-text) 8%,transparent)}
+.sv2-f small{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--ov-mute);white-space:nowrap}
+.sv2-f b{font-size:15px;font-weight:600;letter-spacing:-.01em;color:var(--ov-text);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sv2-f .owe b{color:#9C3B2E}
+.sv2-a{flex:none;display:flex;align-items:center;gap:6px;margin-left:auto;padding-right:26px}
+.sv2-a .no-btn{height:38px;padding:0 14px;font-size:13px}
+.sv2-a .no-btn.ghost{padding:0 10px}
+.sv2-x{position:absolute;top:8px;right:8px;width:26px;height:26px;display:grid;place-items:center;border:0;border-radius:8px;background:none;color:var(--ov-mute);cursor:pointer;transition:background .2s,color .2s}
+.sv2-x:hover{background:var(--ov-stone);color:var(--ov-text)}
+@container (max-width:1060px){.sv2-f{order:3;flex-basis:100%;margin:0;grid-auto-columns:minmax(0,1fr);justify-content:stretch}.sv2-a{padding-right:30px}}
+@container (max-width:600px){.sv2-f{grid-auto-flow:row;grid-template-columns:repeat(2,minmax(0,1fr))}.sv2-f>span:nth-child(3){box-shadow:inset 0 1px 0 color-mix(in srgb,var(--ov-text) 8%,transparent)}.sv2-f>span:nth-child(4){box-shadow:inset 1px 0 0 color-mix(in srgb,var(--ov-text) 8%,transparent),inset 0 1px 0 color-mix(in srgb,var(--ov-text) 8%,transparent)}.sv2-a{order:4;width:100%;padding:0}.sv2-a .no-btn{flex:1;justify-content:center;padding:0 8px}.sv2-who .ph{display:none}.sv2-t{padding-right:28px}}
+@media (prefers-reduced-motion:reduce){.sv2-ic::after{animation:none}}
+/* v3: клиент — кликабельная строка (открывает карточку), телефон только когда факты во второй строке; факты на всю свободную ширину */
+.sv2-t{max-width:280px}
+.sv2-who{display:flex;align-items:center;gap:7px;min-width:0;max-width:100%;margin:0 0 0 -4px;padding:2px 8px 2px 4px;border:0;border-radius:99px;background:none;font:inherit;font-size:13px;color:var(--ov-text);cursor:pointer;white-space:nowrap;transition:background .2s ease}
+.sv2-who:hover{background:var(--ov-stone)}
+.sv2-who>svg{flex:none;color:var(--ov-mute);transition:transform .25s cubic-bezier(.2,.8,.2,1)}
+.sv2-who:hover>svg{transform:translateX(2px);color:var(--ov-text)}
+.sv2-who i{flex:none;padding:1px 7px;border-radius:99px;background:var(--ov-stone);font-style:normal;font-size:10.5px;font-weight:600}
+.sv2-who:hover i{background:var(--ov-paper)}
+.sv2-who .ph{display:none}
+.sv2-f{justify-content:stretch;grid-auto-columns:minmax(0,1fr)}
+.sv2-f>span{padding:8px 14px}
+.sv2-f b{font-size:14.5px}
+@container (max-width:1060px){.sv2-who .ph{display:inline}.sv2-t{max-width:none;flex:1}}
+@container (max-width:600px){.sv2-who .ph{display:none}}
+
+/* «Заказ сохранён» v4: сверху крупно клиент (аватар с галочкой, имя, телефон), под ним «Заказ сохранён»; справа — кнопки */
+.no-saved.sv4{container-type:inline-size;position:relative;display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:12px 14px;padding:14px 14px 14px 16px;border-radius:20px;overflow:hidden}
+.sv4-av{position:relative;flex:none;width:50px;height:50px;display:grid;place-items:center;border-radius:50%;background:var(--ov-stone);font-size:19px;font-weight:700;color:var(--ov-text)}
+.sv4-av .ok{position:absolute;right:-3px;bottom:-3px;width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:var(--ov-ink);color:var(--ov-ink-fg);box-shadow:0 0 0 3px var(--ov-paper);animation:sv4Pop .45s .1s cubic-bezier(.3,1.5,.5,1) backwards}
+.sv4-av .ok::after{content:"";position:absolute;inset:0;border-radius:50%;animation:imWave 2.2s .5s cubic-bezier(.25,.6,.35,1) 3}
+@keyframes sv4Pop{from{transform:scale(0)}}
+.sv4-t{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
+.sv4-nm{display:flex;align-items:baseline;gap:10px;min-width:0;white-space:nowrap}
+.sv4-nm b{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:18px;font-weight:600;letter-spacing:-.02em;color:var(--ov-text)}
+.sv4-nm i{flex:none;align-self:center;padding:2px 8px;border-radius:99px;background:var(--ov-stone);font-style:normal;font-size:10.5px;font-weight:600;color:var(--ov-text)}
+.sv4-nm .ph{flex:none;font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--ov-mute)}
+.sv4-st{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500;color:var(--ov-mute)}
+.sv4-st svg{color:var(--ov-text)}
+.sv4-a{flex:none;display:flex;align-items:center;gap:6px;margin-left:auto}
+.sv4-a .no-btn{height:40px;padding:0 15px;font-size:13px}
+.sv4-a .no-btn.ghost{padding:0 11px}
+.sv4-x{width:32px;height:32px;margin-left:2px;display:grid;place-items:center;border:0;border-radius:10px;background:none;color:var(--ov-mute);cursor:pointer;transition:background .2s,color .2s}
+.sv4-x:hover{background:var(--ov-stone);color:var(--ov-text)}
+@container (max-width:700px){.sv4-a{width:100%}.sv4-a .no-btn{flex:1;justify-content:center;padding:0 8px}.sv4-x{position:absolute;top:10px;right:10px}.sv4-t{padding-right:34px}.sv4-nm{flex-wrap:wrap;row-gap:2px}.sv4-nm .ph{flex-basis:100%}}
+@media (prefers-reduced-motion:reduce){.sv4-av .ok,.sv4-av .ok::after{animation:none}}
+@container (max-width:700px){.sv4-t{flex:1 1 0}.sv4-av{width:44px;height:44px;font-size:17px}.sv4-nm b{font-size:16px}.sv4-w{display:none}.sv4-a{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:6px}.sv4-a .no-btn{min-width:0}}
+/* «Заказ сохранён»: действия спрятаны в «⋯» — аккуратное меню под кнопкой */
+.no-saved.sv4{overflow:visible;z-index:5}
+.sv4-a{position:relative;display:flex!important;width:auto!important;gap:4px}
+.sv4-more{width:36px;height:36px;display:grid;place-items:center;border:0;border-radius:11px;background:var(--ov-stone);color:var(--ov-text);cursor:pointer;transition:background .2s ease,color .2s ease}
+.sv4-more:hover{background:color-mix(in srgb,var(--ov-text) 12%,var(--ov-stone))}
+.sv4-more.on{background:var(--ov-ink);color:var(--ov-ink-fg)}
+.sv4-menu{position:absolute;top:calc(100% + 8px);right:0;z-index:30;min-width:236px;display:flex;flex-direction:column;padding:6px;border-radius:16px;background:var(--ov-paper);box-shadow:0 0 0 1px color-mix(in srgb,var(--ov-text) 8%,transparent),0 18px 40px -16px rgba(20,20,20,.35);transform-origin:top right;animation:sv4Menu .2s cubic-bezier(.2,.8,.2,1)}
+.sv4-menu button{display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;border:0;border-radius:10px;background:none;font:inherit;font-size:13.5px;font-weight:500;color:var(--ov-text);text-align:left;white-space:nowrap;cursor:pointer;transition:background .15s ease}
+.sv4-menu button:hover{background:var(--ov-stone)}
+.sv4-menu button svg{flex:none;color:var(--ov-mute)}
+.sv4-menu button:first-child{font-weight:600}
+.sv4-menu button:first-child svg{color:var(--ov-text)}
+@keyframes sv4Menu{from{opacity:0;transform:translateY(-4px) scale(.96)}}
+@container (max-width:700px){.sv4-a{position:static}.sv4-a .sv4-x{position:static}.sv4-t{padding-right:0}.sv4-menu{top:calc(100% - 6px);right:10px}}
+/* «Заказ сохранён»: в пустой середине — тихая «дорожка» с коробками, которые медленно плывут вправо; края тают */
+.sv4-bg{position:absolute;top:0;bottom:0;left:46%;right:150px;pointer-events:none;-webkit-mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent);mask-image:linear-gradient(90deg,transparent,#000 22%,#000 78%,transparent)}
+.sv4-bg::before{content:"";position:absolute;left:0;right:0;top:50%;height:1.5px;margin-top:-.75px;background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ov-text) 14%,transparent) 0 6px,transparent 6px 12px);animation:sv4Dash 1.6s linear infinite}
+.sv4-bg i{position:absolute;top:50%;left:0;width:26px;height:26px;margin:-13px 0 0 -13px;display:grid;place-items:center;border-radius:8px;background:var(--ov-paper);color:color-mix(in srgb,var(--ov-text) 45%,transparent);box-shadow:0 0 0 1px color-mix(in srgb,var(--ov-text) 10%,transparent),0 4px 10px -6px rgba(20,20,20,.25);animation:sv4Run 10.5s linear infinite}
+.sv4-bg i:nth-child(2){animation-delay:-3.5s}
+.sv4-bg i:nth-child(3){animation-delay:-7s}
+@keyframes sv4Run{from{left:0}to{left:100%}}
+@keyframes sv4Dash{to{background-position:12px 0}}
+.sv4>*:not(.sv4-bg){position:relative;z-index:1}
+.sv4>.sv4-a{z-index:3}
+@container (max-width:700px){.sv4-bg{display:none}}
+@media (prefers-reduced-motion:reduce){.sv4-bg i,.sv4-bg::before{animation:none}}
+/* «Заказ сохранён»: в середине — путь заказа Заказан → В пути → На складе → Выдан; первая точка горит, по пунктиру бежит мягкий блик */
+.sv4-bg{display:none}
+.sv4-t{flex:0 1 auto}
+.sv4-rt{position:relative;flex:1 1 320px;max-width:560px;min-width:240px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:0 auto;padding:2px 0}
+.sv4-rt::before{content:"";position:absolute;left:12.5%;right:12.5%;top:15px;height:1.5px;background:repeating-linear-gradient(90deg,color-mix(in srgb,var(--ov-text) 16%,transparent) 0 5px,transparent 5px 10px)}
+.sv4-rt .st{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;animation:fn2In .5s cubic-bezier(.2,.8,.2,1) backwards;animation-delay:calc(var(--i) * 90ms + .2s)}
+.sv4-rt .st i{width:28px;height:28px;display:grid;place-items:center;border-radius:50%;background:var(--ov-paper);color:color-mix(in srgb,var(--ov-text) 40%,transparent);box-shadow:0 0 0 1.5px color-mix(in srgb,var(--ov-text) 12%,transparent)}
+.sv4-rt .st small{font-size:11px;font-weight:500;color:var(--ov-mute);white-space:nowrap}
+.sv4-rt .st.on i{background:var(--ov-ink);color:var(--ov-ink-fg);box-shadow:0 6px 14px -8px rgba(10,10,10,.8);animation:imWave 2.4s cubic-bezier(.25,.6,.35,1) infinite}
+.sv4-rt .st.on small{color:var(--ov-text);font-weight:600}
+.sv4-rt .cm{position:absolute;top:13px;left:12.5%;width:56px;height:6px;margin-left:-28px;border-radius:6px;background:radial-gradient(closest-side,color-mix(in srgb,var(--ov-ink) 55%,transparent),transparent);filter:blur(.5px);opacity:0;animation:sv4Comet 3.6s cubic-bezier(.45,0,.55,1) .8s infinite}
+@keyframes sv4Comet{0%{left:12.5%;opacity:0}12%{opacity:1}80%{opacity:.9}100%{left:87.5%;opacity:0}}
+.sv4-rt .st:not(.on) i{transition:color .3s,box-shadow .3s}
+@container (max-width:900px){.sv4-rt{display:none}}
+@media (prefers-reduced-motion:reduce){.sv4-rt .cm,.sv4-rt .st.on i,.sv4-rt .st{animation:none}}
+.sv4-rt .st{z-index:1}.sv4-rt .cm{z-index:0}
+
+/* «Заказ сохранён»: фон — тихий узор из иконок (как на «Выдаче»), медленно плывёт; слева, под текстом, тает; плюс мягкое свечение */
+.sv4-rt{display:none}
+.no-saved.sv4{background:radial-gradient(120% 160% at 72% 50%,color-mix(in srgb,var(--ov-text) 3.5%,var(--ov-paper)) 0%,var(--ov-paper) 70%)}
+.no-saved.sv4::after{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;border-radius:inherit;background:var(--ov-text);opacity:.075;-webkit-mask:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22280%22%20height%3D%22280%22%20viewBox%3D%220%200%20280%20280%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cg%20transform%3D%22translate(18%2020)%20rotate(-12%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M21%208%2012%203%203%208v8l9%205%209-5V8Z%22%2F%3E%3Cpath%20d%3D%22m3%208%209%205%209-5%22%2F%3E%3Cpath%20d%3D%22M12%2013v8%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(92%2014)%20rotate(10%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M19%2014c1.5-1.5%203-3.2%203-5.5A5.5%205.5%200%200%200%2016.5%203c-1.8%200-3%20.5-4.5%202-1.5-1.5-2.7-2-4.5-2A5.5%205.5%200%200%200%202%208.5c0%202.3%201.5%204%203%205.5l7%207Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(168%2022)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M14%2018V6a2%202%200%200%200-2-2H4a2%202%200%200%200-2%202v11a1%201%200%200%200%201%201h2%22%2F%3E%3Cpath%20d%3D%22M15%2018H9%22%2F%3E%3Cpath%20d%3D%22M19%2018h2a1%201%200%200%200%201-1v-3.65a1%201%200%200%200-.22-.62L18.3%209.38a1%201%200%200%200-.78-.38H14%22%2F%3E%3Cpath%20d%3D%22M19%2018a2%202%200%201%201-4%200%202%202%200%200%201%204%200Z%22%2F%3E%3Cpath%20d%3D%22M9%2018a2%202%200%201%201-4%200%202%202%200%200%201%204%200Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(236%2040)%20rotate(14%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12%202l3.1%206.3%206.9%201-5%204.9%201.2%206.8L12%2017.8%205.8%2021l1.2-6.8-5-4.9%206.9-1z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(48%2086)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M17.5%2019H9a7%207%200%201%201%206.7-9h1.8a4.5%204.5%200%201%201%200%209Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(128%2082)%20rotate(-8%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M21%2011.5a8.4%208.4%200%200%201-9%208.4%208.6%208.6%200%200%201-3.8-.9L3%2021l1.9-5.2A8.4%208.4%200%200%201%2012.5%203%208.5%208.5%200%200%201%2021%2011.5Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(204%20104)%20rotate(8%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M3%208h18v4H3Z%22%2F%3E%3Cpath%20d%3D%22M12%208v13%22%2F%3E%3Cpath%20d%3D%22M19%2012v7a2%202%200%200%201-2%202H7a2%202%200%200%201-2-2v-7%22%2F%3E%3Cpath%20d%3D%22M7.5%208a2.5%202.5%200%200%201%200-5C10%203%2012%208%2012%208s2-5%204.5-5a2.5%202.5%200%200%201%200%205%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(12%20150)%20rotate(-20%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12%203a6%206%200%200%200%209%209%209%209%200%201%201-9-9Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(84%20150)%20rotate(12%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M7%202h10a2%202%200%200%201%202%202v16a2%202%200%200%201-2%202H7a2%202%200%200%201-2-2V4a2%202%200%200%201%202-2Z%22%2F%3E%3Cpath%20d%3D%22M12%2018h.01%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(150%20156)%20rotate(-14%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12.6%202.6A2%202%200%200%200%2011.2%202H4a2%202%200%200%200-2%202v7.2a2%202%200%200%200%20.6%201.4l8.7%208.7a2.4%202.4%200%200%200%203.4%200l6.6-6.6a2.4%202.4%200%200%200%200-3.4Z%22%2F%3E%3Cpath%20d%3D%22M9%207.5a1.5%201.5%200%201%201-3%200%201.5%201.5%200%200%201%203%200Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(226%20176)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M6%202%203%206v14a2%202%200%200%200%202%202h14a2%202%200%200%200%202-2V6l-3-4Z%22%2F%3E%3Cpath%20d%3D%22M3%206h18%22%2F%3E%3Cpath%20d%3D%22M16%2010a4%204%200%200%201-8%200%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(40%20222)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M3%2010%2012%203l9%207v10a1%201%200%200%201-1%201H4a1%201%200%200%201-1-1Z%22%2F%3E%3Cpath%20d%3D%22M9%2021v-6h6v6%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(112%20224)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M22%2012a10%2010%200%201%201-20%200%2010%2010%200%200%201%2020%200Z%22%2F%3E%3Cpath%20d%3D%22M12%206v6l4%202%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(186%20236)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M16%2012a4%204%200%201%201-8%200%204%204%200%200%201%208%200Z%22%2F%3E%3Cpath%20d%3D%22M12%202v2M12%2020v2M4.9%204.9l1.4%201.4M17.7%2017.7l1.4%201.4M2%2012h2M20%2012h2M4.9%2019.1l1.4-1.4M17.7%206.3l1.4-1.4%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(250%20250)%20rotate(10%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12%203v18%22%2F%3E%3Cpath%20d%3D%22M5%207h14%22%2F%3E%3Cpath%20d%3D%22m5%207-3%207a4%204%200%200%200%206%200Z%22%2F%3E%3Cpath%20d%3D%22m19%207-3%207a4%204%200%200%200%206%200Z%22%2F%3E%3Cpath%20d%3D%22M8%2021h8%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E") 0 0/230px repeat,linear-gradient(90deg,transparent 12%,#000 42%,#000 88%,transparent);-webkit-mask-composite:source-in;mask:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22280%22%20height%3D%22280%22%20viewBox%3D%220%200%20280%20280%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cg%20transform%3D%22translate(18%2020)%20rotate(-12%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M21%208%2012%203%203%208v8l9%205%209-5V8Z%22%2F%3E%3Cpath%20d%3D%22m3%208%209%205%209-5%22%2F%3E%3Cpath%20d%3D%22M12%2013v8%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(92%2014)%20rotate(10%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M19%2014c1.5-1.5%203-3.2%203-5.5A5.5%205.5%200%200%200%2016.5%203c-1.8%200-3%20.5-4.5%202-1.5-1.5-2.7-2-4.5-2A5.5%205.5%200%200%200%202%208.5c0%202.3%201.5%204%203%205.5l7%207Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(168%2022)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M14%2018V6a2%202%200%200%200-2-2H4a2%202%200%200%200-2%202v11a1%201%200%200%200%201%201h2%22%2F%3E%3Cpath%20d%3D%22M15%2018H9%22%2F%3E%3Cpath%20d%3D%22M19%2018h2a1%201%200%200%200%201-1v-3.65a1%201%200%200%200-.22-.62L18.3%209.38a1%201%200%200%200-.78-.38H14%22%2F%3E%3Cpath%20d%3D%22M19%2018a2%202%200%201%201-4%200%202%202%200%200%201%204%200Z%22%2F%3E%3Cpath%20d%3D%22M9%2018a2%202%200%201%201-4%200%202%202%200%200%201%204%200Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(236%2040)%20rotate(14%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12%202l3.1%206.3%206.9%201-5%204.9%201.2%206.8L12%2017.8%205.8%2021l1.2-6.8-5-4.9%206.9-1z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(48%2086)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M17.5%2019H9a7%207%200%201%201%206.7-9h1.8a4.5%204.5%200%201%201%200%209Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(128%2082)%20rotate(-8%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M21%2011.5a8.4%208.4%200%200%201-9%208.4%208.6%208.6%200%200%201-3.8-.9L3%2021l1.9-5.2A8.4%208.4%200%200%201%2012.5%203%208.5%208.5%200%200%201%2021%2011.5Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(204%20104)%20rotate(8%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M3%208h18v4H3Z%22%2F%3E%3Cpath%20d%3D%22M12%208v13%22%2F%3E%3Cpath%20d%3D%22M19%2012v7a2%202%200%200%201-2%202H7a2%202%200%200%201-2-2v-7%22%2F%3E%3Cpath%20d%3D%22M7.5%208a2.5%202.5%200%200%201%200-5C10%203%2012%208%2012%208s2-5%204.5-5a2.5%202.5%200%200%201%200%205%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(12%20150)%20rotate(-20%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12%203a6%206%200%200%200%209%209%209%209%200%201%201-9-9Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(84%20150)%20rotate(12%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M7%202h10a2%202%200%200%201%202%202v16a2%202%200%200%201-2%202H7a2%202%200%200%201-2-2V4a2%202%200%200%201%202-2Z%22%2F%3E%3Cpath%20d%3D%22M12%2018h.01%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(150%20156)%20rotate(-14%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12.6%202.6A2%202%200%200%200%2011.2%202H4a2%202%200%200%200-2%202v7.2a2%202%200%200%200%20.6%201.4l8.7%208.7a2.4%202.4%200%200%200%203.4%200l6.6-6.6a2.4%202.4%200%200%200%200-3.4Z%22%2F%3E%3Cpath%20d%3D%22M9%207.5a1.5%201.5%200%201%201-3%200%201.5%201.5%200%200%201%203%200Z%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(226%20176)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M6%202%203%206v14a2%202%200%200%200%202%202h14a2%202%200%200%200%202-2V6l-3-4Z%22%2F%3E%3Cpath%20d%3D%22M3%206h18%22%2F%3E%3Cpath%20d%3D%22M16%2010a4%204%200%200%201-8%200%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(40%20222)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M3%2010%2012%203l9%207v10a1%201%200%200%201-1%201H4a1%201%200%200%201-1-1Z%22%2F%3E%3Cpath%20d%3D%22M9%2021v-6h6v6%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(112%20224)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M22%2012a10%2010%200%201%201-20%200%2010%2010%200%200%201%2020%200Z%22%2F%3E%3Cpath%20d%3D%22M12%206v6l4%202%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(186%20236)%20rotate(0%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M16%2012a4%204%200%201%201-8%200%204%204%200%200%201%208%200Z%22%2F%3E%3Cpath%20d%3D%22M12%202v2M12%2020v2M4.9%204.9l1.4%201.4M17.7%2017.7l1.4%201.4M2%2012h2M20%2012h2M4.9%2019.1l1.4-1.4M17.7%206.3l1.4-1.4%22%2F%3E%3C%2Fg%3E%3Cg%20transform%3D%22translate(250%20250)%20rotate(10%2012%2012)%20scale(.95)%22%3E%3Cpath%20d%3D%22M12%203v18%22%2F%3E%3Cpath%20d%3D%22M5%207h14%22%2F%3E%3Cpath%20d%3D%22m5%207-3%207a4%204%200%200%200%206%200Z%22%2F%3E%3Cpath%20d%3D%22m19%207-3%207a4%204%200%200%200%206%200Z%22%2F%3E%3Cpath%20d%3D%22M8%2021h8%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E") 0 0/230px repeat,linear-gradient(90deg,transparent 12%,#000 42%,#000 88%,transparent);mask-composite:intersect;animation:sv4Drift 60s linear infinite}
+@keyframes sv4Drift{to{-webkit-mask-position:230px 0,0 0;mask-position:230px 0,0 0}}
+@media (prefers-reduced-motion:reduce){.no-saved.sv4::after{animation:none}}

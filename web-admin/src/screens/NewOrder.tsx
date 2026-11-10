@@ -13,7 +13,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiError } from "../api/client";
 import { createOrder, getCustomer, getSettings, listCustomers, type CustomerCard, type CustomerRow, type Item } from "../api/domain";
 import { MONO, css, mix } from "../design/css";
-import { I_ARROW_RIGHT, I_BOX, I_CLOSE, I_PLUS, I_USER, Svg } from "../design/icons";
+import { I_ARROW_RIGHT, I_BOX, I_CLOSE, I_PLUS, Svg } from "../design/icons";
 import { Page } from "../design/table";
 import { HButton, ST } from "../design/ui";
 import { cased, capFirst, parseMoney, som, todayIso, upper } from "../lib/cargo";
@@ -44,6 +44,13 @@ interface Saved {
   time: string;
   comment: string;
 }
+
+/** Только для локальной проверки вида: /new-order?saved-demo — вымышленный «сохранённый» заказ, в базу ничего не пишется. */
+const demoSaved = (): Saved | null => {
+  if (!import.meta.env.DEV || !new URLSearchParams(window.location.search).has("saved-demo")) return null;
+  const items = ["Кроссовки", "Рюкзак", "Чехол для телефона", "Наушники"].map((name) => ({ name })) as unknown as Item[];
+  return { id: 0, name: "Тестовый Клиент", phone: "+996 555 000 000", isNew: true, items, sum: 4850, paid: 1000, cost: null, profit: null, status: "ordered", date: todayIso(), time: "14:00", comment: "" };
+};
 
 interface Row {
   key: number;
@@ -258,7 +265,7 @@ export default function NewOrder({ isDesktop, toast }: { isDesktop: boolean; toa
   const [rate, setRate] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState<Saved | null>(null);
+  const [saved, setSaved] = useState<Saved | null>(demoSaved);
   const [details, setDetails] = useState(false);
 
   useEffect(() => {
@@ -941,63 +948,70 @@ const dateRu = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4
 /** Плашка «Заказ сохранён»: кому, сколько, оплата, что в заказе — и дальше: детали, ещё заказ, клиент. */
 function SavedBanner({ saved, onDetails, onAgain, onOpen, onClose }: { saved: Saved; onDetails: () => void; onAgain: () => void; onOpen: () => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLSpanElement>(null);
+  const [menu, setMenu] = useState(false);
+  useEffect(() => {
+    if (!menu) return;
+    const out = (e: MouseEvent) => !menuRef.current?.contains(e.target as Node) && setMenu(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setMenu(false);
+    document.addEventListener("mousedown", out);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", out);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [menu]);
   useEffect(() => {
     ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [saved]);
-  const pay = payState(saved);
-  const debt = Math.max(0, saved.sum - saved.paid);
-  const names = saved.items.map((i) => i.name);
-  const preview = names.slice(0, 3).join(" · ") + (names.length > 3 ? ` и ещё ${names.length - 3}` : "");
   return (
-    <div ref={ref} role="status" className="ov-card no-saved">
-      <span className="no-saved-ic">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="M20 6 9 17l-5-5" style={{ strokeDasharray: 24, strokeDashoffset: 24, animation: "checkDraw .4s .15s ease forwards" }} />
-        </svg>
-      </span>
-      <div className="no-saved-t">
-        <b>
-          Заказ сохранён
-          {saved.isNew && (
-            <i>
-              <Svg paths={I_USER} size={11} sw={2.4} />
-              новый клиент
-            </i>
-          )}
-        </b>
-        <small>
-          <span>{saved.name}</span>
-          {saved.phone && <span className="ph"> · {saved.phone}</span>}
-        </small>
-        <span className="no-saved-chips">
-          <em>
-            {saved.items.length} {plural(saved.items.length, "товар", "товара", "товаров")}
-          </em>
-          <em className="b">{som(saved.sum)}</em>
-          <em className={debt > 0.001 ? "owe" : ""}>{pay.label}</em>
-          <em>
-            {saved.date === todayIso() ? "сегодня" : dateRu(saved.date)} · {saved.time}
-          </em>
+    <div ref={ref} role="status" className="ov-card no-saved sv4">
+      <span className="sv4-av">
+        {(saved.name || "?").trim().charAt(0).toUpperCase()}
+        <span className="ok">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M20 6 9 17l-5-5" style={{ strokeDasharray: 24, strokeDashoffset: 24, animation: "checkDraw .45s .25s ease forwards" }} />
+          </svg>
         </span>
-        {preview && <span className="no-saved-pv">{preview}</span>}
-      </div>
-      <div className="no-saved-a">
-        <button type="button" className="no-btn dark" onClick={onDetails}>
-          <Svg paths={I_RECEIPT} size={14} sw={2} />
-          Детали заказа
+      </span>
+      <span className="sv4-t">
+        <span className="sv4-nm">
+          <b>{saved.name}</b>
+          {saved.isNew && <i>новый клиент</i>}
+          {saved.phone && <span className="ph">{saved.phone}</span>}
+        </span>
+        <span className="sv4-st">
+          Заказ сохранён
+        </span>
+      </span>
+      <span className="sv4-a" ref={menuRef}>
+        <button type="button" className={"sv4-more" + (menu ? " on" : "")} onClick={() => setMenu(!menu)} aria-label="Действия" aria-expanded={menu}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <circle cx="5" cy="12" r="1.9" />
+            <circle cx="12" cy="12" r="1.9" />
+            <circle cx="19" cy="12" r="1.9" />
+          </svg>
         </button>
-        <button type="button" className="no-btn" onClick={onAgain} title="Новый заказ этому же клиенту">
-          <Svg paths={I_PLUS} size={13} sw={2.2} />
-          Ещё этому клиенту
+        {menu && (
+          <span className="sv4-menu" role="menu">
+            <button type="button" role="menuitem" onClick={() => (setMenu(false), onDetails())}>
+              <Svg paths={I_RECEIPT} size={15} sw={2} />
+              Детали заказа
+            </button>
+            <button type="button" role="menuitem" onClick={() => (setMenu(false), onAgain())}>
+              <Svg paths={I_PLUS} size={15} sw={2.2} />
+              Ещё заказ этому клиенту
+            </button>
+            <button type="button" role="menuitem" onClick={() => (setMenu(false), onOpen())}>
+              <Svg paths={I_ARROW_RIGHT} size={15} sw={2.2} />
+              Карточка клиента
+            </button>
+          </span>
+        )}
+        <button type="button" className="sv4-x" onClick={onClose} aria-label="Скрыть" title="Скрыть">
+          <Svg paths={I_CLOSE} size={12} sw={2.4} />
         </button>
-        <button type="button" className="no-btn ghost" onClick={onOpen}>
-          Клиент
-          <Svg paths={I_ARROW_RIGHT} size={13} sw={2.2} />
-        </button>
-      </div>
-      <button type="button" className="no-saved-x" onClick={onClose} aria-label="Скрыть" title="Скрыть">
-        <Svg paths={I_CLOSE} size={13} sw={2.2} />
-      </button>
+      </span>
     </div>
   );
 }
