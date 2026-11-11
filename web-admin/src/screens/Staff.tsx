@@ -5,27 +5,26 @@
  * Справа — роли и права. Только администратор.
  */
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { apiError } from "../api/client";
 import { createUser, listUsers, updateUser, type User } from "../api/domain";
 import { useAuth } from "../auth/AuthContext";
-import { Empty, Tabs } from "../components/cargo";
+import { Empty } from "../components/cargo";
+import { HomeHead } from "./overview/Home";
 import CountUp from "../design/CountUp";
 import { css, mix } from "../design/css";
-import { I_CHECK, I_EYE, I_EYE_OFF, I_PLUS, I_SEARCH, Icon, Svg } from "../design/icons";
+import { I_CLOSE, I_EYE, I_EYE_OFF, I_PLUS, I_SEARCH, Icon, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { FieldLabel, HButton, ModalError, ModalCancel, ModalShell, btnPrimary, inputStyle } from "../design/ui";
+import { HButton, ModalError } from "../design/ui";
 import { date } from "../lib/cargo";
 
 type Toast = (k: "success" | "error", t: string) => void;
-type Filter = "all" | "active" | "off";
 
-const NUM = "font-variant-numeric:tabular-nums;letter-spacing:-.01em";
-
+// Монохром: роль различается оттенком, без цветных лент.
 const ROLE = {
-  admin: { label: "Администратор", short: "админ", fg: "var(--violet)", bg: "var(--violet-tint)", dot: "var(--violet-dot)", band: "linear-gradient(120deg,#A78BFA,#7C3AED)" },
-  staff: { label: "Сотрудник склада", short: "склад", fg: "var(--accent-strong)", bg: "var(--accent-tint)", dot: "var(--accent)", band: "linear-gradient(120deg,#6A8BFF,#3E63DD)" },
+  admin: { label: "Администратор", short: "админ", fg: "var(--ov-ink-fg)", bg: "var(--ov-ink)", dot: "var(--ov-ink-fg)", band: "var(--ov-ink)" },
+  staff: { label: "Сотрудник склада", short: "склад", fg: "var(--ov-text)", bg: "var(--ov-stone)", dot: "var(--ov-text)", band: "color-mix(in srgb,var(--ov-text) 12%,var(--ov-paper))" },
 } as const;
-const OFF_BAND = "linear-gradient(120deg,#CBD5E1,#94A3B8)";
 
 /** «В сети» — действие было в последние 15 минут. */
 const ONLINE_MIN = 15;
@@ -34,7 +33,6 @@ export default function Staff({ toast }: { isDesktop: boolean; toast: Toast }) {
   const { user: me } = useAuth();
   const [rows, setRows] = useState<User[] | null>(null);
   const [editing, setEditing] = useState<User | "new" | null>(null);
-  const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
 
   const reload = () =>
@@ -48,15 +46,6 @@ export default function Staff({ toast }: { isDesktop: boolean; toast: Toast }) {
     reload();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function toggleActive(u: User) {
-    try {
-      await updateUser(u.id, { is_active: !u.is_active });
-      await reload();
-      toast("success", u.is_active ? `${u.login} отключён — войти больше не сможет` : `${u.login} снова может входить`);
-    } catch (e) {
-      toast("error", apiError(e));
-    }
-  }
 
   const list = useMemo(() => rows ?? [], [rows]);
   const stats = {
@@ -75,74 +64,55 @@ export default function Staff({ toast }: { isDesktop: boolean; toast: Toast }) {
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     return list
-      .filter((u) => (filter === "all" || (filter === "active" ? u.is_active : !u.is_active)) && (!q || u.login.toLowerCase().includes(q) || u.full_name.toLowerCase().includes(q)))
+      .filter((u) => !q || u.login.toLowerCase().includes(q) || u.full_name.toLowerCase().includes(q))
       .sort((a, b) => Number(b.is_active) - Number(a.is_active) || (b.actions ?? 0) - (a.actions ?? 0));
-  }, [list, filter, query]);
+  }, [list, query]);
 
   return (
     <Page size="wide">
-      {/* Команда */}
+      <div className="ov sf2">
+      <div className="wx-head">
+        <HomeHead title="Сотрудники" />
+        <span className={"ov-live sf-online" + (stats.online ? "" : " idle")} title="Сотрудники, которые что-то делали за последние 15 минут">
+          <span className="ov-live-dot" aria-hidden />
+          <b>
+            <CountUp text={String(stats.online)} />
+          </b>
+          <span className="ov-live-l">в сети</span>
+        </span>
+      </div>
+
       <section className="sf-team sf-rise">
-        <div style={css("display:flex;align-items:center;gap:16px;min-width:0;flex:1 1 320px")}>
+        <div className="sf-row">
           <span className="sf-stack">
             {list
               .filter((u) => u.is_active)
               .slice(0, 5)
               .map((u) => (
-                <Avatar key={u.id} u={u} size={40} ring />
+                <Avatar key={u.id} u={u} size={42} ring />
               ))}
-            {!rows && <span className="sk" style={css("width:40px;height:40px;border-radius:50%")} />}
+            {!rows && <span className="sk" style={css("width:42px;height:42px;border-radius:50%")} />}
           </span>
-          <span style={css("min-width:0")}>
-            <span style={css("display:block;font-size:17px;font-weight:500;color:var(--text)")}>
-              Команда · <CountUp text={String(stats.total)} /> {plural(stats.total, "человек", "человека", "человек")}
-            </span>
-            <span style={css("display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px;font-size:12.5px;color:var(--text-3)")}>
-              <span style={css("display:inline-flex;align-items:center;gap:6px")}>
-                <span className="sf-live" />
-                сейчас в сети {stats.online}
+          <span className="sf-team-t">
+            <b>
+              Команда
+              <span className="n">
+                <CountUp text={String(stats.total)} />
               </span>
-              <span style={css("display:inline-flex;align-items:center;gap:6px")}>
-                <span style={mix("width:8px;height:8px;border-radius:50%", { background: ROLE.admin.dot })} />
-                администраторов {stats.admins}
-              </span>
-              <span style={css("display:inline-flex;align-items:center;gap:6px")}>
-                <span style={mix("width:8px;height:8px;border-radius:50%", { background: ROLE.staff.dot })} />
-                на складе {stats.staff}
-              </span>
-              {stats.total - stats.active > 0 && (
-                <span style={css("display:inline-flex;align-items:center;gap:6px")}>
-                  <span style={css("width:8px;height:8px;border-radius:50%;background:var(--text-5)")} />
-                  отключено {stats.total - stats.active}
-                </span>
-              )}
+            </b>
+            <span className="sf-sub">
+              {stats.admins} {stats.admins === 1 ? "администратор" : "администратора"} · {stats.staff} на складе
+              {stats.total - stats.active > 0 && <> · отключено {stats.total - stats.active}</>}
             </span>
           </span>
+          <label className="sf-search">
+            <span style={css("display:flex;color:var(--ov-mute)")}>
+              <Svg paths={I_SEARCH} size={15} />
+            </span>
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя или логин…" aria-label="Найти сотрудника" />
+          </label>
         </div>
-        <HButton onClick={() => setEditing("new")} className="sf-new" s="" hover="">
-          <Svg paths={I_PLUS} size={16} sw={2.4} />
-          Новый сотрудник
-        </HButton>
       </section>
-
-      <div style={css("display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0 14px")}>
-        <Tabs<Filter>
-          value={filter}
-          onChange={setFilter}
-          tabs={[
-            { key: "all", label: "Все", count: stats.total },
-            { key: "active", label: "Активные", count: stats.active, dot: "var(--green-dot)" },
-            { key: "off", label: "Отключённые", count: stats.total - stats.active, dot: "var(--text-5)" },
-          ]}
-        />
-        <span style={css("flex:1")} />
-        <label className="sf-search">
-          <span style={css("display:flex;color:var(--text-4)")}>
-            <Svg paths={I_SEARCH} size={15} />
-          </span>
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Имя или логин…" aria-label="Найти сотрудника" />
-        </label>
-      </div>
 
       <div className="sf-grid">
         {!rows ? (
@@ -172,10 +142,13 @@ export default function Staff({ toast }: { isDesktop: boolean; toast: Toast }) {
         ) : (
           <div className="sf-badges">
             {shown.map((u, i) => (
-              <Badge key={u.id} u={u} i={i} self={u.id === me?.id} best={best} onEdit={() => setEditing(u)} onToggle={() => toggleActive(u)} />
+              <Badge key={u.id} u={u} i={i} best={best} onEdit={() => setEditing(u)} />
             ))}
             <HButton onClick={() => setEditing("new")} className="sf-add sf-rise" s={{ ["--i" as string]: shown.length }} hover="">
-              <span style={css("width:52px;height:52px;border-radius:16px;display:grid;place-items:center;color:var(--accent);background:var(--accent-tint)")}>
+              <svg className="sf-dash" aria-hidden>
+                <rect x="1" y="1" rx="19" />
+              </svg>
+              <span style={css("width:52px;height:52px;border-radius:16px;display:grid;place-items:center;color:var(--ov-ink-fg);background:var(--ov-ink)")}>
                 <Svg paths={I_PLUS} size={22} sw={2.2} />
               </span>
               <span style={css("font-size:14px;font-weight:500;color:var(--text)")}>Добавить сотрудника</span>
@@ -198,6 +171,7 @@ export default function Staff({ toast }: { isDesktop: boolean; toast: Toast }) {
           }}
         />
       )}
+      </div>
     </Page>
   );
 }
@@ -205,11 +179,10 @@ export default function Staff({ toast }: { isDesktop: boolean; toast: Toast }) {
 // --- Пропуск сотрудника -------------------------------------------------------------------------
 
 const AVATAR_BG = [
-  "linear-gradient(135deg,#5B7CFA,#8B5CF6)",
-  "linear-gradient(135deg,#22C55E,#0EA5E9)",
-  "linear-gradient(135deg,#F59E0B,#EF4444)",
-  "linear-gradient(135deg,#EC4899,#8B5CF6)",
-  "linear-gradient(135deg,#06B6D4,#3B82F6)",
+  "linear-gradient(135deg,#3a3a37,#121212)",
+  "linear-gradient(135deg,#55534d,#1d1d1b)",
+  "linear-gradient(135deg,#2e2e2c,#0b0b0b)",
+  "linear-gradient(135deg,#6b6862,#2a2927)",
 ];
 
 /** Инициалы — только по словам из букв: «Азиз (склад, тест)» → «АС». */
@@ -238,7 +211,7 @@ function Avatar({ u, size, ring }: { u: User; size: number; ring?: boolean }) {
         width: size,
         height: size,
         fontSize: Math.round(size * 0.36),
-        background: u.is_active ? AVATAR_BG[n % AVATAR_BG.length] : "linear-gradient(135deg,#CBD5E1,#94A3B8)",
+        background: u.is_active ? AVATAR_BG[n % AVATAR_BG.length] : "linear-gradient(135deg,#b9b6ae,#8d8a83)",
         boxShadow: ring ? "0 0 0 3px var(--surface)" : undefined,
       })}
     >
@@ -247,81 +220,58 @@ function Avatar({ u, size, ring }: { u: User; size: number; ring?: boolean }) {
   );
 }
 
-/** «только что», «15 мин назад», «3 ч назад», «вчера», «5 дн. назад», дата. */
-function ago(iso: string | null | undefined): string {
-  if (!iso) return "ещё ничего не делал";
-  const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (min < 2) return "только что";
-  if (min < 60) return `${min} мин назад`;
-  const h = Math.round(min / 60);
-  if (h < 24) return `${h} ч назад`;
-  const d = Math.round(h / 24);
-  if (d === 1) return "вчера";
-  if (d < 30) return `${d} дн. назад`;
-  return date(iso.slice(0, 10));
-}
+// иконки показателей: действия, сканы, выдачи
+const K_ICON = ["M3 12h4l2.5-6.5 5 13 2.5-6.5H21", "M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8 M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8 M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16 M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16 M8.5 9v6 M12 9v6 M15.5 9v6", "M20.5 8 12 3.5 3.5 8v8l8.5 4.5 8.5-4.5V8z M3.5 8 12 12.5 20.5 8 M12 12.5V20.5"];
 
-function Badge({ u, i, self, best, onEdit, onToggle }: { u: User; i: number; self: boolean; best: { actions: number; scans: number; issues: number }; onEdit: () => void; onToggle: () => void }) {
+/** Карточка сотрудника — как профиль: обложка (роль, когда был), аватар по центру, имя и логин, три числа, «Изменить» и вход. */
+function Badge({ u, i, best, onEdit }: { u: User; i: number; best: { actions: number; scans: number; issues: number }; onEdit: () => void }) {
   const r = ROLE[u.role];
   const online = isOnline(u);
+  // кольца: насколько близко к лучшему в команде по каждому показателю
+  const rings: [string, number, number][] = [
+    ["действий", u.actions ?? 0, best.actions],
+    ["сканов", u.scans ?? 0, best.scans],
+    ["выдач", u.issues ?? 0, best.issues],
+  ];
   return (
-    <section className={"sf-badge sf-rise" + (u.is_active ? "" : " off")} style={{ ["--i" as string]: i }}>
-      <div className="sf-band" style={{ background: u.is_active ? r.band : OFF_BAND }}>
-        <span className="sf-hole" />
+    <section className={"sc2 sf-rise" + (u.role === "admin" ? " adm" : "") + (u.is_active ? "" : " off")} style={{ ["--i" as string]: i }}>
+      <div className="sc2-cover">
+        <span className="sc2-role">{u.is_active ? r.label : "Вход отключён"}</span>
+        <button type="button" className="sc2-gear" onClick={onEdit} title="Настроить сотрудника" aria-label="Настроить сотрудника">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+          </svg>
+        </button>
       </div>
-      <div className="sf-who">
-        <span style={css("position:relative;display:flex")}>
-          <Avatar u={u} size={64} ring />
-          <span className={"sf-presence" + (online ? " on" : "")} title={online ? "сейчас в сети" : "не в сети"} />
-        </span>
-        <span style={css("display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;margin-top:10px")}>
-          <span style={css("font-size:16px;font-weight:500;color:var(--text);text-align:center")}>{u.full_name || u.login}</span>
-          {self && <span className="sf-me">это вы</span>}
-        </span>
-        <span style={css("display:block;margin-top:2px;font-size:12.5px;color:var(--text-3)")}>@{u.login}</span>
-        <span
-          className="sf-role"
-          style={u.is_active ? { color: r.fg, background: r.bg } : { color: "var(--text-3)", background: "var(--hover)" }}
-        >
-          <span style={mix("width:7px;height:7px;border-radius:50%", { background: u.is_active ? r.dot : "var(--text-5)" })} />
-          {u.is_active ? r.label : "Вход отключён"}
-        </span>
-        <span style={css(NUM + ";display:block;margin-top:8px;font-size:12px;color:var(--text-4);line-height:1.5")}>
-          <span style={mix("", { color: online ? "var(--green)" : undefined })}>{online ? "в сети" : `был(а) ${ago(u.last_active_at)}`}</span>
-          {u.created_at && <> · в команде с {date(u.created_at.slice(0, 10))}</>}
-        </span>
+      <span className="sc2-av">
+        <Avatar u={u} size={78} />
+        {online && <span className="sc2-on" title="в сети" />}
+      </span>
+      <div className="sc2-id">
+        <b title={u.full_name || u.login}>{u.full_name || u.login}</b>
+        <small>
+          @{u.login}
+          {u.created_at && <> · с {date(u.created_at.slice(0, 10))}</>}
+        </small>
       </div>
-
-      <div className="sf-stats">
-        <Stat label="Действий" value={u.actions ?? 0} best={best.actions} grad="linear-gradient(90deg,#8FA6FF,#3E63DD)" />
-        <Stat label="Сканов" value={u.scans ?? 0} best={best.scans} grad="linear-gradient(90deg,#34D399,#16A34A)" />
-        <Stat label="Выдач" value={u.issues ?? 0} best={best.issues} grad="linear-gradient(90deg,#FBBF24,#F97316)" />
+      <div className="sc2-k">
+        {rings.map(([l, v], k) => (
+          <span key={l} className={v ? "" : "z"} style={{ ["--k" as string]: k }}>
+            <i>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d={K_ICON[k]} pathLength={1} />
+              </svg>
+            </i>
+            <b>
+              <CountUp text={v.toLocaleString("ru-RU")} />
+            </b>
+            <small>{l}</small>
+          </span>
+        ))}
       </div>
-
-      <div className="sf-foot">
-        <Switch on={u.is_active} disabled={self} onChange={onToggle} title={self ? "Нельзя отключить собственную учётную запись" : u.is_active ? "Отключить вход" : "Разрешить вход"} />
-        <span style={mix("min-width:0;font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis", { color: u.is_active ? "var(--green)" : "var(--text-4)" })}>
-          {u.is_active ? "Может входить" : "Вход отключён"}
-        </span>
-        <HButton onClick={onEdit} className="sf-edit" s="" hover="">
-          Изменить
-        </HButton>
-      </div>
+      <span className="sc2-wave" aria-hidden />
     </section>
-  );
-}
-
-function Stat({ label, value, best, grad }: { label: string; value: number; best: number; grad: string }) {
-  return (
-    <div className="sf-stat">
-      <span style={css("display:block;font-size:11.5px;color:var(--text-4)")}>{label}</span>
-      <span style={mix(NUM + ";display:block;margin-top:2px;font-size:18px;font-weight:500", { color: value ? "var(--text)" : "var(--text-5)" })}>
-        <CountUp text={String(value)} />
-      </span>
-      <span style={css("display:block;height:4px;margin-top:6px;border-radius:999px;background:var(--hover);overflow:hidden")}>
-        {value > 0 && <span className="bar-grow" style={mix("display:block;height:100%;border-radius:999px", { width: `${Math.max(6, Math.round((value / best) * 100))}%`, background: grad })} />}
-      </span>
-    </div>
   );
 }
 
@@ -335,7 +285,7 @@ function Switch({ on, disabled, onChange, title }: { on: boolean; disabled?: boo
       title={title}
       onClick={onChange}
       style={mix("position:relative;width:40px;height:24px;border:none;border-radius:12px;padding:0;transition:background .15s;flex:none", {
-        background: on ? "var(--green-dot)" : "var(--border-strong)",
+        background: on ? "var(--ov-ink)" : "color-mix(in srgb,var(--ov-text) 18%,var(--ov-paper))",
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.55 : 1,
       })}
@@ -351,74 +301,86 @@ function Switch({ on, disabled, onChange, title }: { on: boolean; disabled?: boo
 
 // --- Роли и права ---------------------------------------------------------------------------
 
-const RIGHTS: { label: string; staff: boolean }[] = [
-  { label: "Новый заказ, заказы, клиенты", staff: true },
-  { label: "Приём товара сканером", staff: true },
-  { label: "Выдача и приём оплаты", staff: true },
-  { label: "Склад, партии, финансы", staff: true },
-  { label: "Импорт Excel", staff: false },
-  { label: "Удаление записей и отмена оплат", staff: false },
-  { label: "Настройки: курс юаня", staff: false },
-  { label: "Сотрудники и журнал действий", staff: false },
+// права: иконка, подпись, доступно ли складу (админу — всё)
+const RIGHTS: { label: string; staff: boolean; d: string }[] = [
+  { label: "Заказы и клиенты", staff: true, d: "M6 6h15l-1.5 9h-12z M6 6 5 3H2 M9 20h.01 M18 20h.01" },
+  { label: "Приём сканером", staff: true, d: "M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8 M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8 M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16 M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16 M8.5 9v6 M12 9v6 M15.5 9v6" },
+  { label: "Выдача и оплата", staff: true, d: "M3 7h18v10H3z M3 11h18 M7 15h3" },
+  { label: "Склад и финансы", staff: true, d: "M21 8l-9-5-9 5v8l9 5 9-5z M3 8l9 5 9-5 M12 13v8" },
+  { label: "Импорт Excel", staff: false, d: "M14 3H6v18h12V7z M14 3v4h4 M9 13l3 3 3-3 M12 16v-5" },
+  { label: "Удаление и отмены", staff: false, d: "M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13 M10 11v6 M14 11v6" },
+  { label: "Курс юаня", staff: false, d: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z" },
+  { label: "Сотрудники и журнал", staff: false, d: "M16 20a4 4 0 0 0-8 0 M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M21 19a3.5 3.5 0 0 0-4-3.4 M17 5.5a2.5 2.5 0 0 1 0 5 M3 19a3.5 3.5 0 0 1 4-3.4 M7 5.5a2.5 2.5 0 0 0 0 5" },
 ];
 
 function RolesPanel() {
+  const chip = (r: (typeof RIGHTS)[number]) => (
+    <span key={r.label} className="rp2-chip">
+      <i>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d={r.d} />
+        </svg>
+      </i>
+      <span>{r.label}</span>
+    </span>
+  );
+  const staff = RIGHTS.filter((r) => r.staff);
+  const admin = RIGHTS.filter((r) => !r.staff);
   return (
-    <aside className="sf-roles sf-rise" style={{ ["--i" as string]: 2 }}>
-      <div style={css("display:flex;align-items:center;gap:11px")}>
-        <span style={css("width:36px;height:36px;border-radius:12px;flex:none;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#A78BFA,#6A8BFF)")}>
+    <aside className="sf-roles rp rp2 sf-rise" style={{ ["--i" as string]: 2 }}>
+      <div className="rp-head">
+        <span className="rp-ic">
           <Icon name="staff" size={18} />
         </span>
         <span style={css("min-width:0")}>
-          <span style={css("display:block;font-size:15px;font-weight:500;color:var(--text)")}>Роли и права</span>
-          <span style={css("display:block;font-size:12.5px;color:var(--text-4)")}>кто что может в панели</span>
+          <b>Роли и права</b>
+          <small>кто что может в панели</small>
         </span>
       </div>
-      <div className="sf-matrix">
-        <span />
-        {(["staff", "admin"] as const).map((k) => (
-          <span key={k} className="sf-col-head" style={{ color: ROLE[k].fg, background: ROLE[k].bg }}>
-            {ROLE[k].short}
+      <section className="rp2-role">
+        <header>
+          <i>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M21 8l-9-5-9 5v8l9 5 9-5z M3 8l9 5 9-5 M12 13v8" />
+            </svg>
+          </i>
+          <b>Сотрудник склада</b>
+          <em>
+            {staff.length} из {RIGHTS.length}
+          </em>
+        </header>
+        <div className="rp2-chips">{staff.map(chip)}</div>
+      </section>
+      <section className="rp2-role adm">
+        <header>
+          <i>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z M9 12l2 2 4-4" />
+            </svg>
+          </i>
+          <b>Администратор</b>
+          <em>все права</em>
+        </header>
+        <div className="rp2-chips">
+          <span className="rp2-chip all">
+            <i>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M12 5v14 M5 12h14" />
+              </svg>
+            </i>
+            <span>всё, что может сотрудник склада</span>
           </span>
-        ))}
-        {RIGHTS.map((r) => (
-          <Right key={r.label} label={r.label} staff={r.staff} />
-        ))}
-      </div>
-      <div style={css("margin-top:14px;padding:11px 13px;border-radius:12px;background:var(--surface-2);border:1px dashed var(--border-2);font-size:12.5px;color:var(--text-3);line-height:1.5")}>
-        Отключённый сотрудник не может войти, но всё, что он сделал, остаётся в журнале.
+          {admin.map(chip)}
+        </div>
+      </section>
+      <div className="rp-note">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M12 11v5 M12 8h.01" />
+        </svg>
+        <span>Отключённый сотрудник не может войти, но всё, что он сделал, остаётся в журнале.</span>
       </div>
     </aside>
   );
-}
-
-function Right({ label, staff }: { label: string; staff: boolean }) {
-  const mark = (ok: boolean) => (
-    <span className="sf-cell">
-      {ok ? (
-        <span style={css("width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:#fff;background:var(--green-dot)")}>
-          <Svg paths={I_CHECK} size={12} sw={3} />
-        </span>
-      ) : (
-        <span style={css("width:22px;height:22px;border-radius:50%;border:1.5px dashed var(--border-strong)")} />
-      )}
-    </span>
-  );
-  return (
-    <>
-      <span className="sf-cell sf-cell-label">{label}</span>
-      {mark(staff)}
-      {mark(true)}
-    </>
-  );
-}
-
-function plural(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
 }
 
 // --- Форма ----------------------------------------------------------------------------------
@@ -438,11 +400,17 @@ function StaffForm({
   const [login, setLogin] = useState(user?.login ?? "");
   const [fullName, setFullName] = useState(user?.full_name ?? "");
   const [role, setRole] = useState<"admin" | "staff">(user?.role ?? "staff");
+  const [active, setActive] = useState(user?.is_active ?? true);
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const strength = pwStrength(password);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [onClose]);
 
   async function save() {
     setError("");
@@ -451,7 +419,7 @@ function StaffForm({
     setBusy(true);
     try {
       if (user) {
-        await updateUser(user.id, { full_name: fullName, role, ...(password ? { password } : {}) });
+        await updateUser(user.id, { full_name: fullName, role, ...(password ? { password } : {}), ...(!self && active !== user.is_active ? { is_active: active } : {}) });
         onSaved(`Сотрудник ${user.login} сохранён`);
       } else {
         await createUser({ login: login.trim(), full_name: fullName, role, password });
@@ -463,126 +431,120 @@ function StaffForm({
     }
   }
 
-  return (
-    <ModalShell
-      title={user ? user.full_name || user.login : "Новый сотрудник"}
-      subtitle={user ? <>@{user.login} · {ROLE[user.role].label}</> : "Логин и пароль — для входа в панель"}
-      icon={<Icon name="staff" size={18} />}
-      tone={role === "admin" ? "violet" : "accent"}
-      onClose={onClose}
-      width={500}
-      footer={
-        <>
-          <ModalCancel>Отмена</ModalCancel>
-          <HButton onClick={save} disabled={busy} s={btnPrimary + ";min-width:130px"} hover="background:var(--accent-hover)">
-            {busy ? "Сохраняю…" : user ? "Сохранить" : "Создать сотрудника"}
-          </HButton>
-        </>
-      }
-    >
-      <div className="mf-body" onKeyDown={(e) => e.key === "Enter" && !busy && save()}>
-        <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:12px")}>
-          <label>
-            <FieldLabel>Логин</FieldLabel>
-            <input
-              value={login}
-              disabled={!!user}
-              autoFocus={!user}
-              autoCapitalize="off"
-              spellCheck={false}
-              placeholder="например, aibek"
-              onChange={(e) => setLogin(e.target.value)}
-              style={mix(inputStyle, user ? { opacity: 0.6 } : {})}
-            />
-          </label>
-          <label>
-            <FieldLabel>Имя</FieldLabel>
-            <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Айбек Асанов" style={css(inputStyle)} />
-          </label>
-        </div>
-
-        <div>
-          <FieldLabel>Роль</FieldLabel>
-          <div style={css("display:grid;grid-template-columns:1fr 1fr;gap:8px")}>
-            {(["staff", "admin"] as const).map((k) => {
-              const on = role === k;
-              const r = ROLE[k];
-              const locked = self && k === "staff";
-              return (
-                <button
-                  key={k}
-                  type="button"
-                  disabled={locked}
-                  title={locked ? "Нельзя снять с себя роль администратора" : undefined}
-                  onClick={() => setRole(k)}
-                  style={mix("text-align:left;padding:10px 12px;border-radius:10px;background:var(--surface);transition:border-color .12s,box-shadow .12s", {
-                    border: `1px solid ${on ? `color-mix(in srgb, ${r.dot} 50%, var(--surface))` : "var(--border-strong)"}`,
-                    boxShadow: on ? `0 0 0 3px color-mix(in srgb, ${r.dot} 14%, transparent)` : "none",
-                    cursor: locked ? "not-allowed" : "pointer",
-                    opacity: locked ? 0.5 : 1,
-                  })}
-                >
-                  <span style={css("display:flex;align-items:center;gap:7px;font-size:13px;font-weight:500")}>
-                    <span style={mix("width:9px;height:9px;border-radius:50%", { background: on ? r.dot : "var(--text-5)" })} />
-                    {r.label}
-                  </span>
-                  <span style={css("display:block;margin-top:3px;font-size:11.5px;color:var(--text-3)")}>
-                    {k === "admin" ? "все права, сотрудники, импорт" : "заказы, приём, выдача, оплаты"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <label>
-          <span style={css("display:flex;align-items:baseline;justify-content:space-between;gap:10px")}>
-            <FieldLabel>
-              Пароль {user && <span style={css("color:var(--text-4);font-weight:400")}>— пусто, чтобы не менять</span>}
-            </FieldLabel>
-            <HButton
-              onClick={(e) => {
-                e.preventDefault();
-                setPassword(makePassword());
-                setShowPw(true);
-              }}
-              className="au-reset"
-              s="margin-bottom:5px"
-              hover=""
-            >
-              придумать
-            </HButton>
+  const name = fullName.trim() || login.trim() || "Новый сотрудник";
+  const letter = (name.match(/\p{L}/u)?.[0] ?? "?").toUpperCase();
+  return createPortal(
+    <div className="md-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="md-dialog ovp sm2" role="dialog" aria-modal="true" aria-label={user ? "Сотрудник" : "Новый сотрудник"} style={{ width: 520 }}>
+        <div className={"sm2-cover" + (role === "admin" ? " adm" : "")}>
+          <span className="sm2-av">
+            {letter}
+            <i>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d={role === "admin" ? "M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z" : "M21 8l-9-5-9 5v8l9 5 9-5z M3 8l9 5 9-5 M12 13v8"} />
+              </svg>
+            </i>
           </span>
-          <div style={css("position:relative")}>
-            <input
-              type={showPw ? "text" : "password"}
-              value={password}
-              autoComplete="new-password"
-              placeholder="минимум 6 символов"
-              onChange={(e) => setPassword(e.target.value)}
-              style={css(inputStyle + ";padding-right:40px")}
-            />
-            <HButton
-              onClick={() => setShowPw(!showPw)}
-              title={showPw ? "Скрыть пароль" : "Показать пароль"}
-              s="position:absolute;right:4px;top:50%;transform:translateY(-50%);width:30px;height:28px;border:none;border-radius:6px;background:transparent;color:var(--text-4);cursor:pointer;display:flex;align-items:center;justify-content:center"
-              hover="color:var(--text)"
-            >
-              <Svg paths={showPw ? I_EYE_OFF : I_EYE} size={16} />
-            </HButton>
+          <span className="sm2-who">
+            <b>{name}</b>
+            <small>{login.trim() ? "@" + login.trim() : "логин для входа"}</small>
+          </span>
+          <button type="button" className="sm2-x" onClick={onClose} aria-label="Закрыть">
+            <Svg paths={I_CLOSE} size={14} sw={2.2} />
+          </button>
+        </div>
+        <div className="sm2-body" onKeyDown={(e) => e.key === "Enter" && !busy && save()}>
+          <div className="sm2-two">
+            <label className="sm2-f">
+              <span>Логин</span>
+              <input value={login} disabled={!!user} autoFocus={!user} autoCapitalize="off" spellCheck={false} placeholder="например, aibek" onChange={(e) => setLogin(e.target.value)} />
+            </label>
+            <label className="sm2-f">
+              <span>Имя</span>
+              <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Айбек Асанов" />
+            </label>
           </div>
-          {password && (
-            <span className="sf-pw" style={{ ["--c" as string]: strength.color }}>
-              {[0, 1, 2, 3].map((i) => (
-                <span key={i} className={i < strength.score ? "on" : ""} />
-              ))}
-              <span style={css("margin-left:6px;font-size:11.5px;color:var(--text-3);white-space:nowrap")}>{strength.label}</span>
+
+          <div className="sm2-f">
+            <span>Роль</span>
+            <div className="sm2-roles">
+              {(["staff", "admin"] as const).map((k) => {
+                const locked = self && k === "staff";
+                return (
+                  <button key={k} type="button" className={"sm2-role" + (role === k ? " on" : "")} disabled={locked} title={locked ? "Нельзя снять с себя роль администратора" : undefined} onClick={() => setRole(k)}>
+                    <i>
+                      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <path d={k === "admin" ? "M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z M9 12l2 2 4-4" : "M21 8l-9-5-9 5v8l9 5 9-5z M3 8l9 5 9-5 M12 13v8"} />
+                      </svg>
+                    </i>
+                    <span>
+                      <b>{ROLE[k].label}</b>
+                      <small>{k === "admin" ? "все права, сотрудники, импорт" : "заказы, приём, выдача, оплаты"}</small>
+                    </span>
+                    <em aria-hidden />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="sm2-f">
+            <span className="sm2-lh">
+              Пароль {user && <small>— пусто, чтобы не менять</small>}
+              <button
+                type="button"
+                className="sm2-gen"
+                onClick={() => {
+                  setPassword(makePassword());
+                  setShowPw(true);
+                }}
+              >
+                придумать
+              </button>
             </span>
+            <span className="sm2-pw">
+              <input type={showPw ? "text" : "password"} value={password} autoComplete="new-password" placeholder="минимум 6 символов" onChange={(e) => setPassword(e.target.value)} />
+              <button type="button" onClick={() => setShowPw(!showPw)} title={showPw ? "Скрыть пароль" : "Показать пароль"} aria-label={showPw ? "Скрыть пароль" : "Показать пароль"}>
+                <Svg paths={showPw ? I_EYE_OFF : I_EYE} size={16} />
+              </button>
+            </span>
+            {password && (
+              <span className="sf-pw" style={{ ["--c" as string]: strength.color }}>
+                {[0, 1, 2, 3].map((i) => (
+                  <span key={i} className={i < strength.score ? "on" : ""} />
+                ))}
+                <span style={css("margin-left:6px;font-size:11.5px;color:var(--ov-mute);white-space:nowrap")}>{strength.label}</span>
+              </span>
+            )}
+          </div>
+
+          {user && (
+            <div className={"sm2-acc" + (active ? " on" : "")}>
+              <i>
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d={active ? "M6 11h12v9H6z M8.5 11V8a3.5 3.5 0 0 1 6.8-1.2" : "M6 11h12v9H6z M8.5 11V8a3.5 3.5 0 0 1 7 0v3"} />
+                </svg>
+              </i>
+              <span>
+                <b>Доступ к панели</b>
+                <small>{self ? "свой вход отключить нельзя" : active ? "может входить и работать" : "войти не сможет, история останется"}</small>
+              </span>
+              <Switch on={active} disabled={self} onChange={() => setActive(!active)} title={active ? "Отключить вход" : "Разрешить вход"} />
+            </div>
           )}
-        </label>
-        <ModalError text={error} />
+          <ModalError text={error} />
+        </div>
+        <div className="sm2-foot">
+          <button type="button" className="sm2-cancel" onClick={onClose}>
+            Отмена
+          </button>
+          <button type="button" className="sm2-save" onClick={save} disabled={busy}>
+            {busy ? "Сохраняю…" : user ? "Сохранить" : "Создать сотрудника"}
+          </button>
+        </div>
       </div>
-    </ModalShell>
+    </div>,
+    document.body
   );
 }
 
