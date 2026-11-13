@@ -14,12 +14,6 @@
 
 <br><br>
 
-<img src="docs/readme/head-intro.webp" alt="Рабочее место карго: заказы, приём, склад, выдача, партии и прибыль" width="100%">
-
-<img src="docs/readme/features.webp" alt="Заказы, приём, выдача и оплата, клиенты, финансы, журнал" width="100%">
-
-<br><br>
-
 <img src="docs/readme/head-screens.webp" alt="Экраны: компьютер, светлая и тёмная тема" width="100%">
 
 <img src="docs/readme/screens/01-login.webp" alt="01 · Вход" width="100%">
