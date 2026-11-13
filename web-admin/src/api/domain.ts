@@ -966,10 +966,15 @@ export interface AuditEntry {
   item_customer_id: number | null;
   item_customer: string | null;
   customer_name: string | null;
+  customer_phone?: string | null;
+  item_customer_phone?: string | null;
+  order_customer_phone?: string | null;
   batch_name: string | null;
   target_login: string | null;
   order_customer_id: number | null;
   order_customer: string | null;
+  /** Товары записи о нескольких товарах (выдача, смена статуса, оплата) — названия и коды. */
+  items_info?: { id: number; name: string; code: string | null }[];
 }
 export interface AuditPage {
   rows: AuditEntry[];

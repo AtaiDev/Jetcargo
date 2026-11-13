@@ -203,6 +203,6 @@ customersRouter.post("/customers/:id/payments", (req, res) => {
       amount -= part;
     }
   });
-  audit(req, "payment", "customer", id, null, applied);
+  audit(req, "payment", "customer", id, null, { applied, method });
   res.json({ applied });
 });

@@ -110,7 +110,7 @@ try {
   spreadDates();
   await writeImportSample();
   console.log(`✓ Тестовая база готова: ${FILE}`);
-  console.log(`  клиентов ${s.customers}, товаров ${s.items}: ждут приёма ${s.ordered}, на складе ${s.inStock}, выдано ${s.issued}; выдач ${s.issues}, партий 3`);
+  console.log(`  клиентов ${s.customers}, товаров ${s.items}: ждут приёма ${s.ordered}, на складе ${s.inStock}, выдано ${s.issued}; выдач ${s.issues}, партий 12`);
   console.log(`  вход: логин и пароль из server/.env (${LOGIN}); сотрудники sklad и kassa — пароль ${STAFF_PASSWORD}`);
   console.log("  приём сканером: коды TEST001 … TEST010 ждут приёма, TEST050 — два товара одним кодом,");
   console.log("                  TEST100 уже на складе, TEST200 уже выдан, TEST999 — такого кода нет");
@@ -155,9 +155,9 @@ async function fill() {
   const A = (method, p, body) => call(admin, method, p, body);
 
   // Сотрудники: склад принимает, касса выдаёт — в журнале видно, кто что сделал.
-  await A("POST", "/users", { login: "sklad", full_name: "Азиз (склад, тест)", role: "staff", password: STAFF_PASSWORD });
-  await A("POST", "/users", { login: "kassa", full_name: "Айжан (касса, тест)", role: "staff", password: STAFF_PASSWORD });
-  await A("POST", "/users", { login: "stazher", full_name: "Стажёр (отключён, тест)", role: "staff", password: STAFF_PASSWORD, is_active: false });
+  await A("POST", "/users", { login: "sklad", full_name: "Азиз Бекмуратов", role: "staff", password: STAFF_PASSWORD });
+  await A("POST", "/users", { login: "kassa", full_name: "Айжан Сатыбалдиева", role: "staff", password: STAFF_PASSWORD });
+  await A("POST", "/users", { login: "stazher", full_name: "Нурбек Абылов", role: "staff", password: STAFF_PASSWORD, is_active: false });
   const sklad = await login("sklad", STAFF_PASSWORD);
   const kassa = await login("kassa", STAFF_PASSWORD);
   const S = (method, p, body) => call(sklad, method, p, body);
@@ -165,13 +165,23 @@ async function fill() {
 
   await A("PATCH", "/settings", { cny_rate: 12.6 });
 
-  const NAMES = [
-    "Айгерим Токтосунова", "Нурлан Абдыкадыров", "Жылдыз Асанова", "Бакыт Мамытов", "Айпери Садыкова",
-    "Эрмек Жумабеков", "Алина Ким", "Мирлан Осмонов", "Нургуль Бекешова", "Азамат Турсунов",
-    "Канышай Эсенова", "Тимур Исаков", "Гульнара Шаршеева", "Дастан Керимбеков", "Медина Абдраимова",
-    "Улан Сыдыков", "Салтанат Орозбекова", "Бекзат Алиев", "Элина Жээнбекова", "Адилет Касымов",
-    "Чолпон Бакирова", "Руслан Ибраимов",
-  ];
+  // ~80 вымышленных клиентов: имя + фамилия из списков, без совпадений. Первый — «Айгерим Токтосунова»
+  // (на неё опирается тестовый файл импорта).
+  const FM = ["Нурлан", "Бакыт", "Эрмек", "Мирлан", "Азамат", "Тимур", "Дастан", "Улан", "Бекзат", "Адилет", "Руслан", "Самат", "Бектур", "Талант", "Эмир", "Арсен", "Чынгыз", "Жанибек", "Кубат", "Марат", "Данияр", "Алмаз", "Эльдар", "Айбек", "Медер", "Урмат", "Темирлан"];
+  const FF = ["Жылдыз", "Айпери", "Алина", "Нургуль", "Канышай", "Гульнара", "Медина", "Салтанат", "Элина", "Чолпон", "Айсулуу", "Каныкей", "Бермет", "Асель", "Динара", "Назгуль", "Айжамал", "Сезим", "Айдана", "Мээрим", "Камила", "Альбина", "Толгонай", "Аделя", "Самира", "Бегимай"];
+  const SB = ["Абдыкадыр", "Асан", "Мамыт", "Садык", "Жумабек", "Осмон", "Бекеш", "Турсун", "Эсен", "Исак", "Шаршен", "Керимбек", "Абдраим", "Сыдык", "Орозбек", "Жээнбек", "Касым", "Бакир", "Ибраим", "Жапар", "Токтогул", "Асылбек", "Сатар", "Абыл", "Усен", "Карыбек", "Темир", "Арстанбек"];
+  const KO = ["Ким", "Пак", "Цой", "Ли", "Хан"];
+  const NAMES = ["Айгерим Токтосунова"];
+  for (let i = 0, seen = new Set(NAMES); NAMES.length < 80; i++) {
+    const female = i % 2 === 0;
+    const first = female ? FF[(i * 7) % FF.length] : FM[(i * 5) % FM.length];
+    const last = i % 13 === 6 ? KO[i % KO.length] : SB[(i * 11) % SB.length] + (female ? "ова" : "ов");
+    const name = `${first} ${last}`;
+    if (!seen.has(name)) {
+      seen.add(name);
+      NAMES.push(name);
+    }
+  }
   const GOODS = [
     ["Кроссовки беговые", 3200, 5400], ["Худи оверсайз", 1400, 2600], ["Наушники TWS", 900, 2100],
     ["Чехол для телефона", 350, 700], ["Рюкзак городской", 1500, 2900], ["Платье летнее", 1300, 2500],
@@ -180,10 +190,15 @@ async function fill() {
     ["Ночник-проектор", 700, 1400], ["Органайзер для косметики", 500, 1100], ["Пауэрбанк 20000 мАч", 1200, 2200],
     ["Кепка бейсбольная", 400, 900], ["Солнцезащитные очки", 600, 1300], ["Коврик для йоги", 800, 1600],
     ["Постельное бельё евро", 2200, 3900], ["Пуховик зимний", 4200, 6900], ["Игровая мышь", 1000, 2000],
+    ["Механическая клавиатура", 2300, 4200], ["Ортопедическая подушка", 1300, 2400], ["Детский самокат", 2600, 4300],
+    ["Блендер портативный", 900, 1800], ["Утюг отпариватель", 1600, 3000], ["Шапка вязаная", 450, 950],
+    ["Ветровка спортивная", 1800, 3200], ["Набор посуды", 2400, 4500], ["Лампа настольная", 1100, 2100],
+    ["Кошелёк кожаный", 700, 1500], ["Плед флисовый", 900, 1700], ["Фитнес-браслет", 1300, 2500],
+    ["Электробритва", 1700, 3300], ["Сумка шопер", 500, 1100], ["Детская куртка", 2100, 3800],
   ];
   const NOTES = ["цвет чёрный", "размер 42", "размер M", "белый, без логотипа", "подарочная упаковка", "проверить комплектность"];
-  // Коды с приставкой TEST — их не спутать с настоящими трек-номерами.
-  const code = () => `TEST${pick(["YT", "SF", "JT", "ZTO", "YD"])}${int(10000000, 99999999)}`;
+  // Трек-коды в виде настоящих (короткие TEST001… — отдельно, для ручной проверки сканера).
+  const code = () => `${pick(["YT", "JT", "SF", "ZTO", "YD"])}${int(1000, 9999)}${int(10000000, 99999999)}`;
   const local = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const daysAgo = (n) => {
     const d = new Date();
@@ -244,8 +259,8 @@ async function fill() {
     return out;
   };
   for (const c of customers) {
-    for (let o = 0, orders = int(1, 5); o < orders; o++) {
-      const age = Math.floor(Math.pow(rnd(), 1.5) * 120);
+    for (let o = 0, orders = int(2, 6); o < orders; o++) {
+      const age = Math.floor(Math.pow(rnd(), 1.4) * 180);
       await order(c, age, Array.from({ length: int(1, 4) }, () => line()));
     }
   }
@@ -264,10 +279,12 @@ async function fill() {
   const [t100] = await order(customers[1], 9, [{ ...line("TEST100"), name: "Электрочайник" }], "full");
   const [t200] = await order(customers[2], 30, [{ ...line("TEST200"), name: "Фен для волос" }], "full");
 
-  // Партии: старая (закроется), текущая и новая.
-  const b1 = await A("POST", "/batches", { name: "Партия №1 · Гуанчжоу (тест)" });
-  const b2 = await A("POST", "/batches", { name: "Партия №2 · Иу (тест)" });
-  const b3 = await A("POST", "/batches", { name: "Партия №3 · Урумчи (тест)" });
+  // Партии: раз в ~2 недели новая, по очереди из четырёх городов; товар попадает в партию по дате заказа.
+  const CITIES = ["Гуанчжоу", "Иу", "Урумчи", "Кашгар"];
+  const BATCHES = 12;
+  const batches = [];
+  for (let k = 0; k < BATCHES; k++) batches.push(await A("POST", "/batches", { name: `Партия №${k + 1} · ${CITIES[k % CITIES.length]}` }));
+  const batchFor = (age) => (age <= 5 ? (rnd() < 0.5 ? batches[BATCHES - 1] : undefined) : batches[Math.max(0, Math.min(BATCHES - 1, Math.floor((185 - age) / 15)))]);
 
   // Приём: старые заказы приходят почти все, свежие — реже. Часть принятого — без партии
   // (их видно в «Добавить товары в партию»).
@@ -277,22 +294,35 @@ async function fill() {
     if (fixed.has(it.id) || it.code === "TEST050") continue;
     const chance = it.age > 20 ? 0.95 : it.age > 8 ? 0.7 : it.age > 3 ? 0.35 : 0.1;
     if (rnd() >= chance) continue;
-    const batch = it.age > 45 ? b1.id : it.age > 15 ? b2.id : it.age > 5 && rnd() < 0.7 ? b3.id : undefined;
-    await (rnd() < 0.75 ? S : A)("POST", "/scan", { code: it.code, ...(batch ? { batch_id: batch } : {}) });
+    const batch = batchFor(it.age);
+    await (rnd() < 0.75 ? S : A)("POST", "/scan", { code: it.code, ...(batch ? { batch_id: batch.id } : {}) });
     arrived.push(it);
   }
-  await S("POST", "/scan", { code: "TEST100", batch_id: b3.id });
-  await S("POST", "/scan", { code: "TEST200", batch_id: b2.id });
+  await S("POST", "/scan", { code: "TEST100", batch_id: batches[BATCHES - 1].id });
+  await S("POST", "/scan", { code: "TEST200", batch_id: batches[BATCHES - 3].id });
   arrived.push({ ...t100 }, { ...t200 });
   // Ошибочные и повторные сканы — для истории склада.
   for (const c of ["TEST0000000", "TESTSF123", "TESTYT0000"]) await S("POST", "/scan", { code: c });
   for (const it of arrived.slice(0, 4)) await S("POST", "/scan", { code: it.code });
 
   // Суммы партий: выкуп веса, доставка, вес клиентам (в $ и сомах).
-  await A("PATCH", `/batches/${b1.id}`, { usd_rate: 87.3, buy_cur: "usd", buy_amount: 420, delivery_cur: "som", delivery_usd: 18500, client_cur: "som", client_amount: 61000, comment: "Тестовая партия: пришла полностью" });
-  await A("PATCH", `/batches/${b2.id}`, { buy_cur: "usd", buy_amount: 310, delivery_cur: "usd", delivery_usd: 150, client_cur: "som", client_amount: 42500 });
-  await A("PATCH", `/batches/${b3.id}`, { buy_cur: "som", buy_amount: 16800 });
-  await A("PATCH", `/batches/${b1.id}`, { status: "closed" });
+  for (const [k, b] of batches.entries()) {
+    if (k === BATCHES - 1) {
+      await A("PATCH", `/batches/${b.id}`, { buy_cur: "som", buy_amount: round10(int(14000, 21000)) });
+      continue;
+    }
+    await A("PATCH", `/batches/${b.id}`, {
+      ...(k === 0 ? { usd_rate: 87.3 } : {}),
+      buy_cur: "usd",
+      buy_amount: int(260, 640),
+      ...(k % 2 ? { delivery_cur: "usd", delivery_usd: int(120, 260) } : { delivery_cur: "som", delivery_usd: round10(int(12000, 24000)) }),
+      client_cur: "som",
+      client_amount: round10(int(38000, 96000)),
+      ...(k === 0 ? { comment: "Пришла полностью" } : {}),
+    });
+  }
+  // Старые партии закрыты, две последние — в работе.
+  for (const b of batches.slice(0, BATCHES - 2)) await A("PATCH", `/batches/${b.id}`, { status: "closed" }).catch(() => undefined);
 
   // Предоплаты и оплаты долга отдельными платежами (наличные, карта, перевод).
   const items = async (cid) => (await A("GET", `/items?customer_id=${cid}&limit=500`)).rows;
@@ -310,7 +340,7 @@ async function fill() {
   // Оплата долга одной суммой — распределяется по товарам клиента.
   for (const c of customers.filter((_, i) => i % 5 === 1)) {
     const debt = (await items(c.id)).filter((x) => x.status !== "issued").reduce((s, x) => s + x.debt, 0);
-    if (debt >= 200) await K("POST", `/customers/${c.id}/payments`, { amount: round10(debt * 0.6), method: "transfer", comment: "оплата долга (тест)" });
+    if (debt >= 200) await K("POST", `/customers/${c.id}/payments`, { amount: round10(debt * 0.6), method: "transfer", comment: "оплата долга" });
   }
 
   // Выдача: большую часть давно пришедшего выдаём; часть — с неполной оплатой или в долг.
@@ -355,7 +385,7 @@ async function fill() {
     ws.addRow([daysAgo(35 - i), name, phone, goods, `TESTIMP${1000 + i}`, 1, price, real, "Заказан", i % 2 ? "Оплачено" : "Не оплачено"]);
   }
   const form = new FormData();
-  form.append("file", new Blob([await wb.xlsx.writeBuffer()]), "Импорт прошлого месяца (тест).xlsx");
+  form.append("file", new Blob([await wb.xlsx.writeBuffer()]), "Импорт за прошлый месяц.xlsx");
   const r = await fetch(`${API}/import/commit`, { method: "POST", headers: { Authorization: `Bearer ${admin}` }, body: form });
   if (!r.ok) throw new Error(`импорт: ${r.status} ${(await r.json().catch(() => ({}))).detail ?? ""}`);
 
@@ -411,7 +441,7 @@ function spreadDates() {
   const laterScans = db.prepare("SELECT id FROM scans WHERE order_item_id = ? AND id > (SELECT MIN(id) FROM scans WHERE order_item_id = ?)");
   const setScan = db.prepare("UPDATE scans SET scanned_at = ? WHERE id = ?");
   const payOrder = db.prepare("UPDATE payments SET paid_at = ?, created_at = ? WHERE order_item_id = ? AND comment = 'при оформлении заказа'");
-  const LUMP = "оплата долга (тест)";
+  const LUMP = "оплата долга";
   const payLater = db.prepare(
     `SELECT id FROM payments WHERE order_item_id = ? AND comment NOT IN ('при оформлении заказа', 'при выдаче', '${LUMP}') AND method <> 'import'`
   );
@@ -488,7 +518,7 @@ function spreadDates() {
 
   db.exec("UPDATE customers SET created_at = COALESCE((SELECT MIN(o.created_at) FROM orders o WHERE o.customer_id = customers.id), created_at)");
   db.exec("UPDATE batches SET created_at = (SELECT COALESCE(MIN(i.arrived_at), batches.created_at) FROM order_items i WHERE i.batch_id = batches.id)");
-  const start = new Date(now.getTime() - 125 * 86400000).toISOString();
+  const start = new Date(now.getTime() - 190 * 86400000).toISOString();
   db.prepare("UPDATE users SET created_at = ?").run(start);
   db.prepare("UPDATE imports SET created_at = COALESCE((SELECT MIN(o.created_at) FROM orders o WHERE o.import_id = imports.id), created_at)").run();
 

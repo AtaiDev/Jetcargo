@@ -321,7 +321,7 @@ itemsRouter.post("/items-bulk/pay", (req, res) => {
       );
     }
   });
-  audit(req, "payment", "item", null, `${list.length} товаров`, { amount, ids: list.map((i) => i.id) });
+  audit(req, "payment", "item", null, `${list.length} товаров`, { amount, ids: list.map((i) => i.id), method });
   res.json({ items: list.length, amount });
 });
 
@@ -358,7 +358,7 @@ itemsRouter.post("/items/:id/payments", (req, res) => {
     "INSERT INTO payments (order_item_id, amount, method, comment, user_id) VALUES (?, ?, ?, ?, ?)",
     id, amount, str(b.method, 20) || "cash", str(b.comment, 500), req.user!.id
   );
-  audit(req, "payment", "item", id, null, amount);
+  audit(req, "payment", "item", id, null, { amount, method: str(b.method, 20) || "cash" });
   res.json({ id: pid, item: itemOr404(id) });
 });
 

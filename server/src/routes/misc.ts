@@ -183,11 +183,46 @@ miscRouter.get("/audit", (req, res) => {
   const rows = all(
     `SELECT a.id, a.user_id, u.login AS user_login, u.full_name AS user_name, a.action, a.entity, a.entity_id,
             a.old_value, a.new_value, a.created_at, ${AUDIT_CAT} AS cat,
-            oi.name AS item_name, oi.code AS item_code, ic.id AS item_customer_id, ic.name AS item_customer,
-            c.name AS customer_name, b.name AS batch_name, tu.login AS target_login,
-            oc.id AS order_customer_id, oc.name AS order_customer
+            oi.name AS item_name, oi.code AS item_code, ic.id AS item_customer_id, ic.name AS item_customer, ic.phone AS item_customer_phone,
+            c.name AS customer_name, c.phone AS customer_phone, b.name AS batch_name, tu.login AS target_login,
+            oc.id AS order_customer_id, oc.name AS order_customer, oc.phone AS order_customer_phone
        ${from} ${where} ORDER BY a.id DESC LIMIT ? OFFSET ?`,
     ...params, limit, offset
   );
+  // Записи сразу о нескольких товарах (выдача, смена статуса, оплата) — подставляем названия и коды, чтобы журнал показывал, что именно.
+  const wanted = new Set<number>();
+  const lists = rows.map((r) => {
+    try {
+      const v = r.new_value ? JSON.parse(String(r.new_value)) : null;
+      const list: unknown = Array.isArray(v?.items) ? v.items : Array.isArray(v?.ids) ? v.ids : null;
+      if (!Array.isArray(list)) return null;
+      const ids = list.filter((x): x is number => typeof x === "number");
+      ids.forEach((x) => wanted.add(x));
+      return ids;
+    } catch {
+      return null;
+    }
+  });
+  if (wanted.size) {
+    const ids = [...wanted].slice(0, 2000);
+    const info = new Map(all<{ id: number; name: string; code: string | null }>(`SELECT id, name, code FROM order_items WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids).map((x) => [x.id, x]));
+    rows.forEach((r, i) => {
+      const list = lists[i];
+      if (list) (r as Record<string, unknown>).items_info = list.map((id) => info.get(id)).filter(Boolean);
+    });
+  }
+  // Созданные заказы — их товары (по order_id), чтобы журнал показывал, что именно заказано.
+  const orderIds = rows.filter((r) => r.entity === "order" && typeof r.entity_id === "number").map((r) => Number(r.entity_id));
+  if (orderIds.length) {
+    const its = all<{ id: number; name: string; code: string | null; order_id: number }>(
+      `SELECT id, name, code, order_id FROM order_items WHERE order_id IN (${orderIds.map(() => "?").join(",")}) ORDER BY id`,
+      ...orderIds
+    );
+    rows.forEach((r) => {
+      if (r.entity !== "order") return;
+      const list = its.filter((x) => x.order_id === r.entity_id).map(({ id, name, code }) => ({ id, name, code }));
+      if (list.length) (r as Record<string, unknown>).items_info = list;
+    });
+  }
   res.json({ rows, total, counts, ...summary });
 });

@@ -27,13 +27,13 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { Confirm, MoneyInput } from "../components/cargo";
 import BulkBar, { useSelection } from "../components/BulkBar";
-import ItemModal from "../components/ItemModal";
+import ItemModal, { flashSaved } from "../components/ItemModal";
 import PhoneInput from "../components/PhoneInput";
 import CountUp from "../design/CountUp";
 import { MONO, css, mix } from "../design/css";
 import { I_BACK, I_CLOSE, I_PLUS, I_SEARCH, I_USER, Svg } from "../design/icons";
 import { Page } from "../design/table";
-import { FieldLabel, HButton, LoadError, ModalCancel, ModalError, ModalShell, btnPrimary, inputStyle } from "../design/ui";
+import { FieldLabel, HButton, LoadError, ModalError, ModalShell, inputStyle, useModalClose } from "../design/ui";
 import { METHOD_OPTIONS, date, num, parseMoney, profitOf, shortDateTime, som, todayIso } from "../lib/cargo";
 import { emit, itemMatches, onFocusItem, useDebounced, useRefresh, useSearchHits } from "../lib/events";
 import SlideTabs from "../components/SlideTabs";
@@ -964,7 +964,6 @@ export function CustomerDetail({ toast }: { isDesktop: boolean; toast: Toast }) 
             onClose={() => setEditing(false)}
             onSaved={() => {
               setEditing(false);
-              toast("success", "Клиент сохранён");
               load();
               emit("cargo:changed");
             }}
@@ -975,9 +974,8 @@ export function CustomerDetail({ toast }: { isDesktop: boolean; toast: Toast }) 
             customer={c}
             debt={t.debt}
             onClose={() => setPaying(false)}
-            onPaid={(amount) => {
+            onPaid={() => {
               setPaying(false);
-              toast("success", `Оплата ${som(amount)} принята`);
               emit("cargo:changed");
             }}
           />
@@ -985,10 +983,44 @@ export function CustomerDetail({ toast }: { isDesktop: boolean; toast: Toast }) 
         {deleting && (
           <Confirm
             title="Удалить клиента?"
+            confirmLabel="Удалить клиента"
             text={
-              <>
-                «{c.name}» и все его товары ({t.items}) пропадут из списков и отчётов. Записи останутся в базе (мягкое удаление).
-              </>
+              <div className="dcu">
+                <div className="dcu-card">
+                  <Avatar name={c.name} size={44} />
+                  <span className="dcu-who">
+                    <b>{c.name}</b>
+                    {c.phone && <small>{c.phone}</small>}
+                  </span>
+                  <span className="dcu-n">
+                    <i>
+                      <Svg paths={CD_IC.box} size={15} sw={1.9} />
+                    </i>
+                    <b>{t.items}</b>
+                    <small>{plural(t.items, "товар", "товара", "товаров")}</small>
+                  </span>
+                </div>
+                <div className="dcu-list">
+                  <span className="dcu-row bad">
+                    <i>
+                      <Svg paths={[["path", { d: "M10.73 5.08a10.74 10.74 0 0 1 11.2 6.57 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-1.44 2.49" }], ["path", { d: "M14.08 14.16a3 3 0 0 1-4.24-4.24" }], ["path", { d: "M17.48 17.5a10.75 10.75 0 0 1-15.42-5.15 1 1 0 0 1 0-.7 10.75 10.75 0 0 1 4.45-5.14" }], ["path", { d: "m2 2 20 20" }]]} size={16} sw={1.8} />
+                    </i>
+                    <span>
+                      <b>Скроется</b>
+                      <small>из списков и отчётов вместе с товарами</small>
+                    </span>
+                  </span>
+                  <span className="dcu-row ok">
+                    <i>
+                      <Svg paths={[["rect", { x: 2.5, y: 3.5, width: 19, height: 5, rx: 1.5 }], ["path", { d: "M4.5 8.5v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-10" }], ["path", { d: "M10 12.5h4" }]]} size={16} sw={1.8} />
+                    </i>
+                    <span>
+                      <b>Сохранится</b>
+                      <small>все записи и история остаются в базе</small>
+                    </span>
+                  </span>
+                </div>
+              </div>
             }
             onClose={() => setDeleting(false)}
             onConfirm={async () => {
@@ -1283,6 +1315,10 @@ function CustomerForm({
   onClose: () => void;
   onSaved: (c: Customer) => void;
 }) {
+  // после сохранения: кнопка «Сохранено», пауза, плавное закрытие окна, затем onSaved (как в карточке товара)
+  const savedRef = useRef<Customer | null>(null);
+  const closeRef = useRef<() => void>(() => {});
+  const [saved, setSaved] = useState(false);
   const [f, setF] = useState({
     name: customer?.name ?? "",
     phone: customer?.phone ?? "",
@@ -1295,10 +1331,15 @@ function CustomerForm({
 
   async function save() {
     setError("");
+    if (savedRef.current) return;
     if (!f.name.trim()) return setError("Укажите имя клиента");
     setBusy(true);
     try {
-      onSaved(customer ? await updateCustomer(customer.id, f) : await createCustomer(f));
+      savedRef.current = customer ? await updateCustomer(customer.id, f) : await createCustomer(f);
+      setBusy(false);
+      setSaved(true);
+      if (customer) flashSaved();
+      window.setTimeout(() => closeRef.current(), 750);
     } catch (e) {
       setError(apiError(e));
       setBusy(false);
@@ -1309,23 +1350,40 @@ function CustomerForm({
     <ModalShell
       title={customer ? "Изменить клиента" : "Новый клиент"}
       subtitle={customer ? "Имя, телефон и заметки — видны во всех заказах клиента" : "Достаточно имени — остальное можно добавить позже"}
-      icon={<Svg paths={I_USER} size={18} />}
-      onClose={onClose}
+      icon={<Svg paths={[["circle", { cx: 12, cy: 8, r: 4 }], ["path", { d: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" }]]} size={18} />}
+      onClose={() => (savedRef.current ? onSaved(savedRef.current) : onClose())}
       width={480}
       footer={
         <>
-          <ModalCancel>Отмена</ModalCancel>
-          <HButton onClick={save} disabled={busy} s={btnPrimary + ";min-width:130px"} hover="background:var(--accent-hover)">
-            {busy ? "Сохраняю…" : customer ? "Сохранить" : "Создать клиента"}
+          <HButton onClick={save} disabled={busy || saved} className={"itm-save dirty mf-save" + (busy ? " busy" : "") + (saved ? " saved" : "")} s="" hover="">
+            <span className="itm-save-ic" aria-hidden>
+              {busy ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                  <path d="M21 12a9 9 0 1 1-6.2-8.6" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m5 12.5 4.5 4.5L19 7.5" pathLength={1} />
+                </svg>
+              )}
+            </span>
+            <span>{busy ? "Сохраняю…" : saved ? (customer ? "Сохранено" : "Создано") : customer ? "Сохранить" : "Создать клиента"}</span>
           </HButton>
         </>
       }
     >
       <form
-        className="mf-body"
+        className="mf-body mf-cust"
         onSubmit={(e) => {
           e.preventDefault();
           if (!busy) save();
+        }}
+        onKeyDown={(e) => {
+          // Enter в любом поле (кроме комментария) — сохранить
+          if (e.key === "Enter" && !e.shiftKey && (e.target as HTMLElement).tagName === "INPUT") {
+            e.preventDefault();
+            if (!busy) save();
+          }
         }}
       >
         {/* Как клиент будет выглядеть в списках — меняется по мере ввода */}
@@ -1343,7 +1401,7 @@ function CustomerForm({
         </div>
         <label>
           <FieldLabel>Имя</FieldLabel>
-          <input autoFocus value={f.name} onChange={set("name")} placeholder="например, Айгерим Садыкова" style={css(inputStyle)} />
+          <input value={f.name} onChange={set("name")} placeholder="например, Айгерим Садыкова" style={css(inputStyle)} />
         </label>
         <div className="mf-grid2">
           <label>
@@ -1361,9 +1419,16 @@ function CustomerForm({
         </label>
         <ModalError text={error} />
         <button type="submit" hidden />
+        <CloseGrab r={closeRef} />
       </form>
     </ModalShell>
   );
+}
+
+/** Достаёт функцию плавного закрытия окна (она доступна только внутри ModalShell). */
+function CloseGrab({ r }: { r: { current: () => void } }) {
+  r.current = useModalClose();
+  return null;
 }
 
 const PAY_METHODS = METHOD_OPTIONS;
@@ -1389,16 +1454,24 @@ function PayModal({
   const left = valid ? debt - a : debt;
   // Сервер не принимает сумму больше долга — предупреждаем сразу.
   const over = valid && a > debt + 0.001;
-  const half = Math.round(debt / 2);
+  // после оплаты: кнопка «Принято», пауза, плавное закрытие окна, затем onPaid (как в других окнах)
+  const paidRef = useRef<number | null>(null);
+  const closeRef = useRef<() => void>(() => {});
+  const [done, setDone] = useState(false);
 
   async function pay() {
     setError("");
+    if (paidRef.current !== null || busy) return;
     if (!valid) return setError("Укажите сумму");
     if (over) return setError(`Сумма больше долга (${som(debt)})`);
     setBusy(true);
     try {
       await payCustomer(customer.id, { amount: a, method });
-      onPaid(a);
+      paidRef.current = a;
+      setBusy(false);
+      setDone(true);
+      flashSaved(`Оплата ${som(a)} принята`);
+      window.setTimeout(() => closeRef.current(), 750);
     } catch (e) {
       setError(apiError(e));
       setBusy(false);
@@ -1414,58 +1487,74 @@ function PayModal({
           {customer.phone && <span style={css("font-variant-numeric:tabular-nums")}>{customer.phone}</span>}
         </>
       }
-      icon={<span style={css("font-size:17px;font-weight:500")}>с</span>}
+      icon={
+        <Svg
+          paths={[["rect", { x: 2.5, y: 8.5, width: 16.5, height: 10.5, rx: 2.2 }], ["path", { d: "M5.5 5.5h14a2 2 0 0 1 2 2v8" }], ["circle", { cx: 10.75, cy: 13.75, r: 2.3 }]]}
+          size={19}
+          sw={1.8}
+        />
+      }
       tone="green"
-      onClose={onClose}
+      onClose={() => (paidRef.current !== null ? onPaid(paidRef.current) : onClose())}
       width={460}
       footer={
-        <>
-          <ModalCancel>Отмена</ModalCancel>
-          <HButton onClick={pay} disabled={busy || !valid || over} s={btnPrimary + ";min-width:150px"} hover="background:var(--accent-hover)">
-            {busy ? "Принимаю…" : valid ? `Принять ${som(a)}` : "Принять"}
-          </HButton>
-        </>
+        <HButton onClick={pay} disabled={busy || done || !valid || over} className={"itm-save mf-paybtn" + (valid && !over ? " dirty" : "") + (busy ? " busy" : "") + (done ? " saved" : "")} s="" hover="">
+          <span className="itm-save-ic" aria-hidden>
+            {busy ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round">
+                <path d="M21 12a9 9 0 1 1-6.2-8.6" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m5 12.5 4.5 4.5L19 7.5" pathLength={1} />
+              </svg>
+            )}
+          </span>
+          <span>{busy ? "Принимаю…" : done ? "Принято" : valid && !over ? `Принять ${som(a)}` : "Принять"}</span>
+        </HButton>
       }
     >
-      <div className="mf-body">
-        <div className="mf-card" style={css("justify-content:space-between")}>
-          <span style={css("font-size:12.5px;color:var(--text-3)")}>Долг клиента</span>
-          <span style={mix("font-size:20px;font-weight:500;font-variant-numeric:tabular-nums", { color: debt > 0 ? "var(--amber)" : "var(--green)" })}>{som(debt)}</span>
+      <div className="mf-body mf-pay">
+        <div className="mfp-sum">
+          <span className="mfp-a">
+            <small>Долг клиента</small>
+            <b>{som(debt)}</b>
+          </span>
+          <i className="mfp-arr" aria-hidden>
+            <Svg paths={[["path", { d: "M5 12h14" }], ["path", { d: "m13 6 6 6-6 6" }]]} size={13} sw={2} />
+          </i>
+          <span className={"mfp-b" + (over ? " bad" : left > 0 ? "" : " ok")}>
+            <small>{over ? "Больше долга на" : left > 0 ? "Останется" : "После оплаты"}</small>
+            <b>{over || left > 0 ? som(Math.abs(left)) : "долг закрыт"}</b>
+          </span>
         </div>
-        <label>
+        <label className="mfp-in">
           <FieldLabel>Сумма оплаты</FieldLabel>
-          <MoneyInput value={amount} onChange={setAmount} big autoFocus onEnter={pay} />
+          <MoneyInput value={amount} onChange={setAmount} autoFocus onEnter={pay} />
         </label>
-        {debt > 0 && (
-          <div className="mf-chips">
-            <HButton onClick={() => setAmount(String(debt))} className={"mf-chip" + (a === debt ? " on" : "")} s="" hover="">
-              весь долг · {som(debt)}
-            </HButton>
-            {half > 0 && half !== debt && (
-              <HButton onClick={() => setAmount(String(half))} className={"mf-chip" + (a === half ? " on" : "")} s="" hover="">
-                половина · {som(half)}
-              </HButton>
-            )}
-          </div>
-        )}
-        <div>
-          <FieldLabel>Способ оплаты</FieldLabel>
-          <div className="mf-seg" role="radiogroup" aria-label="Способ оплаты">
-            {PAY_METHODS.map((m) => (
-              <button key={m.value} type="button" role="radio" aria-checked={method === m.value} className={method === m.value ? "on" : ""} onClick={() => setMethod(m.value)}>
-                {m.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="mf-total">
-          <span>{over ? "Больше долга на" : left > 0 ? "Останется долг" : "Долг будет закрыт"}</span>
-          <b style={mix("font-weight:500;font-variant-numeric:tabular-nums", { color: over ? "var(--danger)" : left > 0 ? "var(--amber)" : "var(--green)" })}>{over || left > 0 ? som(Math.abs(left)) : "✓"}</b>
-        </div>
-        <div className="mf-hint" style={css("margin-top:-6px")}>
-          Сумма распределится по неоплаченным товарам, начиная с самых старых.
-        </div>
+        <span className="pe-methods mfp-methods" role="radiogroup" aria-label="Способ оплаты">
+          {PAY_METHODS.filter((m) => m.value === "cash" || m.value === "transfer").map((m) => (
+            <button key={m.value} type="button" role="radio" aria-checked={method === m.value} className={method === m.value ? "on" : ""} onClick={() => setMethod(m.value)}>
+              <svg className="pe-m-ic" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                {m.value === "cash" ? (
+                  <>
+                    <rect pathLength={1} x="2.5" y="8.5" width="16.5" height="10.5" rx="2.2" />
+                    <path pathLength={1} d="M5.5 5.5h14a2 2 0 0 1 2 2v8" />
+                    <circle pathLength={1} cx="10.75" cy="13.75" r="2.3" />
+                  </>
+                ) : (
+                  <>
+                    <path pathLength={1} d="M4 9h14l-3.5-3.5" />
+                    <path pathLength={1} d="M20 15H6l3.5 3.5" />
+                  </>
+                )}
+              </svg>
+              <span>{m.label}</span>
+            </button>
+          ))}
+        </span>
         <ModalError text={error} />
+        <CloseGrab r={closeRef} />
       </div>
     </ModalShell>
   );

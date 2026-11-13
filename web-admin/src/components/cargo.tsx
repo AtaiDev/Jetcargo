@@ -169,7 +169,10 @@ const PERIODS: { key: PeriodKey; label: string }[] = [
   { key: "custom", label: "Период…" },
 ];
 
-export function PeriodPicker({ value, onChange }: { value: Period; onChange: (p: Period) => void }) {
+/** short — короткие подписи для тесных мест (шапка журнала). */
+const SHORT: Partial<Record<PeriodKey, string>> = { today: "День", "7": "7 д", month: "Месяц", "30": "30 д", "90": "90 д", year: "Год", custom: "…" };
+
+export function PeriodPicker({ value, onChange, short }: { value: Period; onChange: (p: Period) => void; short?: boolean }) {
   const range: [string, string] = [value.date_from, value.date_to];
   return (
     <div style={css("display:flex;flex-wrap:wrap;gap:6px;align-items:center")}>
@@ -182,7 +185,7 @@ export function PeriodPicker({ value, onChange }: { value: Period; onChange: (p:
             s={`height:30px;padding:0 11px;border-radius:16px;font-size:12px;cursor:pointer;border:1px solid ${active ? "var(--accent)" : "var(--border)"};background:${active ? "var(--accent-tint)" : "var(--surface)"};color:${active ? "var(--accent-strong)" : "var(--text-2)"};font-weight:${active ? 600 : 500}`}
             hover="border-color:var(--accent)"
           >
-            {p.label}
+            {short ? (SHORT[p.key] ?? p.label) : p.label}
           </HButton>
         );
       })}

@@ -177,7 +177,7 @@ export function ModalShell({
     if (leavingRef.current) return;
     leavingRef.current = true;
     setLeaving(true);
-    setTimeout(() => closeRef.current(), 190);
+    setTimeout(() => closeRef.current(), 290);
   }, []);
 
   useEffect(() => {

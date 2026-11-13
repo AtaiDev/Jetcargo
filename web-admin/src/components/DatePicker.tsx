@@ -506,11 +506,12 @@ function Chip({ label, disabled, onClick }: { label: string; disabled?: boolean;
 
 function CalendarIcon({ size }: { size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="4.5" width="18" height="16.5" rx="3.5" />
-      <path d="M3 9.5h18" />
-      <path d="M8 2.5v4M16 2.5v4" />
-      <rect x="13" y="13" width="4.5" height="4.5" rx="1.2" fill="currentColor" stroke="none" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="cal-ic" aria-hidden>
+      <path d="M6 4.5h12A3 3 0 0 1 21 7.5V9H3V7.5a3 3 0 0 1 3-3z" fill="currentColor" stroke="none" opacity=".13" />
+      <rect x="3" y="4.5" width="18" height="16.5" rx="3" pathLength={1} />
+      <path d="M3 9h18" pathLength={1} />
+      <path d="M8 2.5v4M16 2.5v4" pathLength={1} />
+      <rect className="cal-d" x="13" y="13" width="4.5" height="4.5" rx="1.2" fill="currentColor" stroke="none" />
     </svg>
   );
 }
