@@ -72,8 +72,23 @@
 
 <br>
 
-<img src="docs/readme/phones.webp" alt="Мобильная версия: вход, обзор, клиент, приём" width="100%">
-<p align="center"><sub>Мобильная версия — принимать и выдавать товар можно прямо на складе</sub></p>
+<h2 align="center">Мобильная версия</h2>
+<p align="center"><sub>Принимать и выдавать товар можно прямо на складе — с телефона</sub></p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/readme/mobile/overview.webp" alt="Обзор на телефоне"><p align="center"><sub>Обзор</sub></p></td>
+    <td width="50%"><img src="docs/readme/mobile/item.webp" alt="Карточка товара на телефоне"><p align="center"><sub>Карточка товара</sub></p></td>
+  </tr>
+  <tr>
+    <td><img src="docs/readme/mobile/customer.webp" alt="Клиент на телефоне"><p align="center"><sub>Клиент</sub></p></td>
+    <td><img src="docs/readme/mobile/orders.webp" alt="Заказы на телефоне"><p align="center"><sub>Заказы</sub></p></td>
+  </tr>
+  <tr>
+    <td><img src="docs/readme/mobile/receive.webp" alt="Приём на телефоне"><p align="center"><sub>Приём</sub></p></td>
+    <td><img src="docs/readme/mobile/login.webp" alt="Вход на телефоне"><p align="center"><sub>Вход</sub></p></td>
+  </tr>
+</table>
 
 <br>
 
