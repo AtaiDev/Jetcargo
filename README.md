@@ -1,119 +1,92 @@
 <div align="center">
 
-<img src="docs/readme/banner.webp" alt="Jetcargo — панель управления карго-бизнесом" width="100%">
+<img src="docs/readme/banner.svg" alt="Jetcargo — панель управления карго-бизнесом" width="100%">
 
 <br><br>
 
-<a href="https://ataidev.github.io/Jetcargo/"><b>Открыть панель</b></a>
-&nbsp;&nbsp;·&nbsp;&nbsp;
-<a href="docs/DEVELOPMENT.md"><b>Документация</b></a>
+<a href="https://ataidev.github.io/Jetcargo/"><img src="docs/readme/btn-open.webp" alt="Открыть панель" height="60"></a>
+&nbsp;
+<a href="docs/DEVELOPMENT.md"><img src="docs/readme/btn-docs.webp" alt="Документация" height="60"></a>
 
 <br><br>
 
-<img src="docs/readme/hero.webp" alt="Обзор Jetcargo на компьютере и телефоне" width="100%">
+<img src="docs/readme/hero.webp" alt="Обзор Jetcargo на компьютере и iPhone 16 Pro Max" width="100%">
 
-<br>
+<br><br>
 
-<p>Рабочее место карго-компании: заказы, приём сканером, склад, выдача с оплатой, партии и прибыль —<br>
-в одном интерфейсе, на компьютере и на телефоне.</p>
+<img src="docs/readme/head-intro.webp" alt="Рабочее место карго: заказы, приём, склад, выдача, партии и прибыль" width="100%">
+
+<img src="docs/readme/features.webp" alt="Заказы, приём, выдача и оплата, клиенты, финансы, журнал" width="100%">
+
+<br><br>
+
+<img src="docs/readme/head-screens.webp" alt="Экраны: компьютер, светлая и тёмная тема" width="100%">
+
+<img src="docs/readme/screens/01-login.webp" alt="01 · Вход" width="100%">
+
+<img src="docs/readme/screens/02-overview.webp" alt="02 · Обзор" width="100%">
+
+<img src="docs/readme/screens/03-orders.webp" alt="03 · Заказы" width="100%">
+
+<img src="docs/readme/screens/04-customer.webp" alt="04 · Клиент" width="100%">
+
+<img src="docs/readme/screens/05-item.webp" alt="05 · Карточка товара" width="100%">
+
+<img src="docs/readme/screens/06-receive.webp" alt="06 · Приём" width="100%">
+
+<img src="docs/readme/screens/07-warehouse.webp" alt="07 · Склад" width="100%">
+
+<img src="docs/readme/screens/08-batches.webp" alt="08 · Партии" width="100%">
+
+<img src="docs/readme/screens/09-finance.webp" alt="09 · Финансы" width="100%">
+
+<img src="docs/readme/screens/10-audit.webp" alt="10 · Журнал" width="100%">
+
+<img src="docs/readme/screens/11-neworder.webp" alt="11 · Новый заказ" width="100%">
+
+<img src="docs/readme/screens/12-import.webp" alt="12 · Импорт" width="100%">
+
+<img src="docs/readme/screens/13-staff.webp" alt="13 · Сотрудники" width="100%">
+
+<img src="docs/readme/screens/14-dark.webp" alt="14 · Тёмная тема" width="100%">
+
+<br><br>
+
+<img src="docs/readme/head-mobile.webp" alt="Мобильная версия на iPhone 16 Pro Max" width="100%">
+
+<img src="docs/readme/mobile/1-login.webp" alt="Вход на телефоне" width="49%">
+<img src="docs/readme/mobile/2-overview.webp" alt="Обзор на телефоне" width="49%">
+
+<img src="docs/readme/mobile/3-overview2.webp" alt="Оплаты и выручка на телефоне" width="49%">
+<img src="docs/readme/mobile/4-item.webp" alt="Карточка товара на телефоне" width="49%">
+
+<img src="docs/readme/mobile/5-finance.webp" alt="Финансы на телефоне" width="49%">
+<img src="docs/readme/mobile/6-dark.webp" alt="Тёмная тема на телефоне" width="49%">
+
+<br><br>
+
+<img src="docs/readme/stack.webp" alt="Стек: React, TypeScript, Vite · Node.js, Express, SQLite · GitHub Pages, Render, Docker, Litestream, Backblaze B2" width="100%">
+
+<br><br>
+
+<img src="docs/readme/quickstart.webp" alt="Быстрый старт: cp server/.env.example server/.env и npm run dev" width="100%">
 
 </div>
 
-<br>
-
-<table>
-  <tr>
-    <td width="33%" valign="top"><b>Заказы</b><br><sub>Заказ за минуту, импорт из Excel, поиск по коду и телефону</sub></td>
-    <td width="33%" valign="top"><b>Приём</b><br><sub>Сканер, партии и накладные из Китая</sub></td>
-    <td width="33%" valign="top"><b>Выдача</b><br><sub>С оплатой наличными или переводом, долги считаются сами</sub></td>
-  </tr>
-  <tr>
-    <td valign="top"><b>Клиенты</b><br><sub>История заказов, оплаты, долги и уведомления</sub></td>
-    <td valign="top"><b>Финансы</b><br><sub>Выручка, прибыль и расходы по партиям</sub></td>
-    <td valign="top"><b>Журнал</b><br><sub>Кто, что и когда сделал — по каждому действию</sub></td>
-  </tr>
-</table>
-
-<br>
-
-<h2 align="center">Экраны</h2>
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/readme/screens/orders.webp" alt="Заказы"><p align="center"><sub>Заказы</sub></p></td>
-    <td width="50%"><img src="docs/readme/screens/customer.webp" alt="Карточка клиента"><p align="center"><sub>Клиент</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/screens/item.webp" alt="Карточка товара"><p align="center"><sub>Карточка товара</sub></p></td>
-    <td><img src="docs/readme/screens/receive.webp" alt="Приём сканером"><p align="center"><sub>Приём</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/screens/warehouse.webp" alt="Склад"><p align="center"><sub>Склад</sub></p></td>
-    <td><img src="docs/readme/screens/batches.webp" alt="Партии"><p align="center"><sub>Партии</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/screens/finance.webp" alt="Финансы"><p align="center"><sub>Финансы</sub></p></td>
-    <td><img src="docs/readme/screens/audit.webp" alt="Журнал действий"><p align="center"><sub>Журнал</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/screens/neworder.webp" alt="Новый заказ"><p align="center"><sub>Новый заказ</sub></p></td>
-    <td><img src="docs/readme/screens/import.webp" alt="Импорт из Excel"><p align="center"><sub>Импорт</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/screens/staff.webp" alt="Сотрудники"><p align="center"><sub>Сотрудники</sub></p></td>
-    <td><img src="docs/readme/screens/login.webp" alt="Вход"><p align="center"><sub>Вход</sub></p></td>
-  </tr>
-</table>
-
-<br>
-
-<img src="docs/readme/screens/dark.webp" alt="Тёмная тема" width="100%">
-<p align="center"><sub>Тёмная тема</sub></p>
-
-<br>
-
-<h2 align="center">Мобильная версия</h2>
-<p align="center"><sub>Принимать и выдавать товар можно прямо на складе — с телефона</sub></p>
-
-<table>
-  <tr>
-    <td width="50%"><img src="docs/readme/mobile/overview.webp" alt="Обзор на телефоне"><p align="center"><sub>Обзор</sub></p></td>
-    <td width="50%"><img src="docs/readme/mobile/item.webp" alt="Карточка товара на телефоне"><p align="center"><sub>Карточка товара</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/mobile/customer.webp" alt="Клиент на телефоне"><p align="center"><sub>Клиент</sub></p></td>
-    <td><img src="docs/readme/mobile/orders.webp" alt="Заказы на телефоне"><p align="center"><sub>Заказы</sub></p></td>
-  </tr>
-  <tr>
-    <td><img src="docs/readme/mobile/receive.webp" alt="Приём на телефоне"><p align="center"><sub>Приём</sub></p></td>
-    <td><img src="docs/readme/mobile/login.webp" alt="Вход на телефоне"><p align="center"><sub>Вход</sub></p></td>
-  </tr>
-</table>
-
-<br>
-
-<h2 align="center">Стек</h2>
-
-<p align="center">
-<b>Интерфейс</b> — React · TypeScript · Vite<br>
-<b>Сервер</b> — Node.js · Express · SQLite<br>
-<b>Инфраструктура</b> — GitHub Pages · Render · Docker · Litestream · Backblaze B2
-</p>
-
-<br>
-
-<h2 align="center">Быстрый старт</h2>
+<details>
+<summary><b>Команды для копирования</b></summary>
 
 ```bash
 cp server/.env.example server/.env   # JWT_SECRET, ADMIN_LOGIN, ADMIN_PASSWORD
-npm run dev                          # backend и панель на тестовых данных
+npm run dev                          # сервер и панель на тестовых данных
 ```
 
-<p align="center">Панель откроется на <code>localhost:5173/admin</code> · нужен Node.js 24<br>
-Облако, API, структура проекта и формулы — в <a href="docs/DEVELOPMENT.md"><b>документации</b></a></p>
+Панель откроется на `localhost:5173/admin`. Облако, API, структура проекта и формулы — в [документации](docs/DEVELOPMENT.md).
+
+</details>
 
 <br>
 
 <div align="center">
-<sub>На скриншотах вымышленные данные · Сделано в Кыргызстане · © 2026 Jetcargo</sub>
+<img src="docs/readme/footer.webp" alt="Jetcargo · Сделано в Кыргызстане · © 2026 · на скриншотах вымышленные данные" width="100%">
 </div>

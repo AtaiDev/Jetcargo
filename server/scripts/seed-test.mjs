@@ -370,6 +370,20 @@ async function fill() {
   const del = (await items(customers[5].id)).find((x) => x.status === "ordered");
   if (del) await A("DELETE", `/items/${del.id}`);
 
+  // Накладная из Китая: часть кодов уже на складе, часть ещё в пути — на приёме виден прогресс «принято … из …».
+  {
+    const list = async (status) => (await A("GET", `/items?status=${status}&limit=500`)).rows.filter((x) => x.code && !/^TEST/.test(x.code));
+    const sent = [...(await list("in_stock")).slice(0, 26), ...(await list("ordered")).slice(0, 18)];
+    const wbx = new ExcelJS.Workbook();
+    const sh = wbx.addWorksheet("Накладная");
+    sh.addRow(["Накладная", "Номер заказа", "Название", "Коробка", "Отправлен", "Прибытие"]);
+    sent.forEach((it, i) => sh.addRow(["JC2611-0458", it.code, it.name, `Короб ${1 + Math.floor(i / 8)}`, daysAgo(6), daysAgo(-1)]));
+    const fw = new FormData();
+    fw.append("file", new Blob([await wbx.xlsx.writeBuffer()]), "Накладная JC2611-0458.xlsx");
+    const rw = await fetch(`${API}/shipments`, { method: "POST", headers: { Authorization: `Bearer ${admin}` }, body: fw });
+    if (!rw.ok) throw new Error(`накладная: ${rw.status} ${(await rw.json().catch(() => ({}))).detail ?? ""}`);
+  }
+
   // Импорт из Excel (уже выполненный — его видно в истории импортов и можно отменить).
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Заказы");
