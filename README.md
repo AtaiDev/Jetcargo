@@ -7,13 +7,7 @@
 <a href="https://ataidev.github.io/Jetcargo/"><img src="docs/readme/btn-open.webp" alt="Открыть панель" height="60"></a>
 &nbsp;
 <a href="docs/DEVELOPMENT.md"><img src="docs/readme/btn-docs.webp" alt="Документация" height="60"></a>
-
-<br><br>
-
 <img src="docs/readme/hero.webp" alt="Обзор Jetcargo на компьютере и iPhone 16 Pro Max" width="100%">
-
-<br><br>
-
 <img src="docs/readme/head-screens.webp" alt="Экраны: компьютер, светлая и тёмная тема" width="100%">
 
 <img src="docs/readme/screens/01-login.webp" alt="01 · Вход" width="100%">
